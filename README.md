@@ -2,7 +2,7 @@
 
 
 ### Neu in 1.2.4
-- Standard-Marktdaten auf **EPEX SPOT AT** ausgerichtet; technische Abfrage über den aWATTar-EPEX-AT-Datenfeed.
+- Standard-Marktdaten: **echte EPEX SPOT AT 15-Minuten-Preise** über die kostenlose smartENERGY-API (`https://apis.smartenergy.at/market/v1/price`).
 - Eigene Auswahl **Einspeisetarif / Anbieter**: KELAG Sonnenplus Smart, EPEX SPOT AT 1:1, aWATTar SUNNY Spot 60min oder benutzerdefiniert.
 - KELAG Sonnenplus Smart verwendet den EPEX-SPOT-AT-Stundenpreis 1:1.
 - aWATTar SUNNY Spot 60min berücksichtigt automatisch den aktuellen 19-%-Abschlag auf den absoluten Marktpreis.
@@ -55,6 +55,6 @@ Zusätzlich kann das Modul vor einer starken PV-Phase gezielt Speicherplatz scha
 
 ## Neu in 1.2.7
 
-Die Einspeiseplanung arbeitet intern mit einem **15-Minuten-Raster**. Liefert die Marktdatenquelle Stundenpreise, wird jede Stunde für die Planung in vier Viertelstunden mit identischem Preis aufgeteilt. Liefert eine eigene Quelle bereits 15-Minuten-Werte, werden diese direkt verwendet. Dadurch kann insbesondere die AlphaESS-Dispatch-Steuerung viertelstundengenau starten, stoppen und die notwendige Energiemenge verteilen.
+Die Einspeiseplanung arbeitet mit einem **15-Minuten-Raster**. Die integrierte smartENERGY-API liefert dafür echte EPEX-SPOT-AT-Viertelstundenpreise. Eine eigene JSON-Quelle wird bei Bedarf auf 15-Minuten-Slots normalisiert. Dadurch kann insbesondere die AlphaESS-Dispatch-Steuerung viertelstundengenau starten, stoppen und die notwendige Energiemenge verteilen.
 
 Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**. Dazu wird eine Variable für die aktuelle Netzeinspeisung gewählt. Bei einer Einspeisegrenze von 10.000 W und einer Toleranz von 500 W werden ab 9.500 W keine neuen Kalibrierwerte gespeichert. So wird eine technisch richtige PV-Prognose nicht nach unten korrigiert, nur weil der Wechselrichter wegen der Netzgrenze abregelt. Falls die Netzeinspeisung mit negativem Vorzeichen geliefert wird, kann das Vorzeichen in der Konfiguration invertiert werden.

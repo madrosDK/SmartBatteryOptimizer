@@ -286,11 +286,6 @@
         },
         {
           "type": "SelectVariable",
-          "name": "FeedInEnableVariable",
-          "caption": "Variable Einspeisung EIN/AUS"
-        },
-        {
-          "type": "SelectVariable",
           "name": "DischargePowerVariable",
           "caption": "Sollleistung Entladung (optional)"
         },
@@ -443,7 +438,7 @@
           "caption": "Marktdatenquelle",
           "options": [
             {
-              "caption": "EPEX SPOT AT (integriert)",
+              "caption": "EPEX SPOT AT 15 min (smartENERGY API)",
               "value": 0
             },
             {
@@ -477,7 +472,7 @@
         },
         {
           "type": "Label",
-          "caption": "Die Batterieplanung arbeitet immer im 15-Minuten-Raster. Stundenpreise werden automatisch in vier gleich bepreiste Viertelstunden aufgeteilt; bereits vorhandene 15-Minuten-Preise bleiben unverändert."
+          "caption": "Die integrierte Marktdatenquelle liefert echte EPEX-SPOT-AT-Preise im 15-Minuten-Raster. Eine eigene JSON-Quelle wird bei Bedarf ebenfalls auf 15-Minuten-Slots normalisiert."
         },
         {
           "type": "SelectVariable",
@@ -589,9 +584,8 @@
       "caption": "Automatik",
       "items": [
         {
-          "type": "CheckBox",
-          "name": "AutomaticEnabled",
-          "caption": "Automatische Einspeisung aktiv"
+          "type": "Label",
+          "caption": "Die Einspeiseautomatik wird über den Schalter 'Einspeiseautomatik' in der Instanz ein-/ausgeschaltet. Prognosen, Nachtverbrauch und Lernfunktionen laufen unabhängig davon weiter."
         },
         {
           "type": "NumberSpinner",

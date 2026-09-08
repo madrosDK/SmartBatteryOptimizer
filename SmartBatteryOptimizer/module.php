@@ -29,7 +29,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('BatteryCapacityKWh', 10.0);
         $this->RegisterPropertyFloat('MinimumSOC', 15.0);
         $this->RegisterPropertyInteger('MaxDischargePowerW', 5000);
-        $this->RegisterPropertyInteger('FeedInEnableVariable', 0);
         $this->RegisterPropertyInteger('DischargePowerVariable', 0);
         $this->RegisterPropertyBoolean('InvertPowerSetpoint', false);
         $this->RegisterPropertyInteger('BatteryControlMode', 0);
@@ -66,7 +65,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('PVStorageSharePct', 70.0);
         $this->RegisterPropertyFloat('PVSpaceMinimumPriceCt', -100.0);
 
-        $this->RegisterPropertyBoolean('AutomaticEnabled', false);
         $this->RegisterPropertyInteger('RefreshMinutes', 30);
 
         $this->RegisterVariableFloat('PVForecastTomorrow', 'PV Prognose morgen', '~Electricity', 10);
@@ -79,6 +77,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableFloat('PVSpaceRequiredEnergy', 'Für PV freizugebender Speicher', '~Electricity', 31);
         $this->RegisterVariableFloat('CurrentPrice', 'Aktueller Einspeisepreis', '', 40);
         $this->RegisterVariableFloat('HighestPrice', 'Höchster geplanter Einspeisepreis', '', 50);
+        $this->RegisterVariableBoolean('AutomaticEnabled', 'Einspeiseautomatik', '~Switch', 55);
+        $this->EnableAction('AutomaticEnabled');
         $this->RegisterVariableBoolean('FeedInActive', 'Einspeisung aktiv', '~Switch', 60);
         $this->RegisterVariableFloat('PlannedPower', 'Geplante Einspeiseleistung', '~Watt', 70);
         $this->RegisterVariableString('NextFeedInWindow', 'Nächstes Einspeisefenster', '', 80);
@@ -114,13 +114,41 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetStatus(200);
         } else {
             $gate = $this->GetAutomaticLearningGateStatus();
-            $this->SetStatus(($this->ReadPropertyBoolean('AutomaticEnabled') && !$gate['ready']) ? 202 : 102);
+            $this->SetStatus(($this->IsAutomaticEnabled() && !$gate['ready']) ? 202 : 102);
             SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
         }
 
-        if (!$this->ReadPropertyBoolean('AutomaticEnabled')) {
+        if (!$this->IsAutomaticEnabled()) {
             $this->StopFeedIn();
         }
+    }
+
+    public function RequestAction($Ident, $Value)
+    {
+        switch ($Ident) {
+            case 'AutomaticEnabled':
+                $enabled = (bool)$Value;
+                SetValue($this->GetIDForIdent('AutomaticEnabled'), $enabled);
+                if ($enabled) {
+                    SetValue($this->GetIDForIdent('StatusText'), 'Einspeiseautomatik aktiviert – Prognosen und Plan werden aktualisiert.');
+                    $this->Recalculate();
+                } else {
+                    $this->StopFeedIn();
+                    SetValue($this->GetIDForIdent('StatusText'), 'Einspeiseautomatik deaktiviert – Prognosen und Lernfunktionen bleiben aktiv.');
+                    $gate = $this->GetAutomaticLearningGateStatus();
+                    $this->SetStatus(102);
+                    SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
+                }
+                break;
+            default:
+                throw new Exception('Ungültige Aktion: ' . $Ident);
+        }
+    }
+
+    private function IsAutomaticEnabled(): bool
+    {
+        $id = @$this->GetIDForIdent('AutomaticEnabled');
+        return $id > 0 ? (bool)GetValue($id) : false;
     }
 
     public function Recalculate()
@@ -152,7 +180,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
             SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
             SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
-            $this->SetStatus(($this->ReadPropertyBoolean('AutomaticEnabled') && !$gate['ready']) ? 202 : 102);
+            $this->SetStatus(($this->IsAutomaticEnabled() && !$gate['ready']) ? 202 : 102);
             $this->Control();
         } catch (Throwable $e) {
             $this->SendDebug('Recalculate', $e->getMessage(), 0);
@@ -177,7 +205,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function Control()
     {
-        if (!$this->ReadPropertyBoolean('AutomaticEnabled')) {
+        if (!$this->IsAutomaticEnabled()) {
             $this->StopFeedIn();
             return;
         }
@@ -539,23 +567,30 @@ class SmartBatteryOptimizer extends IPSModule
             return $this->NormalizeCustomPrices($data);
         }
 
-        $start = strtotime('today 00:00') * 1000;
-        $end = strtotime('+2 days 23:59:59') * 1000;
-        $url = 'https://api.awattar.at/v1/marketdata?start=' . $start . '&end=' . $end;
+        // Kostenlose smartENERGY-API: echte EPEX SPOT AT Day-Ahead-Preise
+        // im 15-Minuten-Raster. Laut API-Dokumentation sind die Werte in ct/kWh
+        // inklusive 20 % USt. und ohne Grund-/Abwicklungsgebühr angegeben.
+        $url = 'https://apis.smartenergy.at/market/v1/price';
         $data = $this->HttpGetJson($url);
-        if (!isset($data['data']) || !is_array($data['data'])) throw new Exception('Ungültige aWATTar-Antwort.');
+        if (!isset($data['data']) || !is_array($data['data'])) {
+            throw new Exception('Ungültige smartENERGY EPEX-SPOT-AT-Antwort.');
+        }
 
+        $intervalMinutes = max(1, (int)($data['interval'] ?? 15));
         $prices = [];
         foreach ($data['data'] as $row) {
-            $rawCt = ((float)$row['marketprice']) / 10.0; // EUR/MWh -> ct/kWh
-            $effective = $this->CalculateFeedInTariff($rawCt);
+            if (!isset($row['date'], $row['value'])) continue;
+            $start = strtotime((string)$row['date']);
+            if ($start === false) continue;
+            $rawCt = (float)$row['value'];
             $prices[] = [
-                'start' => (int)round(((int)$row['start_timestamp']) / 1000),
-                'end' => (int)round(((int)$row['end_timestamp']) / 1000),
+                'start' => $start,
+                'end' => $start + ($intervalMinutes * 60),
                 'marketCt' => $rawCt,
-                'priceCt' => $effective
+                'priceCt' => $this->CalculateFeedInTariff($rawCt)
             ];
         }
+        if (count($prices) === 0) throw new Exception('smartENERGY liefert keine EPEX-SPOT-AT-Preisdaten.');
         usort($prices, fn($a, $b) => $a['start'] <=> $b['start']);
         return $this->ExpandPricesToQuarterHour($prices);
     }
@@ -908,15 +943,11 @@ class SmartBatteryOptimizer extends IPSModule
         if ($this->ReadPropertyInteger('BatteryControlMode') === 1) {
             $this->SetAlphaESSDispatch($enable, $powerW, $slotEnd);
         } else {
-            $enableID = $this->ReadPropertyInteger('FeedInEnableVariable');
             $powerID = $this->ReadPropertyInteger('DischargePowerVariable');
             if ($powerID > 0) {
                 $setpoint = $this->ReadPropertyBoolean('InvertPowerSetpoint') ? -abs($powerW) : abs($powerW);
                 if (!$enable) $setpoint = 0;
                 $this->WriteVariableSmart($powerID, $setpoint);
-            }
-            if ($enableID > 0) {
-                $this->WriteVariableSmart($enableID, $enable);
             }
         }
         SetValue($this->GetIDForIdent('FeedInActive'), $enable);
@@ -1072,36 +1103,87 @@ class SmartBatteryOptimizer extends IPSModule
         $highchartsJS = $this->GetHighchartsJavaScript();
         $chartId = 'sbo_price_chart_' . $this->InstanceID;
         $chartRows = $this->BuildPriceChartRows($forecast, $prices, $plan);
-        $chartJson = json_encode($chartRows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $minimumPrice = $this->ReadPropertyFloat('MinimumFeedInPriceCt');
-        $chartWidth = max(900, count($chartRows) * 34);
+
+        // Highcharts: Stundenbalken = Mittelwert der echten 15-Minuten-Werte.
+        // Darüber liegt eine Linie mit den unveränderten 15-Minuten-Werten.
+        $quarterRows = [];
+        $hourBuckets = [];
+        foreach ($chartRows as $row) {
+            $ts = strtotime(str_replace('.', '-', substr($row['label'], 0, 10)) . ' ' . substr($row['label'], 11));
+            if ($ts === false) {
+                continue;
+            }
+            $quarterRows[] = [
+                'x' => $ts * 1000,
+                'marketCt' => (float)$row['marketCt'],
+                'priceCt' => (float)$row['priceCt'],
+                'label' => $row['label'],
+                'endLabel' => $row['endLabel'],
+                'selected' => (bool)$row['selected'],
+                'reason' => (string)$row['reason'],
+                'powerW' => (float)$row['powerW'],
+                'energyKWh' => (float)$row['energyKWh']
+            ];
+            $hourTs = strtotime(date('Y-m-d H:00:00', $ts));
+            if (!isset($hourBuckets[$hourTs])) {
+                $hourBuckets[$hourTs] = ['market' => [], 'price' => [], 'selected' => false, 'reason' => '', 'powerW' => 0.0, 'energyKWh' => 0.0];
+            }
+            $hourBuckets[$hourTs]['market'][] = (float)$row['marketCt'];
+            $hourBuckets[$hourTs]['price'][] = (float)$row['priceCt'];
+            if ($row['selected']) {
+                $hourBuckets[$hourTs]['selected'] = true;
+                if (($row['reason'] ?? '') === 'pv_space') {
+                    $hourBuckets[$hourTs]['reason'] = 'pv_space';
+                } elseif ($hourBuckets[$hourTs]['reason'] === '') {
+                    $hourBuckets[$hourTs]['reason'] = 'price';
+                }
+                $hourBuckets[$hourTs]['powerW'] = max($hourBuckets[$hourTs]['powerW'], (float)$row['powerW']);
+                $hourBuckets[$hourTs]['energyKWh'] += (float)$row['energyKWh'];
+            }
+        }
+        $hourRows = [];
+        foreach ($hourBuckets as $hourTs => $bucket) {
+            $hourRows[] = [
+                'x' => ($hourTs + 1800) * 1000,
+                'marketCt' => array_sum($bucket['market']) / max(1, count($bucket['market'])),
+                'priceCt' => array_sum($bucket['price']) / max(1, count($bucket['price'])),
+                'label' => date('d.m. H:00', $hourTs),
+                'endLabel' => date('H:00', $hourTs + 3600),
+                'selected' => $bucket['selected'],
+                'reason' => $bucket['reason'],
+                'powerW' => $bucket['powerW'],
+                'energyKWh' => $bucket['energyKWh']
+            ];
+        }
+
+        $quarterJson = json_encode($quarterRows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $hourJson = json_encode($hourRows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
-        $html .= '<b>Einspeisevergütung – nächste 24 Stunden / 15-Minuten-Raster</b><br>';
+        $html .= '<b>Einspeisevergütung – nächste 24 Stunden</b><br>';
         if ($highchartsJS !== '') {
-            $html .= '<div style="width:100%;overflow-x:auto;overflow-y:hidden"><div id="' . $chartId . '" style="width:' . $chartWidth . 'px;height:390px;margin-top:8px;margin-bottom:10px"></div></div>';
+            $html .= '<div id="' . $chartId . '" style="width:100%;height:390px;margin-top:8px;margin-bottom:10px"></div>';
             $html .= '<script>' . $highchartsJS . '</script>';
             $html .= '<script>(function(){';
-            $html .= 'var rows=' . $chartJson . ';';
-            $html .= 'function renderSBOChart(){';
-            $html .= 'if(typeof Highcharts==="undefined"){return;}';
-            $html .= 'var categories=rows.map(function(r){return r.label;});';
-            $html .= 'var market=rows.map(function(r){return {y:r.priceCt,color:r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3")),custom:r};});';
+            $html .= 'var hours=' . $hourJson . ',quarters=' . $quarterJson . ';';
+            $html .= 'function renderSBOChart(){if(typeof Highcharts==="undefined"){return;}';
+            $html .= 'var bars=hours.map(function(r){return {x:r.x,y:r.priceCt,color:r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3")),custom:r};});';
+            $html .= 'var line=quarters.map(function(r){return {x:r.x+450000,y:r.priceCt,custom:r};});';
             $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
-            $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
-            $html .= 'title:{text:null,style:{fontFamily:"Tahoma",color:"#ffffff"}},credits:{enabled:false},legend:{enabled:false,itemStyle:{fontFamily:"Tahoma",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
-            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,step:4,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
+            $html .= 'chart:{backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
+            $html .= 'title:{text:null},credits:{enabled:false},';
+            $html .= 'legend:{enabled:true,itemStyle:{fontFamily:"Tahoma",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
+            $html .= 'xAxis:{type:"datetime",lineColor:"#ffffff",tickColor:"#ffffff",tickInterval:3600000,labels:{format:"{value:%H:%M}",rotation:-45,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
             $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
-            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"–"+r.endLabel+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
-            $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.06,pointPadding:0.02,dataLabels:{enabled:true,crop:false,overflow:"allow",rotation:-90,y:-5,formatter:function(){return Highcharts.numberFormat(this.y,2,",",".")+" ct";},style:{fontFamily:"Tahoma",fontSize:"8px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
-            $html .= 'series:[{name:"Einspeisevergütung",data:market}]';
-            $html .= '});}';
-            $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOChart);}else{setTimeout(renderSBOChart,0);}';
-            $html .= '})();</script>';
+            $html .= 'tooltip:{shared:false,useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;if(this.series.type==="line"){return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"–"+r.endLabel+"</b><br>15-Minuten-Wert: <b>"+Highcharts.numberFormat(r.priceCt,2,\",\",\".\")+" ct/kWh</b><br>EPEX Markt: "+Highcharts.numberFormat(r.marketCt,2,\",\",\".\")+" ct/kWh</span>";}return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"–"+r.endLabel+"</b><br>Stundenmittel: <b>"+Highcharts.numberFormat(r.priceCt,2,\",\",\".\")+" ct/kWh</b>"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,\",\",\".\")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,\",\",\".\")+" kWh":"")+"</span>";}},';
+            $html .= 'plotOptions:{column:{pointRange:3600000,borderWidth:0,groupPadding:0.05,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",y:-4,formatter:function(){return Highcharts.numberFormat(this.y,2,\",\",\".\")+" ct";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},line:{lineWidth:2,marker:{enabled:true,radius:2},dataLabels:{enabled:false}}},';
+            $html .= 'series:[{type:"column",name:"Stundenmittel",data:bars,zIndex:1},{type:"line",name:"15-Minuten-Werte",data:line,zIndex:5}]';
+            $html .= '});}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOChart);}else{setTimeout(renderSBOChart,0);}})();</script>';
         } else {
             $html .= $this->RenderFallbackPriceChart($chartRows, $minimumPrice);
         }
-        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Preisintervalle. Die Planung arbeitet intern im 15-Minuten-Raster. Liefert die Quelle Stundenpreise, werden diese in vier gleich bepreiste Viertelstunden aufgeteilt; echte 15-Minuten-Preise bleiben unverändert. Die Preisdarstellung zeigt rollierend die nächsten 24 Stunden; die aktuelle Einspeiseplanung endet weiterhin mit Beginn der nächsten PV-Phase.</div>';
+        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Balken = Stundenmittel aus den vier 15-Minuten-Werten. Linie = echte 15-Minuten-Einspeisevergütung. Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden. Die Optimierung selbst arbeitet weiterhin mit den echten 15-Minuten-Werten.</div>';
         return $html . '</div>';
     }
 
