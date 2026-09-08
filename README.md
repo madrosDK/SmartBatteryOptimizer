@@ -61,7 +61,7 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 
 
 ## Änderungen v1.3.1
-- Highcharts-Diagramm robust auf direkte Zeitstempel umgestellt: Stundenmittel als Balken, echte 15-Minuten-Werte als Linie.
+- Preisdiagramm wieder auf die bewährte reine Highcharts-Balkengrafik zurückgestellt. Die Balken zeigen Stundenmittel aus den vier echten 15-Minuten-Werten; die Optimierung bleibt 15-minütig.
 - Bei fehlendem oder fehlerhaftem Highcharts wird automatisch die Fallback-Grafik eingeblendet.
 - Der Einspeiseplan ist über „Einspeiseplan anzeigen / ausblenden“ auf- und zuklappbar.
 
@@ -71,3 +71,12 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 - Highcharts wird nach dem lokalen Laden direkt initialisiert; die fehleranfällige DOMContentLoaded-Nachinitialisierung wurde entfernt.
 - Automatischer Reflow nach dem Laden ergänzt.
 - Bei einem Highcharts-Laufzeitfehler wird die HTML/CSS-Fallback-Grafik eingeblendet und der Fehlertext sichtbar ausgegeben.
+
+## Änderungen v1.3.3
+
+- Preisdiagramm bewusst auf die einfache Balkengrafik vor der Viertelstunden-Linienversion zurückgestellt.
+- Pro Stunde wird der Mittelwert aus den verfügbaren echten 15-Minuten-EPEX-Werten berechnet.
+- Der Stundenpreis steht wieder direkt über jedem Balken.
+- Keine überlagerte Liniengrafik.
+- Tahoma und weiße Beschriftungen bleiben bestehen.
+- Planung und AlphaESS-Dispatch arbeiten weiterhin mit den echten 15-Minuten-Werten.

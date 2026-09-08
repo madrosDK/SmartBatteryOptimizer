@@ -1104,34 +1104,27 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $highchartsJS = $this->GetHighchartsJavaScript();
         $chartId = 'sbo_price_chart_' . $this->InstanceID;
-        $fallbackId = $chartId . '_fallback';
-        $errorId = $chartId . '_error';
-        $chartRows = $this->BuildPriceChartRows($forecast, $prices, $plan);
+        $quarterRows = $this->BuildPriceChartRows($forecast, $prices, $plan);
         $minimumPrice = $this->ReadPropertyFloat('MinimumFeedInPriceCt');
 
-        // Darstellung: Stundenbalken = Mittelwert der echten 15-Minuten-Werte.
-        // Darüber liegt eine Linie mit den unveränderten 15-Minuten-Werten.
-        $quarterRows = [];
+        // Die Optimierung arbeitet weiterhin mit echten 15-Minuten-Werten.
+        // Für das Diagramm werden jeweils vier Viertelstunden zu einem Stundenmittel zusammengefasst.
         $hourBuckets = [];
-        foreach ($chartRows as $row) {
+        foreach ($quarterRows as $row) {
             $ts = (int)($row['start'] ?? 0);
             if ($ts <= 0) {
                 continue;
             }
 
-            $quarterRows[] = [
-                'x' => $ts * 1000,
-                'marketCt' => (float)$row['marketCt'],
-                'priceCt' => (float)$row['priceCt'],
-                'label' => $row['label'],
-                'endLabel' => $row['endLabel'],
-                'selected' => (bool)$row['selected'],
-                'reason' => (string)$row['reason'],
-                'powerW' => (float)$row['powerW'],
-                'energyKWh' => (float)$row['energyKWh']
-            ];
+            $hourTs = mktime(
+                (int)date('H', $ts),
+                0,
+                0,
+                (int)date('m', $ts),
+                (int)date('d', $ts),
+                (int)date('Y', $ts)
+            );
 
-            $hourTs = mktime((int)date('H', $ts), 0, 0, (int)date('m', $ts), (int)date('d', $ts), (int)date('Y', $ts));
             if (!isset($hourBuckets[$hourTs])) {
                 $hourBuckets[$hourTs] = [
                     'market' => [],
@@ -1145,14 +1138,18 @@ class SmartBatteryOptimizer extends IPSModule
 
             $hourBuckets[$hourTs]['market'][] = (float)$row['marketCt'];
             $hourBuckets[$hourTs]['price'][] = (float)$row['priceCt'];
-            if ($row['selected']) {
+
+            if (!empty($row['selected'])) {
                 $hourBuckets[$hourTs]['selected'] = true;
                 if (($row['reason'] ?? '') === 'pv_space') {
                     $hourBuckets[$hourTs]['reason'] = 'pv_space';
                 } elseif ($hourBuckets[$hourTs]['reason'] === '') {
                     $hourBuckets[$hourTs]['reason'] = 'price';
                 }
-                $hourBuckets[$hourTs]['powerW'] = max($hourBuckets[$hourTs]['powerW'], (float)$row['powerW']);
+                $hourBuckets[$hourTs]['powerW'] = max(
+                    $hourBuckets[$hourTs]['powerW'],
+                    (float)$row['powerW']
+                );
                 $hourBuckets[$hourTs]['energyKWh'] += (float)$row['energyKWh'];
             }
         }
@@ -1161,11 +1158,12 @@ class SmartBatteryOptimizer extends IPSModule
         $hourRows = [];
         foreach ($hourBuckets as $hourTs => $bucket) {
             $hourRows[] = [
-                'x' => ($hourTs + 1800) * 1000,
+                'start' => $hourTs,
+                'end' => $hourTs + 3600,
                 'marketCt' => array_sum($bucket['market']) / max(1, count($bucket['market'])),
                 'priceCt' => array_sum($bucket['price']) / max(1, count($bucket['price'])),
-                'label' => date('d.m. H:00', $hourTs),
-                'endLabel' => date('H:00', $hourTs + 3600),
+                'label' => date('d.m. H:i', $hourTs),
+                'endLabel' => date('H:i', $hourTs + 3600),
                 'selected' => $bucket['selected'],
                 'reason' => $bucket['reason'],
                 'powerW' => $bucket['powerW'],
@@ -1173,63 +1171,42 @@ class SmartBatteryOptimizer extends IPSModule
             ];
         }
 
-        $quarterJson = json_encode($quarterRows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        $hourJson = json_encode($hourRows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if ($quarterJson === false) {
-            $quarterJson = '[]';
-        }
-        if ($hourJson === false) {
-            $hourJson = '[]';
+        $chartJson = json_encode($hourRows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($chartJson === false) {
+            $chartJson = '[]';
         }
 
-        // Vollständiges HTML-Dokument: Das ist in IP-Symcon/IPSView bei HTMLBoxen
-        // zuverlässiger als ein nachträglich eingesetztes HTML-Fragment mit Script-Tags.
-        $html = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">';
-        $html .= '<style>';
-        $html .= 'html,body{width:100%;height:100%;margin:0;padding:0;background:transparent;color:#fff;font-family:Tahoma,Arial,sans-serif;overflow-x:hidden;}';
-        $html .= '*{box-sizing:border-box;font-family:Tahoma,Arial,sans-serif;}';
-        $html .= '.sbo-wrap{width:100%;padding:4px 6px 8px 6px;color:#fff;font-size:12px;}';
-        $html .= '.sbo-title{font-weight:bold;margin-bottom:5px;color:#fff;}';
-        $html .= '.sbo-note{font-size:11px;color:#fff;margin-top:4px;line-height:1.35;}';
-        $html .= '.sbo-error{display:none;font-size:11px;color:#fff;margin:5px 0;padding:5px 7px;border:1px solid rgba(255,255,255,.25);border-radius:4px;}';
-        $html .= '#' . $chartId . '{width:100%;height:390px;margin:0;}';
-        $html .= '</style></head><body><div class="sbo-wrap">';
-        $html .= '<div class="sbo-title">Einspeisevergütung – nächste 24 Stunden</div>';
+        // Bewusst wieder die einfache, vor der 15-Minuten-Diagrammversion verwendete
+        // Highcharts-Balkengrafik. Keine überlagerte Linienserie.
+        $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
+        $html .= '<b>Einspeisevergütung – nächste 24 Stunden</b><br>';
 
         if ($highchartsJS !== '') {
-            $html .= '<div id="' . $chartId . '"></div>';
-            $html .= '<div id="' . $errorId . '" class="sbo-error"></div>';
-            $html .= '<div id="' . $fallbackId . '" style="display:none">' . $this->RenderFallbackPriceChart($chartRows, $minimumPrice) . '</div>';
+            $html .= '<div id="' . $chartId . '" style="width:100%;height:390px;margin-top:8px;margin-bottom:10px"></div>';
             $html .= '<script>' . $highchartsJS . '</script>';
             $html .= '<script>(function(){';
-            $html .= 'var hours=' . $hourJson . ';var quarters=' . $quarterJson . ';';
-            $html .= 'var chartId=' . json_encode($chartId) . ';var fallbackId=' . json_encode($fallbackId) . ';var errorId=' . json_encode($errorId) . ';';
-            $html .= 'function showFallback(msg){var c=document.getElementById(chartId),f=document.getElementById(fallbackId),e=document.getElementById(errorId);if(c)c.style.display="none";if(f)f.style.display="block";if(e&&msg){e.style.display="block";e.textContent="Highcharts konnte nicht dargestellt werden: "+msg;}}';
-            $html .= 'if(typeof Highcharts==="undefined"){showFallback("Highcharts ist nicht geladen.");return;}';
-            $html .= 'try{';
-            $html .= 'var bars=hours.map(function(r){var col=r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3"));return{x:r.x,y:r.priceCt,color:col,custom:r};});';
-            $html .= 'var line=quarters.map(function(r){return{x:r.x+450000,y:r.priceCt,custom:r};});';
-            $html .= 'var chart=Highcharts.chart(chartId,{';
-            $html .= 'chart:{backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"},spacingTop:22,spacingRight:10,spacingBottom:8,spacingLeft:8},';
-            $html .= 'title:{text:null},credits:{enabled:false},';
-            $html .= 'legend:{enabled:true,itemStyle:{fontFamily:"Tahoma",color:"#ffffff",fontWeight:"normal"},itemHoverStyle:{color:"#ffffff"},itemHiddenStyle:{color:"#888888"}},';
-            $html .= 'xAxis:{type:"datetime",lineColor:"#ffffff",tickColor:"#ffffff",tickInterval:3600000,labels:{format:"{value:%H:%M}",rotation:-45,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
+            $html .= 'var rows=' . $chartJson . ';';
+            $html .= 'function renderSBOChart(){';
+            $html .= 'if(typeof Highcharts==="undefined"){return;}';
+            $html .= 'var categories=rows.map(function(r){return r.label;});';
+            $html .= 'var market=rows.map(function(r){var c=r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3"));return {y:r.priceCt,color:c,custom:r};});';
+            $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
+            $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
+            $html .= 'title:{text:null,style:{fontFamily:"Tahoma",color:"#ffffff"}},credits:{enabled:false},legend:{enabled:false,itemStyle:{fontFamily:"Tahoma",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
+            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
             $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:' . json_encode('Mindestpreis ' . number_format($minimumPrice, 2, ',', '.') . ' ct') . ',style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
-            $html .= 'tooltip:{shared:false,useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom||{};if(this.series.type==="line"){return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+(r.label||"")+"–"+(r.endLabel||"")+"</b><br>15-Minuten-Wert: <b>"+Highcharts.numberFormat(this.y,2,\",\",\".\")+" ct/kWh</b><br>EPEX Markt: "+Highcharts.numberFormat(r.marketCt||0,2,\",\",\".\")+" ct/kWh</span>";}return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+(r.label||"")+"–"+(r.endLabel||"")+"</b><br>Stundenmittel: <b>"+Highcharts.numberFormat(this.y,2,\",\",\".\")+" ct/kWh</b>"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat((r.powerW||0)/1000,2,\",\",\".\")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh||0,2,\",\",\".\")+" kWh":"")+"</span>";}},';
-            $html .= 'plotOptions:{series:{animation:false,turboThreshold:0},column:{pointRange:3600000,borderWidth:0,groupPadding:0.05,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",y:-4,formatter:function(){return Highcharts.numberFormat(this.y,2,\",\",\".\")+" ct";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},line:{lineWidth:2,marker:{enabled:true,radius:2},dataLabels:{enabled:false}}},';
-            $html .= 'series:[{type:"column",name:"Stundenmittel",data:bars,zIndex:1},{type:"line",name:"15-Minuten-Werte",data:line,zIndex:5,color:"#ffffff"}]';
-            $html .= '});';
-            $html .= 'window.setTimeout(function(){if(chart&&chart.reflow){chart.reflow();}},100);';
-            $html .= 'window.setTimeout(function(){if(chart&&chart.reflow){chart.reflow();}},500);';
-            $html .= '}catch(ex){showFallback(ex&&ex.message?ex.message:String(ex));}';
+            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"–"+r.endLabel+"</b><br>EPEX Stundenmittel: <b>"+Highcharts.numberFormat(r.marketCt,2,\",\",\".\")+" ct/kWh</b><br>Vergütung Stundenmittel: "+Highcharts.numberFormat(r.priceCt,2,\",\",\".\")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason===\"pv_space\"?\"Speicher für PV freihalten\":\"Preisoptimierung\")+"</b><br>max. geplante Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,\",\",\".\")+" kW<br>geplante Energie: "+Highcharts.numberFormat(r.energyKWh,2,\",\",\".\")+" kWh":"")+"</span>";}},';
+            $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return Highcharts.numberFormat(this.y,2,\",\",\".\")+" ct";},style:{fontFamily:"Tahoma",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
+            $html .= 'series:[{name:"Einspeisevergütung",data:market}]';
+            $html .= '});}';
+            $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOChart);}else{setTimeout(renderSBOChart,0);}';
             $html .= '})();</script>';
         } else {
-            $html .= $this->RenderFallbackPriceChart($chartRows, $minimumPrice);
+            $html .= $this->RenderFallbackPriceChart($hourRows, $minimumPrice);
         }
 
-        $html .= '<div class="sbo-note">Balken = Stundenmittel aus den vier 15-Minuten-Werten. Linie = echte 15-Minuten-Einspeisevergütung. Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden. Die Optimierung selbst arbeitet weiterhin mit den echten 15-Minuten-Werten.</div>';
-        $html .= '</div></body></html>';
-        return $html;
+        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Balken = Stundenmittel aus den vier echten 15-Minuten-Werten. Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden. Die Optimierung und AlphaESS-Steuerung arbeiten weiterhin mit den echten 15-Minuten-Werten.</div>';
+        return $html . '</div>';
     }
 
     private function RenderPlanHTML(array $forecast, array $prices, array $plan): string
