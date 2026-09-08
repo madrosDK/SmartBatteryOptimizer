@@ -1,10 +1,18 @@
 # SmartBatteryOptimizer
 
+
+### Neu in 1.2.4
+- Standard-Marktdaten auf **EPEX SPOT AT** ausgerichtet; technische Abfrage über den aWATTar-EPEX-AT-Datenfeed.
+- Eigene Auswahl **Einspeisetarif / Anbieter**: KELAG Sonnenplus Smart, EPEX SPOT AT 1:1, aWATTar SUNNY Spot 60min oder benutzerdefiniert.
+- KELAG Sonnenplus Smart verwendet den EPEX-SPOT-AT-Stundenpreis 1:1.
+- aWATTar SUNNY Spot 60min berücksichtigt automatisch den aktuellen 19-%-Abschlag auf den absoluten Marktpreis.
+- Highcharts und Fallback-Grafik zeigen jetzt den **effektiven Einspeisepreis** als Balken; der reine EPEX-Marktpreis bleibt im Tooltip sichtbar.
+- Tariflogik ist separat von der Marktdatenquelle aufgebaut, damit weitere Anbieter leicht ergänzt werden können.
 IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose, lernendem Nachtverbrauch und Unterstützung mehrerer PV-Flächen.
 
 ## Version
 
-**1.2.3**
+**1.2.4**
 
 ## Neu in 1.2.3
 
@@ -19,9 +27,9 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 - HTML-Ausgabe in drei eigene IP-Symcon-HTMLBox-Variablen aufgeteilt: `Übersicht`, `Börsenpreis Diagramm` und `Einspeiseplan`.
 - Das Highcharts-Diagramm liegt damit vollständig in der eigenen Variable `Börsenpreis Diagramm`.
 - Sämtliche Highcharts-Beschriftungen werden in weißer Schrift und Tahoma dargestellt.
-- Über jedem Preisbalken wird der Börsenpreis direkt in ct angezeigt.
-- Fallback-Balkengrafik ohne Highcharts: Wenn `highcharts.js` fehlt oder nicht lesbar ist, bleibt die HTML-Übersicht funktionsfähig und zeigt die Börsenpreise als reine HTML/CSS-Balkengrafik.
-- Börsenpreise als Highcharts-Balkendiagramm in der HTML-Übersicht.
+- Über jedem Preisbalken wird der effektive Einspeisepreis direkt in ct angezeigt.
+- Fallback-Balkengrafik ohne Highcharts: Wenn `highcharts.js` fehlt oder nicht lesbar ist, bleibt die Anzeige funktionsfähig und zeigt die Einspeisevergütung als reine HTML/CSS-Balkengrafik.
+- Einspeisevergütung als Highcharts-Balkendiagramm in einer eigenen HTMLBox.
 - Geplante Einspeisefenster werden im Diagramm hervorgehoben.
 - Negative Börsenpreise werden unterhalb der Nulllinie dargestellt.
 - Mindest-Einspeisepreis wird als Referenzlinie angezeigt.

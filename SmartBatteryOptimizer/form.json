@@ -364,27 +364,50 @@
         {
           "type": "Select",
           "name": "PriceSource",
-          "caption": "Preisquelle",
+          "caption": "Marktdatenquelle",
           "options": [
             {
-              "caption": "aWATTar Österreich / EPEX Spot",
+              "caption": "EPEX SPOT AT (integriert)",
               "value": 0
             },
             {
-              "caption": "JSON-Variable (später/eigene Quelle)",
+              "caption": "JSON-Variable (eigene Quelle)",
               "value": 1
+            }
+          ]
+        },
+        {
+          "type": "Select",
+          "name": "FeedInTariffProvider",
+          "caption": "Einspeisetarif / Anbieter",
+          "options": [
+            {
+              "caption": "KELAG Sonnenplus Smart (EPEX SPOT AT)",
+              "value": 0
+            },
+            {
+              "caption": "EPEX SPOT AT – Marktpreis 1:1",
+              "value": 1
+            },
+            {
+              "caption": "aWATTar SUNNY Spot 60min",
+              "value": 2
+            },
+            {
+              "caption": "Benutzerdefiniert (Faktoren unten)",
+              "value": 3
             }
           ]
         },
         {
           "type": "SelectVariable",
           "name": "PriceJSONVariable",
-          "caption": "JSON-Preisvariable (nur Quelle 2)"
+          "caption": "JSON-Preisvariable (nur eigene Quelle)"
         },
         {
           "type": "NumberSpinner",
           "name": "PositivePriceFactor",
-          "caption": "Faktor bei positivem Marktpreis",
+          "caption": "Benutzerdefiniert: Faktor bei positivem Marktpreis",
           "digits": 3,
           "minimum": -5,
           "maximum": 5
@@ -392,7 +415,7 @@
         {
           "type": "NumberSpinner",
           "name": "NegativePriceFactor",
-          "caption": "Faktor bei negativem Marktpreis",
+          "caption": "Benutzerdefiniert: Faktor bei negativem Marktpreis",
           "digits": 3,
           "minimum": -5,
           "maximum": 5
@@ -400,7 +423,7 @@
         {
           "type": "NumberSpinner",
           "name": "PriceAdjustmentCt",
-          "caption": "Fixe Tarifanpassung",
+          "caption": "Benutzerdefiniert: fixer Auf-/Abschlag",
           "digits": 3,
           "minimum": -100,
           "maximum": 100,
