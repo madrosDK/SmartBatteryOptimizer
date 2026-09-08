@@ -73,7 +73,7 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 - Bei einem Highcharts-Laufzeitfehler wird die HTML/CSS-Fallback-Grafik eingeblendet und der Fehlertext sichtbar ausgegeben.
 
 
-## Änderungen v1.3.4
+## Änderungen v1.3.5
 
 - Highcharts-Diagramm auf den bewährten Aufbau aus Version 1.2.0 zurückgeführt.
 - Keine überlagerte 15-Minuten-Linie mehr.

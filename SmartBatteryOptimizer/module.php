@@ -1102,41 +1102,28 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderPriceChartHTML(array $forecast, array $prices, array $plan): string
     {
-        // Highcharts-Aufbau bewusst wieder auf den funktionierenden Stand aus v1.2.0 zurückgeführt.
-        // Die Optimierung bleibt im 15-Minuten-Raster; nur die Diagrammanzeige wird stündlich gemittelt.
+        // Diagramm-Rendering exakt nach dem bewährten Highcharts-Aufbau aus v1.2.6.
+        // Nur die Daten werden vorab von 15 Minuten auf Stundenmittel zusammengefasst.
         $highchartsJS = $this->GetHighchartsJavaScript();
         $chartId = 'sbo_price_chart_' . $this->InstanceID;
         $minimumPrice = $this->ReadPropertyFloat('MinimumFeedInPriceCt');
 
-        // Immer ganze Stunden darstellen. Dadurch besteht ein Stundenwert nach Möglichkeit
-        // tatsächlich aus allen vier 15-Minuten-Werten, auch in der aktuell laufenden Stunde.
-        $displayStart = mktime((int)date('H'), 0, 0, (int)date('m'), (int)date('d'), (int)date('Y'));
+        $now = time();
+        $displayStart = mktime((int)date('H', $now), 0, 0, (int)date('m', $now), (int)date('d', $now), (int)date('Y', $now));
         $displayEnd = $displayStart + 24 * 3600;
-
         $hourBuckets = [];
+
         foreach ($prices as $p) {
             $start = (int)($p['start'] ?? 0);
             $end = (int)($p['end'] ?? 0);
             if ($start <= 0 || $end <= $start) continue;
             if ($end <= $displayStart || $start >= $displayEnd) continue;
 
-            $hourTs = mktime(
-                (int)date('H', $start),
-                0,
-                0,
-                (int)date('m', $start),
-                (int)date('d', $start),
-                (int)date('Y', $start)
-            );
-
+            $hourTs = mktime((int)date('H', $start), 0, 0, (int)date('m', $start), (int)date('d', $start), (int)date('Y', $start));
             if (!isset($hourBuckets[$hourTs])) {
                 $hourBuckets[$hourTs] = [
-                    'market' => [],
-                    'price' => [],
-                    'selected' => false,
-                    'reason' => '',
-                    'powerW' => 0.0,
-                    'energyKWh' => 0.0
+                    'market' => [], 'price' => [], 'selected' => false, 'reason' => '',
+                    'powerW' => 0.0, 'energyKWh' => 0.0
                 ];
             }
 
@@ -1152,10 +1139,7 @@ class SmartBatteryOptimizer extends IPSModule
                     } elseif ($hourBuckets[$hourTs]['reason'] === '') {
                         $hourBuckets[$hourTs]['reason'] = 'price';
                     }
-                    $hourBuckets[$hourTs]['powerW'] = max(
-                        $hourBuckets[$hourTs]['powerW'],
-                        (float)($slot['powerW'] ?? 0.0)
-                    );
+                    $hourBuckets[$hourTs]['powerW'] = max($hourBuckets[$hourTs]['powerW'], (float)($slot['powerW'] ?? 0.0));
                     $hourBuckets[$hourTs]['energyKWh'] += (float)($slot['energyKWh'] ?? 0.0);
                     break;
                 }
@@ -1165,16 +1149,11 @@ class SmartBatteryOptimizer extends IPSModule
         ksort($hourBuckets);
         $chartRows = [];
         foreach ($hourBuckets as $hourTs => $bucket) {
-            $marketCount = count($bucket['market']);
-            $priceCount = count($bucket['price']);
-            if ($marketCount === 0 || $priceCount === 0) continue;
-
+            if (count($bucket['market']) === 0 || count($bucket['price']) === 0) continue;
             $chartRows[] = [
                 'label' => date('d.m. H:i', $hourTs),
-                'endLabel' => date('H:i', $hourTs + 3600),
-                'marketCt' => round(array_sum($bucket['market']) / $marketCount, 4),
-                'priceCt' => round(array_sum($bucket['price']) / $priceCount, 4),
-                'quarterCount' => $priceCount,
+                'marketCt' => round(array_sum($bucket['market']) / count($bucket['market']), 4),
+                'priceCt' => round(array_sum($bucket['price']) / count($bucket['price']), 4),
                 'selected' => $bucket['selected'],
                 'reason' => $bucket['reason'],
                 'powerW' => round($bucket['powerW'], 1),
@@ -1185,30 +1164,32 @@ class SmartBatteryOptimizer extends IPSModule
         $chartJson = json_encode($chartRows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($chartJson === false) $chartJson = '[]';
 
-        // Ab hier entspricht der Aufbau wieder bewusst der funktionierenden Highcharts-Variante v1.2.0.
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
         $html .= '<b>Einspeisevergütung – Stundenmittel der nächsten 24 Stunden</b><br>';
-        $html .= '<div id="' . $chartId . '" style="width:100%;height:360px;margin-top:8px;margin-bottom:14px"></div>';
-        $html .= '<script>' . $highchartsJS . '</script>';
-        $html .= '<script>(function(){';
-        $html .= 'var rows=' . $chartJson . ';';
-        $html .= 'function renderSBOChart(){';
-        $html .= 'if(typeof Highcharts==="undefined"){document.getElementById(' . json_encode($chartId) . ').innerHTML="Highcharts konnte nicht geladen werden.";return;}';
-        $html .= 'var categories=rows.map(function(r){return r.label;});';
-        $html .= 'var market=rows.map(function(r){var c=r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3"));return {y:r.priceCt,color:c,custom:r};});';
-        $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
-        $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false},';
-        $html .= 'title:{text:null},credits:{enabled:false},legend:{enabled:false},';
-        $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
-        $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(128,128,128,0.25)",plotLines:[{value:0,color:"#888",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:' . json_encode('Mindestpreis ' . number_format($minimumPrice, 2, ',', '.') . ' ct') . ',style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
-        $html .= 'tooltip:{useHTML:true,formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"–"+r.endLabel+"</b><br>Stundenpreis: <b>"+Highcharts.numberFormat(r.priceCt,2,\",\",\".\")+" ct/kWh</b><br>EPEX Stundenmittel: "+Highcharts.numberFormat(r.marketCt,2,\",\",\".\")+" ct/kWh<br>Basis: "+r.quarterCount+" × 15 min"+(r.selected?"<br><b>"+(r.reason===\"pv_space\"?\"Speicher für PV freihalten\":\"Einspeisung geplant\")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,\",\",\".\")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,\",\",\".\")+" kWh":"")+"</span>";}},';
-        $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return Highcharts.numberFormat(this.y,2,\",\",\".\")+" ct";},style:{fontFamily:"Tahoma",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
-        $html .= 'series:[{name:"Stundenpreis",data:market}]';
-        $html .= '});}';
-        $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOChart);}else{setTimeout(renderSBOChart,0);}';
-        $html .= '})();</script>';
-        $html .= '<div style="font-size:11px;color:#fff;margin-bottom:12px">Jeder Balken zeigt den arithmetischen Mittelwert der vier 15-Minuten-Werte einer Stunde. Der Stundenpreis steht direkt über dem Balken. Grün = Einspeisung geplant, Gelb = Speicher für PV freihalten, Rot = negativer Preis, Blau = übrige Stunden. Die Optimierung selbst bleibt im 15-Minuten-Takt.</div>';
-
+        if ($highchartsJS !== '') {
+            $html .= '<div id="' . $chartId . '" style="width:100%;height:390px;margin-top:8px;margin-bottom:10px"></div>';
+            $html .= '<script>' . $highchartsJS . '</script>';
+            $html .= '<script>(function(){';
+            $html .= 'var rows=' . $chartJson . ';';
+            $html .= 'function renderSBOChart(){';
+            $html .= 'if(typeof Highcharts==="undefined"){return;}';
+            $html .= 'var categories=rows.map(function(r){return r.label;});';
+            $html .= 'var market=rows.map(function(r){return {y:r.priceCt,color:r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3")),custom:r};});';
+            $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
+            $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
+            $html .= 'title:{text:null,style:{fontFamily:"Tahoma",color:"#ffffff"}},credits:{enabled:false},legend:{enabled:false,itemStyle:{fontFamily:"Tahoma",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
+            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
+            $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
+            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
+            $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return Highcharts.numberFormat(this.y,2,",",".")+" ct";},style:{fontFamily:"Tahoma",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
+            $html .= 'series:[{name:"Einspeisevergütung",data:market}]';
+            $html .= '});}';
+            $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOChart);}else{setTimeout(renderSBOChart,0);}';
+            $html .= '})();</script>';
+        } else {
+            $html .= $this->RenderFallbackPriceChart($chartRows, $minimumPrice);
+        }
+        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Jeder Balken ist der Mittelwert der 15-Minuten-Werte der jeweiligen Stunde. Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden. Die Optimierung selbst bleibt im 15-Minuten-Takt.</div>';
         return $html . '</div>';
     }
 
@@ -1257,10 +1238,8 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function GetHighchartsJavaScript(): string
     {
-        // Suchpfade wie in der funktionierenden Version 1.2.0.
-        // Das Modul liest Highcharts ausschließlich; es schreibt keine Dateien ins Modulverzeichnis.
         $candidates = [
-            __DIR__ . DIRECTORY_SEPARATOR . 'highcharts' . DIRECTORY_SEPARATOR . 'highcharts.js',
+            dirname(__DIR__) . DIRECTORY_SEPARATOR . 'libs' . DIRECTORY_SEPARATOR . 'highcharts' . DIRECTORY_SEPARATOR . 'highcharts.js',
             rtrim(IPS_GetKernelDir(), '\\/') . DIRECTORY_SEPARATOR . 'highcharts' . DIRECTORY_SEPARATOR . 'highcharts.js'
         ];
 
@@ -1271,6 +1250,6 @@ class SmartBatteryOptimizer extends IPSModule
             return str_replace('</script>', '<\\/script>', $js);
         }
 
-        throw new Exception('highcharts.js wurde nicht gefunden. Erwartet unter ' . $candidates[0] . ' oder ' . $candidates[1]);
+        return '';
     }
 }
