@@ -1,6 +1,6 @@
 # SmartBatteryOptimizer für IP-Symcon
 
-Version 1.0.2
+Version 1.1.0
 
 Funktionen:
 - Börsenpreise Österreich über aWATTar / EPEX Spot AT
@@ -51,10 +51,17 @@ Ist die Variable noch nicht archiviert oder sind noch nicht genügend gültige N
 Vor Aktivierung der Automatik zuerst mit deaktivierter Automatik den Plan kontrollieren. Speicher-Hersteller unterscheiden sich bei Freigabevariablen, Vorzeichen und Leistungs-Sollwerten. Die Option "Sollleistung negativ schreiben" ist für Systeme vorgesehen, die Entladung mit negativem Vorzeichen erwarten.
 
 
-## Änderungen 1.0.2
+## Änderungen 1.1.0
 - Nachtverbrauch blockiert Prognose und Preisplanung bei fehlenden Archivdaten nicht mehr.
 - Konfigurierbarer Ersatzwert für den Nachtverbrauch.
 - Konfigurierbare Mindestanzahl gültiger Nächte.
 - Automatische Erkennung, ob die ausgewählte normale Variable archiviert wird.
 - Anzeige der Quelle des verwendeten Nachtverbrauchswerts und Anzahl gültiger Nächte.
 - Zeitgewichtete Auswertung der Archivnächte.
+
+
+## PV-Flächenkalibrierung
+Je PV-Fläche können bis zu drei IP-Symcon-Leistungsvariablen für Strings/MPPTs gewählt werden. Die Istleistungen werden addiert und mit der erwarteten Leistung dieser Fläche verglichen. Aus mehreren gültigen Messpunkten wird ein eigener Auto-Faktor pro Fläche gelernt. Der manuelle Faktor bleibt unverändert und wird mit dem Auto-Faktor kombiniert.
+
+## Unbekannte PV-Ausrichtung
+Ist Azimut/Neigung einer PV-Fläche nicht bekannt, kann in der Flächentabelle `Ausrichtung bekannt` deaktiviert werden. Für diese Fläche werden die zugeordneten String-/MPPT-Leistungsvariablen zum Lernen verwendet. Die automatische Batterieeinspeisung bleibt standardmäßig bis 30 gültige Lerntage erreicht sind gesperrt. Prognose, Preisabruf und Planberechnung laufen während der Lernphase weiter.

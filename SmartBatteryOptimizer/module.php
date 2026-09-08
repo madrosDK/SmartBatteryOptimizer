@@ -12,8 +12,13 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('Longitude', 14.31);
         $this->RegisterPropertyFloat('GlobalPVFactor', 1.0);
         $this->RegisterPropertyFloat('SystemEfficiency', 0.86);
+        $this->RegisterPropertyInteger('PVCalibrationDays', 14);
+        $this->RegisterPropertyInteger('UnknownOrientationLearningDays', 30);
+        $this->RegisterPropertyInteger('PVCalibrationMinExpectedW', 300);
+        $this->RegisterPropertyFloat('PVCalibrationMinFactor', 0.50);
+        $this->RegisterPropertyFloat('PVCalibrationMaxFactor', 1.50);
         $this->RegisterPropertyString('PVSurfaces', json_encode([
-            ['Active' => true, 'Name' => 'Süd', 'KWp' => 10.0, 'Azimuth' => 180, 'Tilt' => 25, 'Factor' => 1.0]
+            ['Active' => true, 'Name' => 'Süd', 'KWp' => 10.0, 'OrientationKnown' => true, 'Azimuth' => 180, 'Tilt' => 25, 'Factor' => 1.0, 'AutoCalibrate' => true, 'PVVariable1' => 0, 'PVVariable2' => 0, 'PVVariable3' => 0]
         ]));
 
         $this->RegisterPropertyInteger('SOCVariable', 0);
@@ -50,6 +55,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('RefreshMinutes', 30);
 
         $this->RegisterVariableFloat('PVForecastTomorrow', 'PV Prognose morgen', '~Electricity', 10);
+        $this->RegisterVariableString('PVCalibrationStatus', 'PV Kalibrierung', '', 11);
+        $this->RegisterVariableString('AutomaticReleaseStatus', 'Automatikfreigabe', '', 12);
         $this->RegisterVariableFloat('NightConsumptionForecast', 'Prognose Nachtverbrauch', '~Electricity', 20);
         $this->RegisterVariableString('NightConsumptionSource', 'Quelle Nachtverbrauch', '', 21);
         $this->RegisterVariableInteger('ValidNightSamples', 'Gültige Nächte', '', 22);
@@ -65,6 +72,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 120);
 
         $this->RegisterAttributeString('ForecastJSON', '{}');
+        $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeString('PlanJSON', '[]');
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
@@ -85,7 +93,9 @@ class SmartBatteryOptimizer extends IPSModule
         if ($this->ReadPropertyInteger('SOCVariable') <= 0 || $this->ReadPropertyInteger('HousePowerVariable') <= 0) {
             $this->SetStatus(200);
         } else {
-            $this->SetStatus(102);
+            $gate = $this->GetAutomaticLearningGateStatus();
+            $this->SetStatus(($this->ReadPropertyBoolean('AutomaticEnabled') && !$gate['ready']) ? 202 : 102);
+            SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
         }
 
         if (!$this->ReadPropertyBoolean('AutomaticEnabled')) {
@@ -98,6 +108,9 @@ class SmartBatteryOptimizer extends IPSModule
         try {
             $night = $this->LearnNightConsumptionInternal();
             $forecast = $this->FetchPVForecast();
+            SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
+            $gate = $this->GetAutomaticLearningGateStatus();
+            SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
             $prices = $this->FetchPrices();
             $plan = $this->BuildPlan($forecast, $prices, $night);
 
@@ -116,7 +129,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('StatusText'), $plan['status']);
             SetValue($this->GetIDForIdent('LastUpdate'), date('d.m.Y H:i:s'));
             SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderHTML($forecast, $prices, $plan, $night));
-            $this->SetStatus(102);
+            $this->SetStatus(($this->ReadPropertyBoolean('AutomaticEnabled') && !$gate['ready']) ? 202 : 102);
             $this->Control();
         } catch (Throwable $e) {
             $this->SendDebug('Recalculate', $e->getMessage(), 0);
@@ -146,6 +159,16 @@ class SmartBatteryOptimizer extends IPSModule
             return;
         }
 
+        $gate = $this->GetAutomaticLearningGateStatus();
+        SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
+        if (!$gate['ready']) {
+            $this->SetStatus(202);
+            SetValue($this->GetIDForIdent('StatusText'), 'Automatik gesperrt: ' . $gate['text']);
+            $this->StopFeedIn();
+            return;
+        }
+
+        $this->SetStatus(102);
         $raw = json_decode($this->ReadAttributeString('PlanJSON'), true);
         if (!is_array($raw) || !isset($raw['slots'])) {
             $this->StopFeedIn();
@@ -186,20 +209,36 @@ class SmartBatteryOptimizer extends IPSModule
             throw new Exception('Keine PV-Flächen konfiguriert.');
         }
 
+        $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
+        if (!is_array($calibration)) $calibration = [];
         $hours = [];
         $surfaceTotals = [];
-        foreach ($surfaces as $surface) {
-            if (empty($surface['Active']) || (float)$surface['KWp'] <= 0) {
+        $surfaceCalibration = [];
+        $nowHour = strtotime(date('Y-m-d H:00:00'));
+
+        foreach ($surfaces as $idx => $surface) {
+            if (empty($surface['Active']) || (float)($surface['KWp'] ?? 0) <= 0) {
                 continue;
             }
-            $name = (string)($surface['Name'] ?? 'PV');
+            $name = trim((string)($surface['Name'] ?? 'PV'));
+            if ($name === '') $name = 'PV ' . ($idx + 1);
+            $key = $this->SurfaceKey($name, $idx);
             $kwp = (float)$surface['KWp'];
-            $tilt = (float)$surface['Tilt'];
-            $azCompass = fmod(((float)$surface['Azimuth'] + 360.0), 360.0);
+            $orientationKnown = !array_key_exists('OrientationKnown', $surface) || (bool)$surface['OrientationKnown'];
+            // Bei unbekannter Ausrichtung wird während der Lernphase eine horizontale Referenz verwendet.
+            // Die reale Stringleistung kalibriert diese Referenz; die Einspeise-Automatik bleibt bis zum Ende der Lernphase gesperrt.
+            $tilt = $orientationKnown ? (float)($surface['Tilt'] ?? 0) : 0.0;
+            $azCompass = $orientationKnown ? fmod(((float)($surface['Azimuth'] ?? 180) + 360.0), 360.0) : 180.0;
             // Open-Meteo: 0=Süd, -90=Ost, +90=West, ±180=Nord.
             $azOM = $azCompass - 180.0;
             if ($azOM > 180) $azOM -= 360;
-            $factor = (float)($surface['Factor'] ?? 1.0);
+            $manualFactor = max(0.01, (float)($surface['Factor'] ?? 1.0));
+            $autoEnabled = !array_key_exists('AutoCalibrate', $surface) || (bool)$surface['AutoCalibrate'];
+            $autoFactor = 1.0;
+            if ($autoEnabled && isset($calibration[$key]['factor'])) {
+                $autoFactor = (float)$calibration[$key]['factor'];
+            }
+            $autoFactor = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $autoFactor));
 
             $url = 'https://api.open-meteo.com/v1/forecast?' . http_build_query([
                 'latitude' => $lat,
@@ -216,22 +255,45 @@ class SmartBatteryOptimizer extends IPSModule
             }
 
             $sum = 0.0;
+            $currentExpectedBaseW = 0.0;
             foreach ($data['hourly']['time'] as $i => $timeStr) {
                 $ts = strtotime($timeStr);
                 $gti = max(0.0, (float)$data['hourly']['global_tilted_irradiance'][$i]);
-                // GTI W/m² averaged over hour. 1000 W/m² corresponds approximately to kWp rated power.
-                $powerKW = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $factor * $this->ReadPropertyFloat('GlobalPVFactor');
+                $basePowerKW = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
+                $powerKW = $basePowerKW * ($autoEnabled ? $autoFactor : 1.0);
                 if (!isset($hours[$ts])) $hours[$ts] = ['totalKW' => 0.0, 'surfaces' => []];
                 $hours[$ts]['totalKW'] += $powerKW;
                 $hours[$ts]['surfaces'][$name] = $powerKW;
 
+                if ($ts === $nowHour) {
+                    $currentExpectedBaseW = $basePowerKW * 1000.0;
+                }
                 if (date('Y-m-d', $ts) === date('Y-m-d', strtotime('tomorrow'))) {
-                    $sum += $powerKW; // 1h resolution => kWh
+                    $sum += $powerKW;
                 }
             }
+
+            $actualW = $this->ReadSurfaceActualPower($surface);
+            if ($autoEnabled && $actualW !== null && $currentExpectedBaseW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
+                $calibration = $this->AddPVCalibrationSample($calibration, $key, $currentExpectedBaseW, $actualW);
+                $autoFactor = isset($calibration[$key]['factor']) ? (float)$calibration[$key]['factor'] : $autoFactor;
+            }
+
             $surfaceTotals[$name] = $sum;
+            $surfaceCalibration[$name] = [
+                'key' => $key,
+                'manualFactor' => $manualFactor,
+                'orientationKnown' => $orientationKnown,
+                'autoEnabled' => $autoEnabled,
+                'autoFactor' => $autoFactor,
+                'effectiveFactor' => $manualFactor * ($autoEnabled ? $autoFactor : 1.0),
+                'expectedBaseW' => $currentExpectedBaseW,
+                'actualW' => $actualW,
+                'sampleCount' => isset($calibration[$key]['samples']) && is_array($calibration[$key]['samples']) ? count($calibration[$key]['samples']) : 0
+            ];
         }
 
+        $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
         ksort($hours);
         $tomorrow = 0.0;
         foreach ($hours as $ts => $h) {
@@ -249,7 +311,165 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
 
-        return ['tomorrowKWh' => $tomorrow, 'morningTs' => $morningTs, 'hours' => $hours, 'surfaceTotals' => $surfaceTotals];
+        return [
+            'tomorrowKWh' => $tomorrow,
+            'morningTs' => $morningTs,
+            'hours' => $hours,
+            'surfaceTotals' => $surfaceTotals,
+            'surfaceCalibration' => $surfaceCalibration
+        ];
+    }
+
+    private function SurfaceKey(string $name, int $index): string
+    {
+        return md5($index . '|' . $name);
+    }
+
+    private function ReadSurfaceActualPower(array $surface): ?float
+    {
+        $sum = 0.0;
+        $count = 0;
+        foreach (['PVVariable1', 'PVVariable2', 'PVVariable3'] as $field) {
+            $id = (int)($surface[$field] ?? 0);
+            if ($id <= 0 || !@IPS_VariableExists($id)) continue;
+            try {
+                $sum += max(0.0, (float)GetValue($id));
+                $count++;
+            } catch (Throwable $e) {
+                $this->SendDebug('PVCalibration', 'Variable ' . $id . ' konnte nicht gelesen werden: ' . $e->getMessage(), 0);
+            }
+        }
+        return $count > 0 ? $sum : null;
+    }
+
+    private function AddPVCalibrationSample(array $calibration, string $key, float $expectedW, float $actualW): array
+    {
+        if (!isset($calibration[$key]) || !is_array($calibration[$key])) {
+            $calibration[$key] = ['factor' => 1.0, 'samples' => []];
+        }
+        if (!isset($calibration[$key]['samples']) || !is_array($calibration[$key]['samples'])) {
+            $calibration[$key]['samples'] = [];
+        }
+
+        $now = time();
+        // Höchstens ein Messpunkt je 20 Minuten, damit manuelles Neuberechnen den Lernwert nicht verzerrt.
+        $lastTs = isset($calibration[$key]['lastSampleTs']) ? (int)$calibration[$key]['lastSampleTs'] : 0;
+        if ($now - $lastTs >= 1200) {
+            $calibration[$key]['samples'][] = ['ts' => $now, 'expectedW' => $expectedW, 'actualW' => $actualW];
+            $calibration[$key]['lastSampleTs'] = $now;
+        }
+
+        $retentionDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'), $this->ReadPropertyInteger('UnknownOrientationLearningDays'));
+        $cutoff = $now - $retentionDays * 86400;
+        $samples = [];
+        foreach ($calibration[$key]['samples'] as $sample) {
+            if ((int)($sample['ts'] ?? 0) < $cutoff) continue;
+            $exp = (float)($sample['expectedW'] ?? 0);
+            $act = (float)($sample['actualW'] ?? 0);
+            if ($exp < $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) continue;
+            if ($act < 0) continue;
+            $samples[] = ['ts' => (int)$sample['ts'], 'expectedW' => $exp, 'actualW' => $act];
+        }
+        $calibration[$key]['samples'] = $samples;
+
+        if (count($samples) > 0) {
+            $sumExpected = array_sum(array_column($samples, 'expectedW'));
+            $sumActual = array_sum(array_column($samples, 'actualW'));
+            if ($sumExpected > 0) {
+                $factor = $sumActual / $sumExpected;
+                $factor = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $factor));
+                $calibration[$key]['factor'] = $factor;
+            }
+        }
+        $calibration[$key]['lastExpectedW'] = $expectedW;
+        $calibration[$key]['lastActualW'] = $actualW;
+        $calibration[$key]['updated'] = $now;
+        return $calibration;
+    }
+
+    private function BuildPVCalibrationStatus(array $forecast): string
+    {
+        if (!isset($forecast['surfaceCalibration']) || !is_array($forecast['surfaceCalibration'])) return '-';
+        $parts = [];
+        foreach ($forecast['surfaceCalibration'] as $name => $c) {
+            if (empty($c['autoEnabled'])) {
+                $parts[] = $name . ': manuell';
+                continue;
+            }
+            if ($c['actualW'] === null) {
+                $parts[] = $name . ': keine String-Variable';
+                continue;
+            }
+                        if (empty($c['orientationKnown'])) {
+                $days = $this->GetSurfaceLearningDayCount((string)$c['key']);
+                $required = max(1, $this->ReadPropertyInteger('UnknownOrientationLearningDays'));
+                $parts[] = $name . ': Ausrichtung unbekannt, Lernphase ' . $days . '/' . $required . ' Tage, Auto ' . number_format((float)$c['autoFactor'], 3, ',', '.') . ' (' . (int)$c['sampleCount'] . ' Werte)';
+            } else {
+                $parts[] = $name . ': Auto ' . number_format((float)$c['autoFactor'], 3, ',', '.') . ' (' . (int)$c['sampleCount'] . ' Werte)';
+            }
+        }
+        return count($parts) ? implode(' | ', $parts) : '-';
+    }
+
+    private function GetAutomaticLearningGateStatus(): array
+    {
+        $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+        if (!is_array($surfaces)) {
+            return ['ready' => true, 'text' => 'Freigegeben'];
+        }
+
+        $required = max(1, $this->ReadPropertyInteger('UnknownOrientationLearningDays'));
+        $waiting = [];
+        foreach ($surfaces as $idx => $surface) {
+            if (empty($surface['Active']) || (float)($surface['KWp'] ?? 0) <= 0) continue;
+            $orientationKnown = !array_key_exists('OrientationKnown', $surface) || (bool)$surface['OrientationKnown'];
+            if ($orientationKnown) continue;
+
+            $name = trim((string)($surface['Name'] ?? 'PV'));
+            if ($name === '') $name = 'PV ' . ($idx + 1);
+            $hasPowerVariable = false;
+            foreach (['PVVariable1', 'PVVariable2', 'PVVariable3'] as $field) {
+                $id = (int)($surface[$field] ?? 0);
+                if ($id > 0 && @IPS_VariableExists($id)) {
+                    $hasPowerVariable = true;
+                    break;
+                }
+            }
+            if (!$hasPowerVariable) {
+                $waiting[] = $name . ': keine PV-Stringvariable';
+                continue;
+            }
+            if (array_key_exists('AutoCalibrate', $surface) && !(bool)$surface['AutoCalibrate']) {
+                $waiting[] = $name . ': Auto-Kalibrierung deaktiviert';
+                continue;
+            }
+            $key = $this->SurfaceKey($name, $idx);
+            $days = $this->GetSurfaceLearningDayCount($key);
+            if ($days < $required) {
+                $waiting[] = $name . ' ' . $days . '/' . $required . ' Tage';
+            }
+        }
+
+        if (count($waiting) > 0) {
+            return ['ready' => false, 'text' => 'Lernphase: ' . implode(', ', $waiting)];
+        }
+        return ['ready' => true, 'text' => 'Freigegeben'];
+    }
+
+    private function GetSurfaceLearningDayCount(string $key): int
+    {
+        $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
+        if (!is_array($calibration) || !isset($calibration[$key]['samples']) || !is_array($calibration[$key]['samples'])) {
+            return 0;
+        }
+        $days = [];
+        foreach ($calibration[$key]['samples'] as $sample) {
+            $ts = (int)($sample['ts'] ?? 0);
+            $exp = (float)($sample['expectedW'] ?? 0);
+            if ($ts <= 0 || $exp < $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) continue;
+            $days[date('Y-m-d', $ts)] = true;
+        }
+        return count($days);
     }
 
     private function FetchPrices(): array
@@ -564,7 +784,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function HttpGetJson(string $url): array
     {
-        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.0.2\r\n"]];
+        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.1.0\r\n"]];
         $ctx = stream_context_create($opts);
         $raw = @file_get_contents($url, false, $ctx);
         if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen.');
@@ -606,6 +826,15 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '</table><br><b>PV-Flächen morgen</b><br>';
         foreach ($forecast['surfaceTotals'] as $name => $kwh) {
             $html .= htmlspecialchars($name) . ': ' . number_format($kwh, 2, ',', '.') . ' kWh<br>';
+        }
+        if (isset($forecast['surfaceCalibration']) && is_array($forecast['surfaceCalibration'])) {
+            $html .= '<br><b>PV-Flächen Kalibrierung</b><br>';
+            foreach ($forecast['surfaceCalibration'] as $name => $c) {
+                $actual = $c['actualW'] === null ? '-' : number_format((float)$c['actualW'], 0, ',', '.') . ' W';
+                $expected = number_format((float)$c['expectedBaseW'], 0, ',', '.') . ' W';
+                $mode = empty($c['autoEnabled']) ? 'manuell' : ('Auto-Faktor ' . number_format((float)$c['autoFactor'], 3, ',', '.'));
+                $html .= htmlspecialchars($name) . ': erwartet ' . $expected . ' | Ist ' . $actual . ' | ' . $mode . ' | ' . (int)$c['sampleCount'] . ' Werte<br>';
+            }
         }
         return $html . '</div>';
     }
