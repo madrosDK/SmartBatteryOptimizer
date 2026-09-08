@@ -45,10 +45,10 @@
         {
           "type": "NumberSpinner",
           "name": "PVCalibrationDays",
-          "caption": "Lernzeitraum PV-Flächenfaktor",
+          "caption": "Lernzeitraum PV-Auto-Faktor",
           "digits": 0,
           "minimum": 1,
-          "maximum": 60,
+          "maximum": 90,
           "suffix": " Tage"
         },
         {
@@ -650,6 +650,11 @@
       "type": "Button",
       "caption": "Verbrauchsprofil neu lernen",
       "onClick": "SBO_LearnConsumptionProfile($id);"
+    },
+    {
+      "type": "Button",
+      "caption": "PV-Kalibrierung / Auto-Faktoren zurücksetzen",
+      "onClick": "SBO_ResetPVCalibration($id);"
     },
     {
       "type": "Button",

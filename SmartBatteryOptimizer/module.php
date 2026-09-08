@@ -12,7 +12,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('Longitude', 14.31);
         $this->RegisterPropertyFloat('GlobalPVFactor', 1.0);
         $this->RegisterPropertyFloat('SystemEfficiency', 0.86);
-        $this->RegisterPropertyInteger('PVCalibrationDays', 14);
+        $this->RegisterPropertyInteger('PVCalibrationDays', 30);
         $this->RegisterPropertyInteger('UnknownOrientationLearningDays', 30);
         $this->RegisterPropertyInteger('PVCalibrationMinExpectedW', 300);
         $this->RegisterPropertyFloat('PVCalibrationMinFactor', 0.50);
@@ -232,6 +232,21 @@ class SmartBatteryOptimizer extends IPSModule
         }
     }
 
+    public function ResetPVCalibration()
+    {
+        try {
+            $this->WriteAttributeString('PVCalibrationJSON', '{}');
+            SetValue($this->GetIDForIdent('PVCalibrationStatus'), 'PV-Kalibrierung zurückgesetzt – Auto-Faktoren starten wieder bei 1,000.');
+            SetValue($this->GetIDForIdent('StatusText'), 'PV-Kalibrierung zurückgesetzt. Neue Messwerte werden ab der nächsten Berechnung über den eingestellten Lernzeitraum neu angelernt.');
+
+            $gate = $this->GetAutomaticLearningGateStatus();
+            SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
+            $this->SetStatus(($this->IsAutomaticEnabled() && !$gate['ready']) ? 202 : 102);
+        } catch (Throwable $e) {
+            SetValue($this->GetIDForIdent('StatusText'), 'PV-Kalibrierung zurücksetzen fehlgeschlagen: ' . $e->getMessage());
+        }
+    }
+
     public function Control()
     {
         if (!$this->IsAutomaticEnabled()) {
@@ -369,7 +384,7 @@ class SmartBatteryOptimizer extends IPSModule
                 'effectiveFactor' => $manualFactor * ($autoEnabled ? $autoFactor : 1.0),
                 'expectedBaseW' => $currentExpectedBaseW,
                 'actualW' => $actualW,
-                'sampleCount' => isset($calibration[$key]['samples']) && is_array($calibration[$key]['samples']) ? count($calibration[$key]['samples']) : 0,
+                'sampleCount' => isset($calibration[$key]['factorSampleCount']) ? (int)$calibration[$key]['factorSampleCount'] : (isset($calibration[$key]['samples']) && is_array($calibration[$key]['samples']) ? count($calibration[$key]['samples']) : 0),
                 'calibrationBlocked' => (bool)$calibrationFeedInGate['blocked'],
                 'calibrationBlockReason' => (string)$calibrationFeedInGate['text']
             ];
@@ -469,11 +484,13 @@ class SmartBatteryOptimizer extends IPSModule
             $calibration[$key]['lastSampleTs'] = $now;
         }
 
+        // Messwerte werden für die ggf. längere Lernphase bei unbekannter Ausrichtung aufbewahrt.
+        // Für den eigentlichen Auto-Faktor zählen aber ausschließlich Werte innerhalb von PVCalibrationDays.
         $retentionDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'), $this->ReadPropertyInteger('UnknownOrientationLearningDays'));
-        $cutoff = $now - $retentionDays * 86400;
+        $retentionCutoff = $now - $retentionDays * 86400;
         $samples = [];
         foreach ($calibration[$key]['samples'] as $sample) {
-            if ((int)($sample['ts'] ?? 0) < $cutoff) continue;
+            if ((int)($sample['ts'] ?? 0) < $retentionCutoff) continue;
             $exp = (float)($sample['expectedW'] ?? 0);
             $act = (float)($sample['actualW'] ?? 0);
             if ($exp < $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) continue;
@@ -482,15 +499,24 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $calibration[$key]['samples'] = $samples;
 
-        if (count($samples) > 0) {
-            $sumExpected = array_sum(array_column($samples, 'expectedW'));
-            $sumActual = array_sum(array_column($samples, 'actualW'));
+        $factorDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
+        $factorCutoff = $now - $factorDays * 86400;
+        $factorSamples = array_values(array_filter($samples, static function (array $sample) use ($factorCutoff): bool {
+            return (int)$sample['ts'] >= $factorCutoff;
+        }));
+
+        if (count($factorSamples) > 0) {
+            $sumExpected = array_sum(array_column($factorSamples, 'expectedW'));
+            $sumActual = array_sum(array_column($factorSamples, 'actualW'));
             if ($sumExpected > 0) {
                 $factor = $sumActual / $sumExpected;
                 $factor = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $factor));
                 $calibration[$key]['factor'] = $factor;
             }
+        } else {
+            $calibration[$key]['factor'] = 1.0;
         }
+        $calibration[$key]['factorSampleCount'] = count($factorSamples);
         $calibration[$key]['lastExpectedW'] = $expectedW;
         $calibration[$key]['lastActualW'] = $actualW;
         $calibration[$key]['updated'] = $now;

@@ -73,7 +73,7 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 - Bei einem Highcharts-Laufzeitfehler wird die HTML/CSS-Fallback-Grafik eingeblendet und der Fehlertext sichtbar ausgegeben.
 
 
-## Änderungen v1.4.0
+## Änderungen v1.4.1
 
 - Highcharts-Diagramm auf den bewährten Aufbau aus Version 1.2.0 zurückgeführt.
 - Keine überlagerte 15-Minuten-Linie mehr.
@@ -94,7 +94,7 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 
 ## Verbrauchsprofil lernen
 
-Ab Version 1.4.0 lernt das Modul aus der archivierten Variable **Hausverbrauch Leistung (W)** zusätzlich zum Nachtverbrauch ein stündliches Lastprofil. Neuere Tage werden stärker gewichtet; Werktage und Wochenenden werden passend zum Folgetag unterschiedlich gewichtet. Auf die gelernte Prognose kann ein Sicherheitsaufschlag gesetzt werden.
+Ab Version 1.4.1 lernt das Modul aus der archivierten Variable **Hausverbrauch Leistung (W)** zusätzlich zum Nachtverbrauch ein stündliches Lastprofil. Neuere Tage werden stärker gewichtet; Werktage und Wochenenden werden passend zum Folgetag unterschiedlich gewichtet. Auf die gelernte Prognose kann ein Sicherheitsaufschlag gesetzt werden.
 
 Für die Einspeiseentscheidung wird die PV-Prognose des nächsten Tages zeitgleich mit dem erwarteten Eigenverbrauch verrechnet. Nur der erwartete PV-Überschuss kann zum Wiederaufladen des Speichers verwendet werden. Die Einspeisung wird deshalb so begrenzt, dass der konfigurierte **Ziel-SoC nach dem nächsten PV-Tag** erreichbar bleibt und der Nacht-/Eigenverbrauch berücksichtigt ist.
 
@@ -103,3 +103,7 @@ Das Verbrauchsprofil wird höchstens alle sechs Stunden neu aus dem Archiv aufge
 ## Preisdiagramm über 24 Stunden
 
 Das Diagramm zeigt immer ein Zeitfenster von 24 Stunden ab der laufenden Stunde. Die Stundenpreise sind weiterhin das arithmetische Mittel der verfügbaren vier 15-Minuten-Werte. Noch nicht vom Preislieferanten veröffentlichte Day-Ahead-Stunden bleiben leer und werden beim nächsten Preisabruf automatisch ergänzt.
+
+### PV-Autokalibrierung zurücksetzen
+
+Mit **„PV-Kalibrierung / Auto-Faktoren zurücksetzen“** werden alle gespeicherten PV-Kalibrierwerte, Auto-Faktoren und zugehörigen Lernmesspunkte gelöscht. Jede aktive Auto-Kalibrierung startet anschließend wieder bei Faktor **1,000** und lernt ab der nächsten Berechnung neu. Der Lernzeitraum **„Lernzeitraum PV-Auto-Faktor“** ist einstellbar; Standard sind **30 Tage**. Bei unbekannter Ausrichtung beginnt durch das Zurücksetzen auch deren Lerntage-Zählung erneut, wodurch die Einspeiseautomatik bis zum Erreichen der konfigurierten gültigen Lerntage wieder gesperrt sein kann.
