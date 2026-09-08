@@ -1066,6 +1066,8 @@ class SmartBatteryOptimizer extends IPSModule
             }
 
             $rows[] = [
+                'start' => (int)$p['start'],
+                'end' => (int)$p['end'],
                 'label' => date('d.m. H:i', $p['start']),
                 'endLabel' => date('H:i', $p['end']),
                 'intervalMinutes' => (int)round(($p['end'] - $p['start']) / 60),
@@ -1110,8 +1112,8 @@ class SmartBatteryOptimizer extends IPSModule
         $quarterRows = [];
         $hourBuckets = [];
         foreach ($chartRows as $row) {
-            $ts = strtotime(str_replace('.', '-', substr($row['label'], 0, 10)) . ' ' . substr($row['label'], 11));
-            if ($ts === false) {
+            $ts = (int)($row['start'] ?? 0);
+            if ($ts <= 0) {
                 continue;
             }
             $quarterRows[] = [
@@ -1163,11 +1165,14 @@ class SmartBatteryOptimizer extends IPSModule
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
         $html .= '<b>Einspeisevergütung – nächste 24 Stunden</b><br>';
         if ($highchartsJS !== '') {
+            $fallbackId = $chartId . '_fallback';
             $html .= '<div id="' . $chartId . '" style="width:100%;height:390px;margin-top:8px;margin-bottom:10px"></div>';
+            $html .= '<div id="' . $fallbackId . '" style="display:none">' . $this->RenderFallbackPriceChart($chartRows, $minimumPrice) . '</div>';
             $html .= '<script>' . $highchartsJS . '</script>';
             $html .= '<script>(function(){';
             $html .= 'var hours=' . $hourJson . ',quarters=' . $quarterJson . ';';
-            $html .= 'function renderSBOChart(){if(typeof Highcharts==="undefined"){return;}';
+            $html .= 'function showFallback(){var c=document.getElementById(' . json_encode($chartId) . '),f=document.getElementById(' . json_encode($fallbackId) . ');if(c)c.style.display="none";if(f)f.style.display="block";}';
+            $html .= 'function renderSBOChart(){if(typeof Highcharts==="undefined"){showFallback();return;}try{';
             $html .= 'var bars=hours.map(function(r){return {x:r.x,y:r.priceCt,color:r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3")),custom:r};});';
             $html .= 'var line=quarters.map(function(r){return {x:r.x+450000,y:r.priceCt,custom:r};});';
             $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
@@ -1178,8 +1183,8 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
             $html .= 'tooltip:{shared:false,useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;if(this.series.type==="line"){return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"–"+r.endLabel+"</b><br>15-Minuten-Wert: <b>"+Highcharts.numberFormat(r.priceCt,2,\",\",\".\")+" ct/kWh</b><br>EPEX Markt: "+Highcharts.numberFormat(r.marketCt,2,\",\",\".\")+" ct/kWh</span>";}return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"–"+r.endLabel+"</b><br>Stundenmittel: <b>"+Highcharts.numberFormat(r.priceCt,2,\",\",\".\")+" ct/kWh</b>"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,\",\",\".\")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,\",\",\".\")+" kWh":"")+"</span>";}},';
             $html .= 'plotOptions:{column:{pointRange:3600000,borderWidth:0,groupPadding:0.05,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",y:-4,formatter:function(){return Highcharts.numberFormat(this.y,2,\",\",\".\")+" ct";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},line:{lineWidth:2,marker:{enabled:true,radius:2},dataLabels:{enabled:false}}},';
-            $html .= 'series:[{type:"column",name:"Stundenmittel",data:bars,zIndex:1},{type:"line",name:"15-Minuten-Werte",data:line,zIndex:5}]';
-            $html .= '});}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOChart);}else{setTimeout(renderSBOChart,0);}})();</script>';
+            $html .= 'series:[{type:"column",name:"Stundenmittel",data:bars,zIndex:1},{type:"line",name:"15-Minuten-Werte",data:line,zIndex:5,color:"#ffffff"}]';
+            $html .= '});}catch(e){showFallback();}}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOChart);}else{setTimeout(renderSBOChart,0);}})();</script>';
         } else {
             $html .= $this->RenderFallbackPriceChart($chartRows, $minimumPrice);
         }
@@ -1190,7 +1195,8 @@ class SmartBatteryOptimizer extends IPSModule
     private function RenderPlanHTML(array $forecast, array $prices, array $plan): string
     {
         $html = '<div style="font-family:Tahoma;font-size:12px">';
-        $html .= '<b>Einspeiseplan / Preise – nächste 24 Stunden (15-Minuten-Raster)</b><br><span style="font-size:11px">Preiswerte werden 24 Stunden angezeigt; geplante Einspeisung nur bis zur nächsten PV-Phase. Stundenpreise werden für die Planung in vier Viertelstunden aufgeteilt.</span><br><br>';
+        $html .= '<details><summary style="cursor:pointer;font-family:Tahoma;font-size:12px;font-weight:bold;padding:6px 0">Einspeiseplan anzeigen / ausblenden</summary>';
+        $html .= '<div style="padding-top:6px"><b>Einspeiseplan / Preise – nächste 24 Stunden (15-Minuten-Raster)</b><br><span style="font-size:11px">Preiswerte werden 24 Stunden angezeigt; geplante Einspeisung nur bis zur nächsten PV-Phase.</span><br><br>';
         $html .= '<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Zeit</th><th>Markt</th><th>Tarif</th><th>Leistung</th><th>Energie</th><th>Grund</th></tr>';
         $now = time();
         $displayEnd = $now + 24 * 3600;
@@ -1221,7 +1227,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $html .= htmlspecialchars($name) . ': erwartet ' . $expected . ' | Ist ' . $actual . ' | ' . $mode . ' | ' . (int)$c['sampleCount'] . ' Werte<br>';
             }
         }
-        return $html . '</div>';
+        return $html . '</div></details></div>';
     }
 
     private function RenderFallbackPriceChart(array $rows, float $minimumPrice): string

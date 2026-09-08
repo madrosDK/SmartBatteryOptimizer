@@ -58,3 +58,9 @@ Zusätzlich kann das Modul vor einer starken PV-Phase gezielt Speicherplatz scha
 Die Einspeiseplanung arbeitet mit einem **15-Minuten-Raster**. Die integrierte smartENERGY-API liefert dafür echte EPEX-SPOT-AT-Viertelstundenpreise. Eine eigene JSON-Quelle wird bei Bedarf auf 15-Minuten-Slots normalisiert. Dadurch kann insbesondere die AlphaESS-Dispatch-Steuerung viertelstundengenau starten, stoppen und die notwendige Energiemenge verteilen.
 
 Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**. Dazu wird eine Variable für die aktuelle Netzeinspeisung gewählt. Bei einer Einspeisegrenze von 10.000 W und einer Toleranz von 500 W werden ab 9.500 W keine neuen Kalibrierwerte gespeichert. So wird eine technisch richtige PV-Prognose nicht nach unten korrigiert, nur weil der Wechselrichter wegen der Netzgrenze abregelt. Falls die Netzeinspeisung mit negativem Vorzeichen geliefert wird, kann das Vorzeichen in der Konfiguration invertiert werden.
+
+
+## Änderungen v1.3.1
+- Highcharts-Diagramm robust auf direkte Zeitstempel umgestellt: Stundenmittel als Balken, echte 15-Minuten-Werte als Linie.
+- Bei fehlendem oder fehlerhaftem Highcharts wird automatisch die Fallback-Grafik eingeblendet.
+- Der Einspeiseplan ist über „Einspeiseplan anzeigen / ausblenden“ auf- und zuklappbar.
