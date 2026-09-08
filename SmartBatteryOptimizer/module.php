@@ -28,6 +28,12 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('FeedInEnableVariable', 0);
         $this->RegisterPropertyInteger('DischargePowerVariable', 0);
         $this->RegisterPropertyBoolean('InvertPowerSetpoint', false);
+        $this->RegisterPropertyInteger('BatteryControlMode', 0);
+        $this->RegisterPropertyInteger('AlphaDispatchStartVariable', 0);
+        $this->RegisterPropertyInteger('AlphaDispatchPowerVariable', 0);
+        $this->RegisterPropertyInteger('AlphaDispatchModeVariable', 0);
+        $this->RegisterPropertyInteger('AlphaDispatchSOCVariable', 0);
+        $this->RegisterPropertyInteger('AlphaDispatchTimeVariable', 0);
 
         $this->RegisterPropertyInteger('HousePowerVariable', 0);
         $this->RegisterPropertyInteger('PVActualPowerVariable', 0);
@@ -51,6 +57,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('PoorForecastExtraReservePct', 40.0);
         $this->RegisterPropertyBoolean('DisableFeedInOnVeryPoorForecast', false);
         $this->RegisterPropertyFloat('VeryPoorForecastKWh', 2.0);
+        $this->RegisterPropertyBoolean('PreventPVCurtailment', true);
+        $this->RegisterPropertyFloat('PVHeadroomTargetSOC', 95.0);
+        $this->RegisterPropertyFloat('PVStorageSharePct', 70.0);
+        $this->RegisterPropertyFloat('PVSpaceMinimumPriceCt', -100.0);
 
         $this->RegisterPropertyBoolean('AutomaticEnabled', false);
         $this->RegisterPropertyInteger('RefreshMinutes', 30);
@@ -62,6 +72,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('NightConsumptionSource', 'Quelle Nachtverbrauch', '', 21);
         $this->RegisterVariableInteger('ValidNightSamples', 'Gültige Nächte', '', 22);
         $this->RegisterVariableFloat('AvailableFeedInEnergy', 'Für Einspeisung verfügbar', '~Electricity', 30);
+        $this->RegisterVariableFloat('PVSpaceRequiredEnergy', 'Für PV freizugebender Speicher', '~Electricity', 31);
         $this->RegisterVariableFloat('CurrentPrice', 'Aktueller Einspeisepreis', '', 40);
         $this->RegisterVariableFloat('HighestPrice', 'Höchster geplanter Einspeisepreis', '', 50);
         $this->RegisterVariableBoolean('FeedInActive', 'Einspeisung aktiv', '~Switch', 60);
@@ -81,6 +92,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
         $this->RegisterAttributeString('NightLearningSource', 'Fallback');
         $this->RegisterAttributeInteger('NightSampleCount', 0);
+        $this->RegisterAttributeBoolean('AlphaDispatchActive', false);
+        $this->RegisterAttributeString('AlphaDispatchCommandKey', '');
 
         $this->RegisterTimer('RefreshTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
@@ -126,6 +139,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('NightConsumptionSource'), $this->ReadAttributeString('NightLearningSource'));
             SetValue($this->GetIDForIdent('ValidNightSamples'), $this->ReadAttributeInteger('NightSampleCount'));
             SetValue($this->GetIDForIdent('AvailableFeedInEnergy'), round($plan['availableKWh'], 3));
+            SetValue($this->GetIDForIdent('PVSpaceRequiredEnergy'), round($plan['pvSpaceRequiredKWh'], 3));
             SetValue($this->GetIDForIdent('HighestPrice'), round($plan['highestPriceCt'], 3));
             SetValue($this->GetIDForIdent('ExpectedRevenue'), round($plan['expectedRevenueEUR'], 3));
             SetValue($this->GetIDForIdent('NextFeedInWindow'), $plan['nextWindow']);
@@ -197,7 +211,7 @@ class SmartBatteryOptimizer extends IPSModule
             return;
         }
 
-        $this->SetFeedIn(true, (float)$active['powerW']);
+        $this->SetFeedIn(true, (float)$active['powerW'], (int)$active['end']);
     }
 
     public function StopFeedIn()
@@ -545,7 +559,7 @@ class SmartBatteryOptimizer extends IPSModule
         $socVar = $this->ReadPropertyInteger('SOCVariable');
         if ($socVar <= 0) throw new Exception('SoC-Variable fehlt.');
         $soc = max(0.0, min(100.0, (float)GetValue($socVar)));
-        $capacity = $this->ReadPropertyFloat('BatteryCapacityKWh');
+        $capacity = max(0.1, $this->ReadPropertyFloat('BatteryCapacityKWh'));
         $stored = $capacity * $soc / 100.0;
         $minEnergy = $capacity * $this->ReadPropertyFloat('MinimumSOC') / 100.0;
         $reserve = $nightKWh * (1.0 + $this->ReadPropertyFloat('SafetyReservePct') / 100.0);
@@ -563,39 +577,97 @@ class SmartBatteryOptimizer extends IPSModule
             $available = max(0.0, $stored - $minEnergy - $reserve);
         }
 
+        // Speicher für die nächste PV-Phase freihalten. Entscheidend ist der erwartete
+        // Speicherinhalt nach dem Nachtverbrauch und der Anteil der PV-Prognose, der
+        // voraussichtlich in die Batterie fließen könnte. Dadurch wird bei Bedarf auch
+        // unterhalb des normalen Mindestpreises eingespeist, bevor PV-Leistung abgeregelt wird.
+        $pvSpaceRequired = 0.0;
+        $pvTargetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->ReadPropertyFloat('PVHeadroomTargetSOC')));
+        $expectedMorningStored = max($minEnergy, $stored - max(0.0, $nightKWh));
+        $targetMaxEnergy = $capacity * $pvTargetSOC / 100.0;
+        $expectedPVToBattery = max(0.0, $tomorrowPV) * max(0.0, min(100.0, $this->ReadPropertyFloat('PVStorageSharePct'))) / 100.0;
+        $morningHeadroom = max(0.0, $targetMaxEnergy - $expectedMorningStored);
+        if ($this->ReadPropertyBoolean('PreventPVCurtailment') && $available > 0.0) {
+            $pvSpaceRequired = min($available, max(0.0, $expectedPVToBattery - $morningHeadroom));
+        }
+
         $horizonEnd = max(time() + 3600, (int)$forecast['morningTs']);
-        $eligible = [];
+        $allSlots = [];
         foreach ($prices as $p) {
             if ($p['end'] <= time() || $p['start'] >= $horizonEnd) continue;
-            if ($p['priceCt'] < $this->ReadPropertyFloat('MinimumFeedInPriceCt')) continue;
-            $eligible[] = $p;
+            $allSlots[] = $p;
         }
-        usort($eligible, fn($a, $b) => $b['priceCt'] <=> $a['priceCt']);
+
+        $economic = array_values(array_filter($allSlots, fn($p) => $p['priceCt'] >= $this->ReadPropertyFloat('MinimumFeedInPriceCt')));
+        usort($economic, fn($a, $b) => $b['priceCt'] <=> $a['priceCt']);
 
         $remaining = $available;
         $maxKW = max(0.0, $this->ReadPropertyInteger('MaxDischargePowerW') / 1000.0);
         $selected = [];
         $revenue = 0.0;
-        foreach ($eligible as $p) {
+        $scheduledEnergy = 0.0;
+        $usedKeys = [];
+
+        foreach ($economic as $p) {
             if ($remaining <= 0.001 || $maxKW <= 0) break;
-            $durationH = max(0.0, ($p['end'] - max($p['start'], time())) / 3600.0);
+            $slotStart = max($p['start'], time());
+            $durationH = max(0.0, ($p['end'] - $slotStart) / 3600.0);
             if ($durationH <= 0) continue;
-            $maxEnergySlot = $maxKW * $durationH;
-            $energy = min($remaining, $maxEnergySlot);
-            $powerKW = $durationH > 0 ? min($maxKW, $energy / $durationH) : 0;
+            $energy = min($remaining, $maxKW * $durationH);
+            $powerKW = min($maxKW, $energy / $durationH);
+            $key = $p['start'] . ':' . $p['end'];
             $selected[] = [
-                'start' => max($p['start'], time()),
+                'start' => $slotStart,
                 'end' => $p['end'],
                 'priceCt' => $p['priceCt'],
                 'marketCt' => $p['marketCt'],
                 'energyKWh' => $energy,
-                'powerW' => $powerKW * 1000.0
+                'powerW' => $powerKW * 1000.0,
+                'reason' => 'price'
             ];
+            $usedKeys[$key] = true;
             $revenue += $energy * $p['priceCt'] / 100.0;
             $remaining -= $energy;
+            $scheduledEnergy += $energy;
         }
-        usort($selected, fn($a, $b) => $a['start'] <=> $b['start']);
 
+        // Falls die normalen Preisfenster nicht genug Speicherplatz freimachen, werden
+        // zusätzlich die bestbezahlten noch freien Intervalle gewählt. Der separate
+        // Mindestpreis kann auf einen sehr niedrigen Wert gestellt werden, wenn die
+        // Vermeidung von PV-Abregelung Vorrang vor dem momentanen Verkaufspreis hat.
+        $mandatoryMissing = max(0.0, $pvSpaceRequired - $scheduledEnergy);
+        if ($mandatoryMissing > 0.001 && $remaining > 0.001 && $maxKW > 0) {
+            $pvFloor = $this->ReadPropertyFloat('PVSpaceMinimumPriceCt');
+            $fallbackSlots = array_values(array_filter($allSlots, function ($p) use ($usedKeys, $pvFloor) {
+                $key = $p['start'] . ':' . $p['end'];
+                return !isset($usedKeys[$key]) && $p['priceCt'] >= $pvFloor;
+            }));
+            usort($fallbackSlots, fn($a, $b) => $b['priceCt'] <=> $a['priceCt']);
+
+            foreach ($fallbackSlots as $p) {
+                if ($mandatoryMissing <= 0.001 || $remaining <= 0.001) break;
+                $slotStart = max($p['start'], time());
+                $durationH = max(0.0, ($p['end'] - $slotStart) / 3600.0);
+                if ($durationH <= 0) continue;
+                $energy = min($remaining, $mandatoryMissing, $maxKW * $durationH);
+                $powerKW = min($maxKW, $energy / $durationH);
+                $selected[] = [
+                    'start' => $slotStart,
+                    'end' => $p['end'],
+                    'priceCt' => $p['priceCt'],
+                    'marketCt' => $p['marketCt'],
+                    'energyKWh' => $energy,
+                    'powerW' => $powerKW * 1000.0,
+                    'reason' => 'pv_space'
+                ];
+                $revenue += $energy * $p['priceCt'] / 100.0;
+                $remaining -= $energy;
+                $scheduledEnergy += $energy;
+                $mandatoryMissing -= $energy;
+            }
+        }
+
+        usort($selected, fn($a, $b) => $a['start'] <=> $b['start']);
         $next = '-';
         foreach ($selected as $s) {
             if ($s['end'] > time()) {
@@ -605,12 +677,23 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $highest = count($selected) ? max(array_column($selected, 'priceCt')) : 0.0;
 
+        if ($pvSpaceRequired > 0.05) {
+            $status .= ' | PV-Speicherfreihaltung ' . number_format($pvSpaceRequired, 2, ',', '.') . ' kWh';
+            if ($mandatoryMissing > 0.05) {
+                $status .= ' (noch ' . number_format($mandatoryMissing, 2, ',', '.') . ' kWh ungeplant)';
+            }
+        }
+
         return [
             'soc' => $soc,
             'storedKWh' => $stored,
             'reserveKWh' => $reserve,
             'minimumEnergyKWh' => $minEnergy,
             'availableKWh' => $available,
+            'pvSpaceRequiredKWh' => $pvSpaceRequired,
+            'pvSpaceUnscheduledKWh' => max(0.0, $mandatoryMissing),
+            'expectedMorningStoredKWh' => $expectedMorningStored,
+            'expectedPVToBatteryKWh' => $expectedPVToBattery,
             'remainingUnscheduledKWh' => $remaining,
             'highestPriceCt' => $highest,
             'expectedRevenueEUR' => $revenue,
@@ -760,20 +843,78 @@ class SmartBatteryOptimizer extends IPSModule
         return $wh / 1000.0;
     }
 
-    private function SetFeedIn(bool $enable, float $powerW)
+    private function SetFeedIn(bool $enable, float $powerW, int $slotEnd = 0)
     {
-        $enableID = $this->ReadPropertyInteger('FeedInEnableVariable');
-        $powerID = $this->ReadPropertyInteger('DischargePowerVariable');
-        if ($powerID > 0) {
-            $setpoint = $this->ReadPropertyBoolean('InvertPowerSetpoint') ? -abs($powerW) : abs($powerW);
-            if (!$enable) $setpoint = 0;
-            $this->WriteVariableSmart($powerID, $setpoint);
-        }
-        if ($enableID > 0) {
-            $this->WriteVariableSmart($enableID, $enable);
+        if ($this->ReadPropertyInteger('BatteryControlMode') === 1) {
+            $this->SetAlphaESSDispatch($enable, $powerW, $slotEnd);
+        } else {
+            $enableID = $this->ReadPropertyInteger('FeedInEnableVariable');
+            $powerID = $this->ReadPropertyInteger('DischargePowerVariable');
+            if ($powerID > 0) {
+                $setpoint = $this->ReadPropertyBoolean('InvertPowerSetpoint') ? -abs($powerW) : abs($powerW);
+                if (!$enable) $setpoint = 0;
+                $this->WriteVariableSmart($powerID, $setpoint);
+            }
+            if ($enableID > 0) {
+                $this->WriteVariableSmart($enableID, $enable);
+            }
         }
         SetValue($this->GetIDForIdent('FeedInActive'), $enable);
         SetValue($this->GetIDForIdent('PlannedPower'), $enable ? abs($powerW) : 0.0);
+    }
+
+    private function SetAlphaESSDispatch(bool $enable, float $powerW, int $slotEnd): void
+    {
+        $startID = $this->ReadPropertyInteger('AlphaDispatchStartVariable');
+        $powerID = $this->ReadPropertyInteger('AlphaDispatchPowerVariable');
+        $modeID = $this->ReadPropertyInteger('AlphaDispatchModeVariable');
+        $socID = $this->ReadPropertyInteger('AlphaDispatchSOCVariable');
+        $timeID = $this->ReadPropertyInteger('AlphaDispatchTimeVariable');
+
+        if ($startID <= 0) {
+            throw new Exception('AlphaESS: Dispatch-Start-Variable (Register 2176) fehlt.');
+        }
+
+        if (!$enable) {
+            if ($this->ReadAttributeBoolean('AlphaDispatchActive')) {
+                $this->WriteVariableSmart($startID, 0);
+                $this->WriteAttributeBoolean('AlphaDispatchActive', false);
+                $this->WriteAttributeString('AlphaDispatchCommandKey', '');
+                $this->SendDebug('AlphaESS', 'Dispatch gestoppt', 0);
+            }
+            return;
+        }
+
+        if ($powerID <= 0 || $modeID <= 0 || $socID <= 0 || $timeID <= 0) {
+            throw new Exception('AlphaESS: Dispatch-Variablen 2177, 2181, 2182 und 2183 müssen konfiguriert sein.');
+        }
+
+        $powerW = max(0.0, min((float)$this->ReadPropertyInteger('MaxDischargePowerW'), abs($powerW)));
+        $duration = $slotEnd > time() ? $slotEnd - time() : 60;
+        $duration = max(60, min(86400, $duration));
+        $socTargetRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
+        $activePowerRaw = (int)round(32000 + $powerW); // >32000 = Entladen
+        $key = $activePowerRaw . ':' . $socTargetRaw . ':' . $slotEnd;
+
+        if ($this->ReadAttributeBoolean('AlphaDispatchActive') && $this->ReadAttributeString('AlphaDispatchCommandKey') === $key) {
+            return;
+        }
+
+        if ($this->ReadAttributeBoolean('AlphaDispatchActive')) {
+            $this->WriteVariableSmart($startID, 0);
+        }
+
+        // AlphaESS Dispatch Mode 2 = SoC-Steuerung. Die Batterie entlädt mit dem
+        // gesetzten Active-Power-Wert (>32000) bis Mindest-SoC oder Zeitablauf.
+        $this->WriteVariableSmart($powerID, $activePowerRaw);
+        $this->WriteVariableSmart($modeID, 2);
+        $this->WriteVariableSmart($socID, $socTargetRaw);
+        $this->WriteVariableSmart($timeID, $duration);
+        $this->WriteVariableSmart($startID, 1);
+
+        $this->WriteAttributeBoolean('AlphaDispatchActive', true);
+        $this->WriteAttributeString('AlphaDispatchCommandKey', $key);
+        $this->SendDebug('AlphaESS', 'Dispatch Entladen: ' . round($powerW) . ' W, Ziel-SoC ' . round($socTargetRaw * 0.4, 1) . ' %, ' . $duration . ' s', 0);
     }
 
     private function WriteVariableSmart(int $variableID, $value)
@@ -808,7 +949,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function HttpGetJson(string $url): array
     {
-        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.5\r\n"]];
+        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.6\r\n"]];
         $ctx = stream_context_create($opts);
         $raw = @file_get_contents($url, false, $ctx);
         if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen.');
@@ -838,6 +979,7 @@ class SmartBatteryOptimizer extends IPSModule
                 'marketCt' => round((float)$p['marketCt'], 4),
                 'priceCt' => round((float)$p['priceCt'], 4),
                 'selected' => $slot !== null,
+                'reason' => $slot ? ($slot['reason'] ?? 'price') : '',
                 'powerW' => $slot ? round((float)$slot['powerW'], 1) : 0.0,
                 'energyKWh' => $slot ? round((float)$slot['energyKWh'], 4) : 0.0
             ];
@@ -857,6 +999,7 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= 'PV morgen: <b>' . number_format($forecast['tomorrowKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'PV ausreichend ab ca.: <b>' . date('H:i', $forecast['morningTs']) . '</b><br>';
         $html .= 'Für Einspeisung verfügbar: <b>' . number_format($plan['availableKWh'], 2, ',', '.') . ' kWh</b><br>';
+        $html .= 'Für PV freizugebender Speicher: <b>' . number_format($plan['pvSpaceRequiredKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'Erwarteter Erlös: <b>' . number_format($plan['expectedRevenueEUR'], 2, ',', '.') . ' €</b><br>';
         $html .= 'Status: <b>' . htmlspecialchars($plan['status']) . '</b>';
         return $html . '</div>';
@@ -880,13 +1023,13 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'function renderSBOChart(){';
             $html .= 'if(typeof Highcharts==="undefined"){return;}';
             $html .= 'var categories=rows.map(function(r){return r.label;});';
-            $html .= 'var market=rows.map(function(r){return {y:r.priceCt,color:r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3"),custom:r};});';
+            $html .= 'var market=rows.map(function(r){return {y:r.priceCt,color:r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3")),custom:r};});';
             $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
             $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
             $html .= 'title:{text:null,style:{fontFamily:"Tahoma",color:"#ffffff"}},credits:{enabled:false},legend:{enabled:false,itemStyle:{fontFamily:"Tahoma",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
             $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
             $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
-            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>Einspeisung geplant</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
+            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
             $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return Highcharts.numberFormat(this.y,2,",",".")+" ct";},style:{fontFamily:"Tahoma",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
             $html .= 'series:[{name:"Einspeisevergütung",data:market}]';
             $html .= '});}';
@@ -895,7 +1038,7 @@ class SmartBatteryOptimizer extends IPSModule
         } else {
             $html .= $this->RenderFallbackPriceChart($chartRows, $minimumPrice);
         }
-        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Grün = für Batterieeinspeisung ausgewählt, Rot = negative Einspeisevergütung, Blau = übrige Preisintervalle. Die Preisdarstellung zeigt rollierend die nächsten 24 Stunden; die aktuelle Einspeiseplanung endet weiterhin mit Beginn der nächsten PV-Phase.</div>';
+        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Preisintervalle. Die Preisdarstellung zeigt rollierend die nächsten 24 Stunden; die aktuelle Einspeiseplanung endet weiterhin mit Beginn der nächsten PV-Phase.</div>';
         return $html . '</div>';
     }
 
@@ -903,7 +1046,7 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $html = '<div style="font-family:Tahoma;font-size:12px">';
         $html .= '<b>Einspeiseplan / Preise – nächste 24 Stunden</b><br><span style="font-size:11px">Preiswerte werden 24 Stunden angezeigt; geplante Einspeisung nur bis zur nächsten PV-Phase.</span><br><br>';
-        $html .= '<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Zeit</th><th>Markt</th><th>Tarif</th><th>Leistung</th><th>Energie</th></tr>';
+        $html .= '<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Zeit</th><th>Markt</th><th>Tarif</th><th>Leistung</th><th>Energie</th><th>Grund</th></tr>';
         $now = time();
         $displayEnd = $now + 24 * 3600;
         foreach ($prices as $p) {
@@ -916,7 +1059,9 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<td style="text-align:right">' . number_format($p['marketCt'], 2, ',', '.') . ' ct</td>';
             $html .= '<td style="text-align:right"><b>' . number_format($p['priceCt'], 2, ',', '.') . ' ct</b></td>';
             $html .= '<td style="text-align:right">' . ($slot ? number_format($slot['powerW']/1000, 2, ',', '.') . ' kW' : '-') . '</td>';
-            $html .= '<td style="text-align:right">' . ($slot ? number_format($slot['energyKWh'], 2, ',', '.') . ' kWh' : '-') . '</td></tr>';
+            $html .= '<td style="text-align:right">' . ($slot ? number_format($slot['energyKWh'], 2, ',', '.') . ' kWh' : '-') . '</td>';
+            $reason = $slot ? (($slot['reason'] ?? 'price') === 'pv_space' ? 'PV-Speicher' : 'Preis') : '-';
+            $html .= '<td style="text-align:right">' . $reason . '</td></tr>';
         }
         $html .= '</table><br><b>PV-Flächen morgen</b><br>';
         foreach ($forecast['surfaceTotals'] as $name => $kwh) {
@@ -950,12 +1095,12 @@ class SmartBatteryOptimizer extends IPSModule
         foreach ($rows as $row) {
             $value = (float)$row['priceCt'];
             $width = min(100.0, abs($value) / $maxAbs * 100.0);
-            $color = !empty($row['selected']) ? '#38a169' : ($value < 0 ? '#d9534f' : '#4e8fd3');
+            $color = (($row['reason'] ?? '') === 'pv_space') ? '#e0a000' : (!empty($row['selected']) ? '#38a169' : ($value < 0 ? '#d9534f' : '#4e8fd3'));
             $label = htmlspecialchars((string)$row['label']);
             $valueText = number_format($value, 2, ',', '.') . ' ct/kWh';
             $title = 'Einspeisevergütung: ' . $valueText . ' | EPEX Spot AT: ' . number_format((float)$row['marketCt'], 2, ',', '.') . ' ct/kWh';
             if (!empty($row['selected'])) {
-                $title .= ' | Einspeisung: ' . number_format((float)$row['powerW'] / 1000, 2, ',', '.') . ' kW, ' . number_format((float)$row['energyKWh'], 2, ',', '.') . ' kWh';
+                $title .= ' | ' . (($row['reason'] ?? '') === 'pv_space' ? 'PV-Speicherfreihaltung' : 'Preisoptimierung') . ' | Einspeisung: ' . number_format((float)$row['powerW'] / 1000, 2, ',', '.') . ' kW, ' . number_format((float)$row['energyKWh'], 2, ',', '.') . ' kWh';
             }
             $title = htmlspecialchars($title, ENT_QUOTES);
 

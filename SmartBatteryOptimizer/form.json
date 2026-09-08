@@ -266,6 +266,50 @@
           "type": "CheckBox",
           "name": "InvertPowerSetpoint",
           "caption": "Sollleistung negativ schreiben (z.B. -5000 W)"
+        },
+        {
+          "type": "Select",
+          "name": "BatteryControlMode",
+          "caption": "Batteriesteuerung",
+          "options": [
+            {
+              "caption": "Allgemein über IP-Symcon Variablen",
+              "value": 0
+            },
+            {
+              "caption": "AlphaESS Dispatch über Modbus-Variablen",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "type": "Label",
+          "caption": "AlphaESS Dispatch: im Modbus-TCP-Modul die Register 2176, 2177, 2181, 2182 und 2183 als schreibbare Variablen anlegen und hier auswählen."
+        },
+        {
+          "type": "SelectVariable",
+          "name": "AlphaDispatchStartVariable",
+          "caption": "AlphaESS Dispatch Start (2176, UINT16, FC06)"
+        },
+        {
+          "type": "SelectVariable",
+          "name": "AlphaDispatchPowerVariable",
+          "caption": "AlphaESS Active Power (2177, INT32, FC16)"
+        },
+        {
+          "type": "SelectVariable",
+          "name": "AlphaDispatchModeVariable",
+          "caption": "AlphaESS Dispatch Mode (2181, UINT16, FC06)"
+        },
+        {
+          "type": "SelectVariable",
+          "name": "AlphaDispatchSOCVariable",
+          "caption": "AlphaESS Dispatch SoC (2182, UINT16, FC06)"
+        },
+        {
+          "type": "SelectVariable",
+          "name": "AlphaDispatchTimeVariable",
+          "caption": "AlphaESS Dispatch Time (2183, UINT32, FC16)"
         }
       ]
     },
@@ -469,6 +513,38 @@
           "minimum": 0,
           "maximum": 500,
           "suffix": " kWh"
+        },
+        {
+          "type": "CheckBox",
+          "name": "PreventPVCurtailment",
+          "caption": "Speicher vor PV-Überschuss freihalten / PV-Abregelung vermeiden"
+        },
+        {
+          "type": "NumberSpinner",
+          "name": "PVHeadroomTargetSOC",
+          "caption": "Maximaler Ziel-SoC bei erwarteter starker PV",
+          "digits": 1,
+          "minimum": 20,
+          "maximum": 100,
+          "suffix": " %"
+        },
+        {
+          "type": "NumberSpinner",
+          "name": "PVStorageSharePct",
+          "caption": "Anteil der PV-Prognose als möglicher Batterieüberschuss",
+          "digits": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "suffix": " %"
+        },
+        {
+          "type": "NumberSpinner",
+          "name": "PVSpaceMinimumPriceCt",
+          "caption": "Mindestpreis bei notwendiger Speicherfreihaltung",
+          "digits": 2,
+          "minimum": -100,
+          "maximum": 100,
+          "suffix": " ct/kWh"
         }
       ]
     },
