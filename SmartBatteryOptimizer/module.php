@@ -93,8 +93,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('LastUpdate', 'Letzte Aktualisierung', '', 100);
         $this->RegisterVariableString('StatusText', 'Optimierungsstatus', '', 110);
         $this->RegisterVariableString('OverviewHTML', 'Übersicht', '~HTMLBox', 120);
-        $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 121);
-        $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 122);
+        $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 121);
+        $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 122);
+        $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 123);
 
         $this->RegisterAttributeString('ForecastJSON', '{}');
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
@@ -193,6 +194,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('StatusText'), $plan['status']);
             SetValue($this->GetIDForIdent('LastUpdate'), date('d.m.Y H:i:s'));
             SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
+            SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
             SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
             SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
             $this->SetStatus(($this->IsAutomaticEnabled() && !$gate['ready']) ? 202 : 102);
@@ -1386,6 +1388,74 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= 'Für PV freizugebender Speicher: <b>' . number_format($plan['pvSpaceRequiredKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'Erwarteter Erlös: <b>' . number_format($plan['expectedRevenueEUR'], 2, ',', '.') . ' €</b><br>';
         $html .= 'Status: <b>' . htmlspecialchars($plan['status']) . '</b>';
+        return $html . '</div>';
+    }
+
+    private function RenderPVForecastChartHTML(array $forecast): string
+    {
+        // Bewährter Highcharts-Balkenaufbau wie beim funktionierenden Preisdiagramm.
+        // Angezeigt wird die stündliche Gesamtleistung der PV-Prognose für morgen.
+        $highchartsJS = $this->GetHighchartsJavaScript();
+        $chartId = 'sbo_pv_forecast_chart_' . $this->InstanceID;
+        $tomorrowStart = strtotime('tomorrow 00:00:00');
+        $tomorrowEnd = $tomorrowStart + 86400;
+        $rows = [];
+        $hours = is_array($forecast['hours'] ?? null) ? $forecast['hours'] : [];
+
+        for ($i = 0; $i < 24; $i++) {
+            $ts = $tomorrowStart + $i * 3600;
+            $powerKW = 0.0;
+            if (isset($hours[$ts]) && is_array($hours[$ts])) {
+                $powerKW = max(0.0, (float)($hours[$ts]['totalKW'] ?? 0.0));
+            }
+            $rows[] = [
+                'label' => date('H:i', $ts),
+                'powerKW' => round($powerKW, 3)
+            ];
+        }
+
+        $chartJson = json_encode($rows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($chartJson === false) $chartJson = '[]';
+        $tomorrowKWh = (float)($forecast['tomorrowKWh'] ?? 0.0);
+        $morningTs = (int)($forecast['morningTs'] ?? 0);
+
+        $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
+        $html .= '<b>PV-Prognose morgen – stündliche Leistung</b><br>';
+        if ($highchartsJS !== '') {
+            $html .= '<div id="' . $chartId . '" style="width:100%;height:390px;margin-top:8px;margin-bottom:10px"></div>';
+            $html .= '<script>' . $highchartsJS . '</script>';
+            $html .= '<script>(function(){';
+            $html .= 'var rows=' . $chartJson . ';';
+            $html .= 'function renderSBOPVChart(){';
+            $html .= 'if(typeof Highcharts==="undefined"){return;}';
+            $html .= 'var categories=rows.map(function(r){return r.label;});';
+            $html .= 'var data=rows.map(function(r){return {y:r.powerKW,custom:r};});';
+            $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
+            $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
+            $html .= 'title:{text:null},credits:{enabled:false},legend:{enabled:false},';
+            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
+            $html .= 'yAxis:{min:0,title:{text:"kW",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)"},';
+            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+this.point.custom.label+"</b><br>PV-Prognose: <b>"+Highcharts.numberFormat(this.y,2,",",".")+" kW</b></span>";}},';
+            $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.05?Highcharts.numberFormat(this.y,2,",",".")+" kW":"";},style:{fontFamily:"Tahoma",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
+            $html .= 'series:[{name:"PV-Prognose",data:data}]';
+            $html .= '});}';
+            $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOPVChart);}else{setTimeout(renderSBOPVChart,0);}';
+            $html .= '})();</script>';
+        } else {
+            $maxKW = 0.01;
+            foreach ($rows as $row) $maxKW = max($maxKW, (float)$row['powerKW']);
+            $html .= '<div style="margin:8px 0 14px 0;padding:8px;border:1px solid rgba(128,128,128,.45);border-radius:6px">';
+            foreach ($rows as $row) {
+                $width = max(0.0, min(100.0, ((float)$row['powerKW'] / $maxKW) * 100.0));
+                $html .= '<div style="display:flex;align-items:center;margin:3px 0"><div style="width:45px;flex:0 0 45px">' . htmlspecialchars($row['label']) . '</div><div style="flex:1;height:14px;background:rgba(128,128,128,.08)"><div style="height:14px;width:' . number_format($width, 1, '.', '') . '%;background:#4e8fd3"></div></div><div style="width:70px;text-align:right">' . number_format((float)$row['powerKW'], 2, ',', '.') . ' kW</div></div>';
+            }
+            $html .= '</div>';
+        }
+        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Prognose für morgen: <b>' . number_format($tomorrowKWh, 2, ',', '.') . ' kWh</b>';
+        if ($morningTs > 0 && $morningTs >= $tomorrowStart && $morningTs < $tomorrowEnd) {
+            $html .= ' · PV über der eingestellten Morgenschwelle ab ca. <b>' . date('H:i', $morningTs) . '</b>';
+        }
+        $html .= '. Die Balken zeigen die prognostizierte mittlere PV-Leistung je Stunde.</div>';
         return $html . '</div>';
     }
 
