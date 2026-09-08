@@ -1,0 +1,64 @@
+{
+  "elements": [
+    {"type":"Label","caption":"Börsenpreisabhängige Batterieeinspeisung mit PV-Prognose, Nachtverbrauchs-Lernfunktion und Mehrflächen-PV."},
+    {"type":"ExpansionPanel","caption":"Standort & PV-Prognose","items":[
+      {"type":"NumberSpinner","name":"Latitude","caption":"Breitengrad","digits":5,"minimum":-90,"maximum":90},
+      {"type":"NumberSpinner","name":"Longitude","caption":"Längengrad","digits":5,"minimum":-180,"maximum":180},
+      {"type":"NumberSpinner","name":"GlobalPVFactor","caption":"Globaler PV-Korrekturfaktor","digits":3,"minimum":0.1,"maximum":2.0,"suffix":" ×"},
+      {"type":"NumberSpinner","name":"SystemEfficiency","caption":"Systemwirkungsgrad","digits":2,"minimum":0.1,"maximum":1.0,"suffix":" ×"},
+      {"type":"List","name":"PVSurfaces","caption":"PV-Flächen","rowCount":6,"add":true,"delete":true,"sort":{"column":"Name","direction":"ascending"},"columns":[
+        {"caption":"Aktiv","name":"Active","width":"70px","edit":{"type":"CheckBox"}},
+        {"caption":"Name","name":"Name","width":"180px","edit":{"type":"ValidationTextBox"}},
+        {"caption":"Leistung","name":"KWp","width":"110px","edit":{"type":"NumberSpinner","digits":2,"minimum":0,"maximum":1000,"suffix":" kWp"}},
+        {"caption":"Azimut","name":"Azimuth","width":"100px","edit":{"type":"NumberSpinner","digits":0,"minimum":0,"maximum":360,"suffix":" °"}},
+        {"caption":"Neigung","name":"Tilt","width":"100px","edit":{"type":"NumberSpinner","digits":0,"minimum":0,"maximum":90,"suffix":" °"}},
+        {"caption":"Faktor","name":"Factor","width":"100px","edit":{"type":"NumberSpinner","digits":2,"minimum":0.1,"maximum":2.0}}
+      ],"values":[]}
+    ]},
+    {"type":"ExpansionPanel","caption":"Batterie","items":[
+      {"type":"SelectVariable","name":"SOCVariable","caption":"SoC Variable (%)"},
+      {"type":"NumberSpinner","name":"BatteryCapacityKWh","caption":"Speicherkapazität","digits":2,"minimum":0.1,"maximum":1000,"suffix":" kWh"},
+      {"type":"NumberSpinner","name":"MinimumSOC","caption":"Mindest-SoC","digits":1,"minimum":0,"maximum":100,"suffix":" %"},
+      {"type":"NumberSpinner","name":"MaxDischargePowerW","caption":"Max. Einspeise-/Entladeleistung","digits":0,"minimum":0,"maximum":1000000,"suffix":" W"},
+      {"type":"SelectVariable","name":"FeedInEnableVariable","caption":"Variable Einspeisung EIN/AUS"},
+      {"type":"SelectVariable","name":"DischargePowerVariable","caption":"Sollleistung Entladung (optional)"},
+      {"type":"CheckBox","name":"InvertPowerSetpoint","caption":"Sollleistung negativ schreiben (z.B. -5000 W)"}
+    ]},
+    {"type":"ExpansionPanel","caption":"Eigenverbrauch lernen","items":[
+      {"type":"SelectVariable","name":"HousePowerVariable","caption":"Hausverbrauch Leistung (W), archiviert"},
+      {"type":"SelectVariable","name":"PVActualPowerVariable","caption":"PV-Istleistung (W), archiviert (optional)"},
+      {"type":"NumberSpinner","name":"LearningDays","caption":"Lernzeitraum","digits":0,"minimum":3,"maximum":90,"suffix":" Tage"},
+      {"type":"NumberSpinner","name":"NightStartHour","caption":"Nacht-Auswertung beginnt","digits":0,"minimum":0,"maximum":23,"suffix":" Uhr"},
+      {"type":"NumberSpinner","name":"FallbackMorningHour","caption":"Morgenende ohne PV-Istvariable","digits":0,"minimum":0,"maximum":12,"suffix":" Uhr"},
+      {"type":"NumberSpinner","name":"MorningPVThresholdW","caption":"PV-Schwelle für Morgenende","digits":0,"minimum":0,"maximum":10000,"suffix":" W"},
+      {"type":"NumberSpinner","name":"SafetyReservePct","caption":"Sicherheitsaufschlag Nachtverbrauch","digits":0,"minimum":0,"maximum":100,"suffix":" %"},
+      {"type":"NumberSpinner","name":"OutlierPct","caption":"Ausreißergrenze um Median","digits":0,"minimum":10,"maximum":300,"suffix":" %"}
+    ]},
+    {"type":"ExpansionPanel","caption":"Börsenpreis & Optimierung","items":[
+      {"type":"Select","name":"PriceSource","caption":"Preisquelle","options":[{"caption":"aWATTar Österreich / EPEX Spot","value":0},{"caption":"JSON-Variable (später/eigene Quelle)","value":1}]},
+      {"type":"SelectVariable","name":"PriceJSONVariable","caption":"JSON-Preisvariable (nur Quelle 2)"},
+      {"type":"NumberSpinner","name":"PositivePriceFactor","caption":"Faktor bei positivem Marktpreis","digits":3,"minimum":-5,"maximum":5},
+      {"type":"NumberSpinner","name":"NegativePriceFactor","caption":"Faktor bei negativem Marktpreis","digits":3,"minimum":-5,"maximum":5},
+      {"type":"NumberSpinner","name":"PriceAdjustmentCt","caption":"Fixe Tarifanpassung","digits":3,"minimum":-100,"maximum":100,"suffix":" ct/kWh"},
+      {"type":"NumberSpinner","name":"MinimumFeedInPriceCt","caption":"Mindest-Einspeisepreis","digits":2,"minimum":-100,"maximum":500,"suffix":" ct/kWh"},
+      {"type":"NumberSpinner","name":"MinimumTomorrowPVKWh","caption":"Min. PV-Prognose morgen für normale Freigabe","digits":1,"minimum":0,"maximum":500,"suffix":" kWh"},
+      {"type":"NumberSpinner","name":"PoorForecastExtraReservePct","caption":"Zusatzreserve bei schlechter PV-Prognose","digits":0,"minimum":0,"maximum":300,"suffix":" %"},
+      {"type":"CheckBox","name":"DisableFeedInOnVeryPoorForecast","caption":"Bei sehr schlechter PV-Prognose Einspeisung sperren"},
+      {"type":"NumberSpinner","name":"VeryPoorForecastKWh","caption":"Sehr schlechte PV-Prognose unter","digits":1,"minimum":0,"maximum":500,"suffix":" kWh"}
+    ]},
+    {"type":"ExpansionPanel","caption":"Automatik","items":[
+      {"type":"CheckBox","name":"AutomaticEnabled","caption":"Automatische Einspeisung aktiv"},
+      {"type":"NumberSpinner","name":"RefreshMinutes","caption":"Daten/Plan aktualisieren alle","digits":0,"minimum":5,"maximum":180,"suffix":" min"}
+    ]}
+  ],
+  "actions": [
+    {"type":"Button","caption":"Jetzt Prognose & Plan berechnen","onClick":"SBO_Recalculate($id);"},
+    {"type":"Button","caption":"Nur Nachtverbrauch neu lernen","onClick":"SBO_LearnNightConsumption($id);"},
+    {"type":"Button","caption":"Einspeisung sofort stoppen","onClick":"SBO_StopFeedIn($id);"}
+  ],
+  "status": [
+    {"code":102,"icon":"active","caption":"Aktiv"},
+    {"code":200,"icon":"error","caption":"Konfiguration unvollständig"},
+    {"code":201,"icon":"error","caption":"Prognose/Preisabruf fehlgeschlagen"}
+  ]
+}

@@ -1,0 +1,49 @@
+# SmartBatteryOptimizer für IP-Symcon
+
+Version 1.0
+
+Funktionen:
+- Börsenpreise Österreich über aWATTar / EPEX Spot AT
+- Mehrere PV-Flächen mit eigener kWp-Leistung, Azimut, Neigung und Korrekturfaktor
+- Open-Meteo Global Tilted Irradiance als stündliche PV-Prognose
+- Globaler PV-Korrekturfaktor und Systemwirkungsgrad
+- Lernender Nachtverbrauch aus IP-Symcon Archivdaten
+- Optional PV-Istleistung zur Erkennung des morgendlichen PV-Starts
+- Ausreißerfilter für Nachtverbrauch
+- Reserve abhängig von PV-Prognose des Folgetags
+- Auswahl der teuersten Preisfenster bis zum erwarteten PV-Start am nächsten Morgen
+- Automatische Freigabe und optionale Sollleistung für Batteriespeicher
+- HTML-Einspeiseplan und Diagnosevariablen
+
+## Installation
+Den Inhalt des ZIP in den IP-Symcon Modulordner entpacken. Das ZIP enthält direkt:
+- SmartBatteryOptimizer/
+- library.json
+- README.md
+
+Danach Modul neu laden bzw. IP-Symcon neu starten und eine Instanz "Börsenpreis Speicheroptimierung" anlegen.
+
+## PV-Azimut
+In der Konfiguration wird die übliche Kompassangabe verwendet:
+- 0° = Nord
+- 90° = Ost
+- 180° = Süd
+- 270° = West
+
+Das Modul rechnet die Werte intern in die Open-Meteo-Konvention um.
+
+## Preisformel
+Der aWATTar-Marktpreis wird von EUR/MWh in ct/kWh umgerechnet.
+Effektiver Einspeisetarif = Marktpreis * Faktor + fixe Tarifanpassung.
+Positive und negative Preise haben getrennte Faktoren.
+
+Beispiel Sunny Spot ähnlich abbilden:
+- PositivePriceFactor = 0.81
+- NegativePriceFactor = 1.19
+- PriceAdjustmentCt = 0
+
+## Nachtverbrauch
+Die Hausverbrauchsvariable muss im Archiv geloggt werden und eine Leistung in Watt enthalten. Das Modul integriert die Leistung über die Nacht zu kWh. Weil AC_GetLoggedValues nur Änderungen speichert, wird der letzte bekannte Wert vor Beginn des Zeitfensters mit berücksichtigt.
+
+## Wichtiger Sicherheitshinweis
+Vor Aktivierung der Automatik zuerst mit deaktivierter Automatik den Plan kontrollieren. Speicher-Hersteller unterscheiden sich bei Freigabevariablen, Vorzeichen und Leistungs-Sollwerten. Die Option "Sollleistung negativ schreiben" ist für Systeme vorgesehen, die Entladung mit negativem Vorzeichen erwarten.

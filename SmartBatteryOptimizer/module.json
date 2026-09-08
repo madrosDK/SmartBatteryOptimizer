@@ -1,0 +1,11 @@
+{
+  "id": "{D6CE0FA2-94BA-4F46-B8B2-84D287EA32E3}",
+  "name": "SmartBatteryOptimizer",
+  "type": 3,
+  "vendor": "madrosDK",
+  "aliases": ["Börsenpreis Speicheroptimierung"],
+  "parentRequirements": [],
+  "childRequirements": [],
+  "implemented": [],
+  "prefix": "BPO"
+}
