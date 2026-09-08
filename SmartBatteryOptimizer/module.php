@@ -808,7 +808,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function HttpGetJson(string $url): array
     {
-        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.4\r\n"]];
+        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.5\r\n"]];
         $ctx = stream_context_create($opts);
         $raw = @file_get_contents($url, false, $ctx);
         if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen.');
@@ -820,8 +820,10 @@ class SmartBatteryOptimizer extends IPSModule
     private function BuildPriceChartRows(array $forecast, array $prices, array $plan): array
     {
         $rows = [];
+        $now = time();
+        $displayEnd = $now + 24 * 3600;
         foreach ($prices as $p) {
-            if ($p['end'] <= time() || $p['start'] > $forecast['morningTs']) continue;
+            if ($p['end'] <= $now || $p['start'] >= $displayEnd) continue;
 
             $slot = null;
             foreach ($plan['slots'] as $s) {
@@ -869,7 +871,7 @@ class SmartBatteryOptimizer extends IPSModule
         $minimumPrice = $this->ReadPropertyFloat('MinimumFeedInPriceCt');
 
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
-        $html .= '<b>Einspeisevergütung bis zur nächsten PV-Phase</b><br>';
+        $html .= '<b>Einspeisevergütung – nächste 24 Stunden</b><br>';
         if ($highchartsJS !== '') {
             $html .= '<div id="' . $chartId . '" style="width:100%;height:390px;margin-top:8px;margin-bottom:10px"></div>';
             $html .= '<script>' . $highchartsJS . '</script>';
@@ -893,17 +895,19 @@ class SmartBatteryOptimizer extends IPSModule
         } else {
             $html .= $this->RenderFallbackPriceChart($chartRows, $minimumPrice);
         }
-        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Grün = für Batterieeinspeisung ausgewählt, Rot = negative Einspeisevergütung, Blau = übrige Preisintervalle.</div>';
+        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Grün = für Batterieeinspeisung ausgewählt, Rot = negative Einspeisevergütung, Blau = übrige Preisintervalle. Die Preisdarstellung zeigt rollierend die nächsten 24 Stunden; die aktuelle Einspeiseplanung endet weiterhin mit Beginn der nächsten PV-Phase.</div>';
         return $html . '</div>';
     }
 
     private function RenderPlanHTML(array $forecast, array $prices, array $plan): string
     {
         $html = '<div style="font-family:Tahoma;font-size:12px">';
-        $html .= '<b>Einspeiseplan</b><br><br>';
+        $html .= '<b>Einspeiseplan / Preise – nächste 24 Stunden</b><br><span style="font-size:11px">Preiswerte werden 24 Stunden angezeigt; geplante Einspeisung nur bis zur nächsten PV-Phase.</span><br><br>';
         $html .= '<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Zeit</th><th>Markt</th><th>Tarif</th><th>Leistung</th><th>Energie</th></tr>';
+        $now = time();
+        $displayEnd = $now + 24 * 3600;
         foreach ($prices as $p) {
-            if ($p['end'] <= time() || $p['start'] > $forecast['morningTs']) continue;
+            if ($p['end'] <= $now || $p['start'] >= $displayEnd) continue;
             $slot = null;
             foreach ($plan['slots'] as $s) {
                 if (abs($s['start'] - $p['start']) < 120 || ($s['start'] >= $p['start'] && $s['start'] < $p['end'])) { $slot = $s; break; }
