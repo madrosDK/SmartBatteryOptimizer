@@ -88,7 +88,6 @@ class SmartBatteryOptimizer extends IPSModule
     public function ApplyChanges()
     {
         parent::ApplyChanges();
-        $this->EnsureLocalHighchartsCopy();
         $refresh = max(5, $this->ReadPropertyInteger('RefreshMinutes'));
         $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
         $this->SetTimerInterval('ControlTimer', 60 * 1000);
@@ -788,7 +787,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function HttpGetJson(string $url): array
     {
-        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.2\r\n"]];
+        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.3\r\n"]];
         $ctx = stream_context_create($opts);
         $raw = @file_get_contents($url, false, $ctx);
         if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen.');
@@ -953,24 +952,10 @@ class SmartBatteryOptimizer extends IPSModule
     }
 
 
-    private function EnsureLocalHighchartsCopy(): void
-    {
-        $localDir = __DIR__ . DIRECTORY_SEPARATOR . 'highcharts';
-        $localFile = $localDir . DIRECTORY_SEPARATOR . 'highcharts.js';
-        if (is_file($localFile)) return;
-
-        $systemFile = rtrim(IPS_GetKernelDir(), '\\/') . DIRECTORY_SEPARATOR . 'highcharts' . DIRECTORY_SEPARATOR . 'highcharts.js';
-        if (!is_file($systemFile)) return;
-
-        if (!is_dir($localDir)) {
-            @mkdir($localDir, 0775, true);
-        }
-        @copy($systemFile, $localFile);
-    }
     private function GetHighchartsJavaScript(): string
     {
         $candidates = [
-            __DIR__ . DIRECTORY_SEPARATOR . 'highcharts' . DIRECTORY_SEPARATOR . 'highcharts.js',
+            dirname(__DIR__) . DIRECTORY_SEPARATOR . 'libs' . DIRECTORY_SEPARATOR . 'highcharts' . DIRECTORY_SEPARATOR . 'highcharts.js',
             rtrim(IPS_GetKernelDir(), '\\/') . DIRECTORY_SEPARATOR . 'highcharts' . DIRECTORY_SEPARATOR . 'highcharts.js'
         ];
 

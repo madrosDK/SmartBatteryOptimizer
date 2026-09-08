@@ -1,0 +1,12 @@
+{
+  "translations": {
+    "de": {
+      "SmartBatteryOptimizer": "SmartBatteryOptimizer",
+      "Börsenpreis Speicheroptimierung": "Börsenpreis Speicheroptimierung"
+    },
+    "en": {
+      "SmartBatteryOptimizer": "SmartBatteryOptimizer",
+      "Börsenpreis Speicheroptimierung": "Electricity Market Battery Optimization"
+    }
+  }
+}
