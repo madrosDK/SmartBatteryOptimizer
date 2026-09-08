@@ -42,6 +42,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('PVActualPowerVariable', 0);
         $this->RegisterPropertyInteger('LearningDays', 30);
         $this->RegisterPropertyFloat('FallbackNightConsumptionKWh', 4.0);
+        $this->RegisterPropertyBoolean('ConsumptionProfileLearningEnabled', true);
+        $this->RegisterPropertyFloat('FallbackDailyConsumptionKWh', 12.0);
+        $this->RegisterPropertyFloat('ConsumptionForecastSafetyPct', 10.0);
+        $this->RegisterPropertyFloat('BatteryTargetSOC', 100.0);
         $this->RegisterPropertyInteger('MinimumValidNights', 3);
         $this->RegisterPropertyInteger('NightStartHour', 18);
         $this->RegisterPropertyInteger('FallbackMorningHour', 8);
@@ -73,6 +77,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableFloat('NightConsumptionForecast', 'Prognose Nachtverbrauch', '~Electricity', 20);
         $this->RegisterVariableString('NightConsumptionSource', 'Quelle Nachtverbrauch', '', 21);
         $this->RegisterVariableInteger('ValidNightSamples', 'Gültige Nächte', '', 22);
+        $this->RegisterVariableFloat('ConsumptionForecastTomorrow', 'Verbrauchsprognose morgen', '~Electricity', 23);
+        $this->RegisterVariableFloat('ExpectedPVSurplusTomorrow', 'PV-Überschuss morgen nach Eigenverbrauch', '~Electricity', 24);
+        $this->RegisterVariableString('ConsumptionLearningStatus', 'Verbrauchsprofil Lernen', '', 25);
         $this->RegisterVariableFloat('AvailableFeedInEnergy', 'Für Einspeisung verfügbar', '~Electricity', 30);
         $this->RegisterVariableFloat('PVSpaceRequiredEnergy', 'Für PV freizugebender Speicher', '~Electricity', 31);
         $this->RegisterVariableFloat('CurrentPrice', 'Aktueller Einspeisepreis', '', 40);
@@ -96,6 +103,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
         $this->RegisterAttributeString('NightLearningSource', 'Fallback');
         $this->RegisterAttributeInteger('NightSampleCount', 0);
+        $this->RegisterAttributeString('ConsumptionProfileJSON', '{}');
+        $this->RegisterAttributeInteger('ConsumptionProfileUpdated', 0);
+        $this->RegisterAttributeString('ConsumptionLearningSource', 'Fallback');
         $this->RegisterAttributeBoolean('AlphaDispatchActive', false);
         $this->RegisterAttributeString('AlphaDispatchCommandKey', '');
 
@@ -155,12 +165,14 @@ class SmartBatteryOptimizer extends IPSModule
     {
         try {
             $night = $this->LearnNightConsumptionInternal();
+            $consumptionProfile = $this->LearnConsumptionProfileInternal(false);
             $forecast = $this->FetchPVForecast();
+            $forecast = $this->ApplyConsumptionForecastToPV($forecast, $consumptionProfile);
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
             $gate = $this->GetAutomaticLearningGateStatus();
             SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
             $prices = $this->FetchPrices();
-            $plan = $this->BuildPlan($forecast, $prices, $night);
+            $plan = $this->BuildPlan($forecast, $prices, $night, $consumptionProfile);
 
             $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
             $this->WriteAttributeString('PricesJSON', json_encode($prices));
@@ -170,6 +182,9 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($night, 3));
             SetValue($this->GetIDForIdent('NightConsumptionSource'), $this->ReadAttributeString('NightLearningSource'));
             SetValue($this->GetIDForIdent('ValidNightSamples'), $this->ReadAttributeInteger('NightSampleCount'));
+            SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)$forecast['consumptionTomorrowKWh'], 3));
+            SetValue($this->GetIDForIdent('ExpectedPVSurplusTomorrow'), round((float)$forecast['pvSurplusTomorrowKWh'], 3));
+            SetValue($this->GetIDForIdent('ConsumptionLearningStatus'), $this->ReadAttributeString('ConsumptionLearningSource'));
             SetValue($this->GetIDForIdent('AvailableFeedInEnergy'), round($plan['availableKWh'], 3));
             SetValue($this->GetIDForIdent('PVSpaceRequiredEnergy'), round($plan['pvSpaceRequiredKWh'], 3));
             SetValue($this->GetIDForIdent('HighestPrice'), round($plan['highestPriceCt'], 3));
@@ -200,6 +215,20 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('StatusText'), 'Nachtverbrauch: ' . number_format($value, 2, ',', '.') . ' kWh (' . $this->ReadAttributeString('NightLearningSource') . ')');
         } catch (Throwable $e) {
             SetValue($this->GetIDForIdent('StatusText'), 'Lernen fehlgeschlagen: ' . $e->getMessage());
+        }
+    }
+
+    public function LearnConsumptionProfile()
+    {
+        try {
+            $profile = $this->LearnConsumptionProfileInternal(true);
+            $forecast = $this->ApplyConsumptionForecastToPV($this->FetchPVForecast(), $profile);
+            SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)$forecast['consumptionTomorrowKWh'], 3));
+            SetValue($this->GetIDForIdent('ExpectedPVSurplusTomorrow'), round((float)$forecast['pvSurplusTomorrowKWh'], 3));
+            SetValue($this->GetIDForIdent('ConsumptionLearningStatus'), $this->ReadAttributeString('ConsumptionLearningSource'));
+            SetValue($this->GetIDForIdent('StatusText'), 'Verbrauchsprofil neu gelernt: ' . number_format((float)$forecast['consumptionTomorrowKWh'], 2, ',', '.') . ' kWh für morgen');
+        } catch (Throwable $e) {
+            SetValue($this->GetIDForIdent('StatusText'), 'Verbrauchsprofil lernen fehlgeschlagen: ' . $e->getMessage());
         }
     }
 
@@ -649,7 +678,7 @@ class SmartBatteryOptimizer extends IPSModule
         return $this->ExpandPricesToQuarterHour($prices);
     }
 
-    private function BuildPlan(array $forecast, array $prices, float $nightKWh): array
+    private function BuildPlan(array $forecast, array $prices, float $nightKWh, array $consumptionProfile): array
     {
         $socVar = $this->ReadPropertyInteger('SOCVariable');
         if ($socVar <= 0) throw new Exception('SoC-Variable fehlt.');
@@ -657,11 +686,23 @@ class SmartBatteryOptimizer extends IPSModule
         $capacity = max(0.1, $this->ReadPropertyFloat('BatteryCapacityKWh'));
         $stored = $capacity * $soc / 100.0;
         $minEnergy = $capacity * $this->ReadPropertyFloat('MinimumSOC') / 100.0;
-        $reserve = $nightKWh * (1.0 + $this->ReadPropertyFloat('SafetyReservePct') / 100.0);
+        $nightReserve = $nightKWh * (1.0 + $this->ReadPropertyFloat('SafetyReservePct') / 100.0);
 
         $tomorrowPV = (float)$forecast['tomorrowKWh'];
+        $tomorrowConsumption = (float)($forecast['consumptionTomorrowKWh'] ?? 0.0);
+        $pvOverlapConsumption = (float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0);
+        $pvSurplusTomorrow = max(0.0, (float)($forecast['pvSurplusTomorrowKWh'] ?? ($tomorrowPV - $pvOverlapConsumption)));
+
+        // Ziel: Der Speicher soll trotz geplanter Einspeisung am nächsten PV-Tag
+        // wieder bis zum konfigurierten Ziel-SoC geladen werden können. Dafür wird
+        // zuerst der gelernte Eigenverbrauch während der PV-Stunden abgezogen.
+        $targetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->ReadPropertyFloat('BatteryTargetSOC')));
+        $targetEnergy = $capacity * $targetSOC / 100.0;
+        $requiredMorningStored = max($minEnergy, $targetEnergy - $pvSurplusTomorrow);
+        $reserve = $nightReserve + $requiredMorningStored;
+
         if ($tomorrowPV < $this->ReadPropertyFloat('MinimumTomorrowPVKWh')) {
-            $reserve *= (1.0 + $this->ReadPropertyFloat('PoorForecastExtraReservePct') / 100.0);
+            $reserve = $requiredMorningStored + ($nightReserve * (1.0 + $this->ReadPropertyFloat('PoorForecastExtraReservePct') / 100.0));
         }
 
         $status = 'Optimierung aktiv';
@@ -669,18 +710,16 @@ class SmartBatteryOptimizer extends IPSModule
             $available = 0.0;
             $status = 'Einspeisung gesperrt: PV-Prognose sehr schlecht';
         } else {
-            $available = max(0.0, $stored - $minEnergy - $reserve);
+            $available = max(0.0, $stored - $reserve);
         }
 
-        // Speicher für die nächste PV-Phase freihalten. Entscheidend ist der erwartete
-        // Speicherinhalt nach dem Nachtverbrauch und der Anteil der PV-Prognose, der
-        // voraussichtlich in die Batterie fließen könnte. Dadurch wird bei Bedarf auch
-        // unterhalb des normalen Mindestpreises eingespeist, bevor PV-Leistung abgeregelt wird.
+        // Speicherplatz für den erwarteten PV-Überschuss freihalten. Der lernende
+        // Verbrauch wird vorab von der PV-Prognose abgezogen.
         $pvSpaceRequired = 0.0;
         $pvTargetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->ReadPropertyFloat('PVHeadroomTargetSOC')));
-        $expectedMorningStored = max($minEnergy, $stored - max(0.0, $nightKWh));
+        $expectedMorningStored = max($minEnergy, $stored - max(0.0, $nightReserve));
         $targetMaxEnergy = $capacity * $pvTargetSOC / 100.0;
-        $expectedPVToBattery = max(0.0, $tomorrowPV) * max(0.0, min(100.0, $this->ReadPropertyFloat('PVStorageSharePct'))) / 100.0;
+        $expectedPVToBattery = $pvSurplusTomorrow * max(0.0, min(100.0, $this->ReadPropertyFloat('PVStorageSharePct'))) / 100.0;
         $morningHeadroom = max(0.0, $targetMaxEnergy - $expectedMorningStored);
         if ($this->ReadPropertyBoolean('PreventPVCurtailment') && $available > 0.0) {
             $pvSpaceRequired = min($available, max(0.0, $expectedPVToBattery - $morningHeadroom));
@@ -789,6 +828,12 @@ class SmartBatteryOptimizer extends IPSModule
             'pvSpaceUnscheduledKWh' => max(0.0, $mandatoryMissing),
             'expectedMorningStoredKWh' => $expectedMorningStored,
             'expectedPVToBatteryKWh' => $expectedPVToBattery,
+            'targetSOCPct' => $targetSOC,
+            'targetEnergyKWh' => $targetEnergy,
+            'requiredMorningStoredKWh' => $requiredMorningStored,
+            'tomorrowConsumptionKWh' => $tomorrowConsumption,
+            'pvOverlapConsumptionKWh' => $pvOverlapConsumption,
+            'pvSurplusTomorrowKWh' => $pvSurplusTomorrow,
             'remainingUnscheduledKWh' => $remaining,
             'highestPriceCt' => $highest,
             'expectedRevenueEUR' => $revenue,
@@ -796,6 +841,179 @@ class SmartBatteryOptimizer extends IPSModule
             'status' => $status,
             'slots' => $selected
         ];
+    }
+
+    private function LearnConsumptionProfileInternal(bool $force = false): array
+    {
+        $fallbackDaily = max(0.0, $this->ReadPropertyFloat('FallbackDailyConsumptionKWh'));
+        if (!$this->ReadPropertyBoolean('ConsumptionProfileLearningEnabled')) {
+            return $this->BuildFallbackConsumptionProfile($fallbackDaily, 'Fallback – Verbrauchsprofil-Lernen deaktiviert');
+        }
+
+        $cached = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
+        $updated = $this->ReadAttributeInteger('ConsumptionProfileUpdated');
+        if (!$force && is_array($cached) && isset($cached['hourlyKWh']) && is_array($cached['hourlyKWh']) && count($cached['hourlyKWh']) === 24 && $updated > time() - 6 * 3600) {
+            $this->WriteAttributeString('ConsumptionLearningSource', (string)($cached['source'] ?? 'Archiv gelernt'));
+            return $cached;
+        }
+
+        $varID = $this->ReadPropertyInteger('HousePowerVariable');
+        if ($varID <= 0 || !@IPS_VariableExists($varID)) {
+            return $this->BuildFallbackConsumptionProfile($fallbackDaily, 'Fallback – Hausverbrauchsvariable fehlt');
+        }
+
+        $archiveID = $this->FindArchive();
+        if ($archiveID <= 0) {
+            return $this->BuildFallbackConsumptionProfile($fallbackDaily, 'Fallback – Archiv nicht gefunden');
+        }
+
+        if (function_exists('AC_GetLoggingStatus')) {
+            try {
+                if (!AC_GetLoggingStatus($archiveID, $varID)) {
+                    return $this->BuildFallbackConsumptionProfile($fallbackDaily, 'Fallback – Hausverbrauch nicht archiviert');
+                }
+            } catch (Throwable $e) {
+                $this->SendDebug('ConsumptionProfile', 'Logging-Status konnte nicht geprüft werden: ' . $e->getMessage(), 0);
+            }
+        }
+
+        $days = max(3, min(90, $this->ReadPropertyInteger('LearningDays')));
+        $targetTomorrow = strtotime('tomorrow 12:00');
+        $targetWeekend = in_array((int)date('N', $targetTomorrow), [6, 7], true);
+        $sum = array_fill(0, 24, 0.0);
+        $weight = array_fill(0, 24, 0.0);
+        $validDays = 0;
+
+        for ($age = 1; $age <= $days; $age++) {
+            $dayStart = strtotime('-' . $age . ' days 00:00');
+            $hourly = $this->GetHourlyConsumptionForDay($archiveID, $varID, $dayStart);
+            if ($hourly === null) continue;
+
+            $daily = array_sum($hourly);
+            if ($daily <= 0.1 || !is_finite($daily)) continue;
+
+            $baseWeight = $age <= 7 ? 1.0 : ($age <= 14 ? 0.55 : 0.30);
+            $isWeekend = in_array((int)date('N', $dayStart), [6, 7], true);
+            $dayTypeWeight = ($isWeekend === $targetWeekend) ? 1.25 : 0.85;
+            $w = $baseWeight * $dayTypeWeight;
+
+            for ($h = 0; $h < 24; $h++) {
+                $v = max(0.0, (float)$hourly[$h]);
+                $sum[$h] += $v * $w;
+                $weight[$h] += $w;
+            }
+            $validDays++;
+        }
+
+        if ($validDays < 3) {
+            if (is_array($cached) && isset($cached['hourlyKWh']) && count($cached['hourlyKWh']) === 24) {
+                $source = 'Letztes Verbrauchsprofil – nur ' . $validDays . '/3 gültige Tage';
+                $cached['source'] = $source;
+                $this->WriteAttributeString('ConsumptionLearningSource', $source);
+                return $cached;
+            }
+            return $this->BuildFallbackConsumptionProfile($fallbackDaily, 'Fallback – nur ' . $validDays . '/3 gültige Verbrauchstage');
+        }
+
+        $profile = [];
+        for ($h = 0; $h < 24; $h++) {
+            $profile[$h] = $weight[$h] > 0 ? $sum[$h] / $weight[$h] : 0.0;
+        }
+
+        $safety = 1.0 + max(0.0, $this->ReadPropertyFloat('ConsumptionForecastSafetyPct')) / 100.0;
+        $forecastProfile = array_map(fn($v) => max(0.0, (float)$v) * $safety, $profile);
+        $source = 'Archiv gelernt – ' . $validDays . ' Tage, Stundenprofil';
+        $result = [
+            'hourlyKWh' => $forecastProfile,
+            'rawHourlyKWh' => $profile,
+            'dailyKWh' => array_sum($forecastProfile),
+            'validDays' => $validDays,
+            'source' => $source,
+            'updated' => time()
+        ];
+
+        $this->WriteAttributeString('ConsumptionProfileJSON', json_encode($result));
+        $this->WriteAttributeInteger('ConsumptionProfileUpdated', time());
+        $this->WriteAttributeString('ConsumptionLearningSource', $source);
+        $this->SendDebug('ConsumptionProfile', $source . ', Prognose ' . round($result['dailyKWh'], 3) . ' kWh', 0);
+        return $result;
+    }
+
+    private function BuildFallbackConsumptionProfile(float $dailyKWh, string $source): array
+    {
+        $hourly = array_fill(0, 24, $dailyKWh / 24.0);
+        $result = [
+            'hourlyKWh' => $hourly,
+            'rawHourlyKWh' => $hourly,
+            'dailyKWh' => $dailyKWh,
+            'validDays' => 0,
+            'source' => $source,
+            'updated' => time()
+        ];
+        $this->WriteAttributeString('ConsumptionLearningSource', $source);
+        return $result;
+    }
+
+    private function GetHourlyConsumptionForDay(int $archiveID, int $varID, int $dayStart): ?array
+    {
+        $dayEnd = $dayStart + 86400;
+        $values = @AC_GetLoggedValues($archiveID, $varID, $dayStart, $dayEnd, 0);
+        if (!is_array($values) || count($values) === 0) return null;
+        $values = array_reverse($values);
+
+        $prev = @AC_GetLoggedValues($archiveID, $varID, 0, $dayStart - 1, 1);
+        if (is_array($prev) && count($prev) > 0) {
+            array_unshift($values, ['TimeStamp' => $dayStart, 'Value' => $prev[0]['Value']]);
+        } elseif ((int)$values[0]['TimeStamp'] > $dayStart) {
+            array_unshift($values, ['TimeStamp' => $dayStart, 'Value' => $values[0]['Value']]);
+        }
+
+        $hourlyWh = array_fill(0, 24, 0.0);
+        for ($i = 0; $i < count($values); $i++) {
+            $segmentStart = max($dayStart, (int)$values[$i]['TimeStamp']);
+            $segmentEnd = ($i + 1 < count($values)) ? min($dayEnd, (int)$values[$i + 1]['TimeStamp']) : $dayEnd;
+            if ($segmentEnd <= $segmentStart) continue;
+            $powerW = max(0.0, (float)$values[$i]['Value']);
+
+            $cursor = $segmentStart;
+            while ($cursor < $segmentEnd) {
+                $hour = (int)date('G', $cursor);
+                $hourEnd = min($segmentEnd, strtotime(date('Y-m-d H:00:00', $cursor)) + 3600);
+                if ($hourEnd <= $cursor) break;
+                $hourlyWh[$hour] += $powerW * (($hourEnd - $cursor) / 3600.0);
+                $cursor = $hourEnd;
+            }
+        }
+
+        return array_map(fn($wh) => $wh / 1000.0, $hourlyWh);
+    }
+
+    private function ApplyConsumptionForecastToPV(array $forecast, array $profile): array
+    {
+        $hourly = isset($profile['hourlyKWh']) && is_array($profile['hourlyKWh']) ? $profile['hourlyKWh'] : array_fill(0, 24, 0.0);
+        $tomorrowStart = strtotime('tomorrow 00:00');
+        $totalConsumption = 0.0;
+        $consumptionDuringPV = 0.0;
+        $netPVSurplus = 0.0;
+        $thresholdKW = max(0.0, $this->ReadPropertyInteger('MorningPVThresholdW') / 1000.0);
+
+        for ($h = 0; $h < 24; $h++) {
+            $loadKWh = max(0.0, (float)($hourly[$h] ?? 0.0));
+            $totalConsumption += $loadKWh;
+            $ts = $tomorrowStart + $h * 3600;
+            $pvKWh = isset($forecast['hours'][$ts]) ? max(0.0, (float)$forecast['hours'][$ts]['totalKW']) : 0.0;
+
+            if ($pvKWh >= $thresholdKW) {
+                $consumptionDuringPV += $loadKWh;
+                $netPVSurplus += max(0.0, $pvKWh - $loadKWh);
+            }
+        }
+
+        $forecast['consumptionTomorrowKWh'] = $totalConsumption;
+        $forecast['consumptionDuringPVTomorrowKWh'] = $consumptionDuringPV;
+        $forecast['pvSurplusTomorrowKWh'] = $netPVSurplus;
+        $forecast['consumptionProfile'] = $profile;
+        return $forecast;
     }
 
     private function LearnNightConsumptionInternal(): float
@@ -1090,8 +1308,14 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= 'Speicherinhalt: <b>' . number_format($plan['storedKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'Nachtverbrauch Prognose: <b>' . number_format($night, 2, ',', '.') . ' kWh</b><br>';
         $html .= 'Quelle Nachtverbrauch: <b>' . htmlspecialchars($this->ReadAttributeString('NightLearningSource')) . '</b><br>';
-        $html .= 'Reserve inkl. Sicherheit: <b>' . number_format($plan['reserveKWh'], 2, ',', '.') . ' kWh</b><br>';
+        $html .= 'Reserve inkl. Ziel-SoC: <b>' . number_format($plan['reserveKWh'], 2, ',', '.') . ' kWh</b><br>';
+        $html .= 'Ziel-SoC nach PV-Tag: <b>' . number_format((float)($plan['targetSOCPct'] ?? 100.0), 0, ',', '.') . ' %</b><br>';
+        $html .= 'Benötigter Speicherstand am PV-Morgen: <b>' . number_format((float)($plan['requiredMorningStoredKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
         $html .= 'PV morgen: <b>' . number_format($forecast['tomorrowKWh'], 2, ',', '.') . ' kWh</b><br>';
+        $html .= 'Gelernter Verbrauch morgen: <b>' . number_format((float)($forecast['consumptionTomorrowKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
+        $html .= 'Davon während PV-Zeit: <b>' . number_format((float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
+        $html .= 'Erwarteter PV-Überschuss nach Eigenverbrauch: <b>' . number_format((float)($forecast['pvSurplusTomorrowKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
+        $html .= 'Verbrauchsprofil: <b>' . htmlspecialchars($this->ReadAttributeString('ConsumptionLearningSource')) . '</b><br>';
         $html .= 'PV ausreichend ab ca.: <b>' . date('H:i', $forecast['morningTs']) . '</b><br>';
         $html .= 'Für Einspeisung verfügbar: <b>' . number_format($plan['availableKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'Für PV freizugebender Speicher: <b>' . number_format($plan['pvSpaceRequiredKWh'], 2, ',', '.') . ' kWh</b><br>';
@@ -1113,6 +1337,14 @@ class SmartBatteryOptimizer extends IPSModule
         $displayEnd = $displayStart + 24 * 3600;
         $hourBuckets = [];
 
+        for ($i = 0; $i < 24; $i++) {
+            $hourTs = $displayStart + $i * 3600;
+            $hourBuckets[$hourTs] = [
+                'market' => [], 'price' => [], 'selected' => false, 'reason' => '',
+                'powerW' => 0.0, 'energyKWh' => 0.0
+            ];
+        }
+
         foreach ($prices as $p) {
             $start = (int)($p['start'] ?? 0);
             $end = (int)($p['end'] ?? 0);
@@ -1120,12 +1352,7 @@ class SmartBatteryOptimizer extends IPSModule
             if ($end <= $displayStart || $start >= $displayEnd) continue;
 
             $hourTs = mktime((int)date('H', $start), 0, 0, (int)date('m', $start), (int)date('d', $start), (int)date('Y', $start));
-            if (!isset($hourBuckets[$hourTs])) {
-                $hourBuckets[$hourTs] = [
-                    'market' => [], 'price' => [], 'selected' => false, 'reason' => '',
-                    'powerW' => 0.0, 'energyKWh' => 0.0
-                ];
-            }
+            if (!isset($hourBuckets[$hourTs])) continue;
 
             $hourBuckets[$hourTs]['market'][] = (float)($p['marketCt'] ?? 0.0);
             $hourBuckets[$hourTs]['price'][] = (float)($p['priceCt'] ?? 0.0);
@@ -1146,14 +1373,16 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
 
-        ksort($hourBuckets);
         $chartRows = [];
+        $knownHours = 0;
         foreach ($hourBuckets as $hourTs => $bucket) {
-            if (count($bucket['market']) === 0 || count($bucket['price']) === 0) continue;
+            $known = count($bucket['market']) > 0 && count($bucket['price']) > 0;
+            if ($known) $knownHours++;
             $chartRows[] = [
                 'label' => date('d.m. H:i', $hourTs),
-                'marketCt' => round(array_sum($bucket['market']) / count($bucket['market']), 4),
-                'priceCt' => round(array_sum($bucket['price']) / count($bucket['price']), 4),
+                'marketCt' => $known ? round(array_sum($bucket['market']) / count($bucket['market']), 4) : null,
+                'priceCt' => $known ? round(array_sum($bucket['price']) / count($bucket['price']), 4) : null,
+                'known' => $known,
                 'selected' => $bucket['selected'],
                 'reason' => $bucket['reason'],
                 'powerW' => round($bucket['powerW'], 1),
@@ -1174,7 +1403,7 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'function renderSBOChart(){';
             $html .= 'if(typeof Highcharts==="undefined"){return;}';
             $html .= 'var categories=rows.map(function(r){return r.label;});';
-            $html .= 'var market=rows.map(function(r){return {y:r.priceCt,color:r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3")),custom:r};});';
+            $html .= 'var market=rows.map(function(r){if(!r.known){return {y:null,custom:r};}return {y:r.priceCt,color:r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3")),custom:r};});';
             $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
             $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
             $html .= 'title:{text:null,style:{fontFamily:"Tahoma",color:"#ffffff"}},credits:{enabled:false},legend:{enabled:false,itemStyle:{fontFamily:"Tahoma",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
@@ -1189,7 +1418,11 @@ class SmartBatteryOptimizer extends IPSModule
         } else {
             $html .= $this->RenderFallbackPriceChart($chartRows, $minimumPrice);
         }
-        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Jeder Balken ist der Mittelwert der 15-Minuten-Werte der jeweiligen Stunde. Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden. Die Optimierung selbst bleibt im 15-Minuten-Takt.</div>';
+        $missingHours = 24 - $knownHours;
+        $priceAvailabilityText = $missingHours > 0
+            ? ' Für ' . $missingHours . ' der nächsten 24 Stunden sind vom Preislieferanten noch keine Day-Ahead-Werte veröffentlicht; diese Stunden werden beim nächsten Abruf automatisch ergänzt.'
+            : ' Für alle nächsten 24 Stunden liegen Preiswerte vor.';
+        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Jeder Balken ist der Mittelwert der 15-Minuten-Werte der jeweiligen Stunde. Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden. Die Optimierung selbst bleibt im 15-Minuten-Takt.' . htmlspecialchars($priceAvailabilityText) . '</div>';
         return $html . '</div>';
     }
 
@@ -1207,6 +1440,15 @@ class SmartBatteryOptimizer extends IPSModule
         $html = '<div style="margin:8px 0 14px 0;padding:8px;border:1px solid rgba(128,128,128,.45);border-radius:6px">';
         $html .= '<div style="font-size:11px;margin-bottom:7px"><b>Fallback-Balkengrafik</b> – Highcharts ist auf diesem System nicht verfügbar.</div>';
         foreach ($rows as $row) {
+            if (empty($row['known'])) {
+                $label = htmlspecialchars((string)$row['label']);
+                $html .= '<div style="display:flex;align-items:center;margin:3px 0;min-height:18px">';
+                $html .= '<div style="width:92px;flex:0 0 92px;font-size:10px;white-space:nowrap">' . $label . '</div>';
+                $html .= '<div style="width:calc(100% - 185px);height:14px;background:rgba(128,128,128,.08);border:1px dashed rgba(255,255,255,.18);box-sizing:border-box"></div>';
+                $html .= '<div style="width:88px;flex:0 0 88px;text-align:right;font-size:10px;color:#aaa">noch offen</div>';
+                $html .= '</div>';
+                continue;
+            }
             $value = (float)$row['priceCt'];
             $width = min(100.0, abs($value) / $maxAbs * 100.0);
             $color = (($row['reason'] ?? '') === 'pv_space') ? '#e0a000' : (!empty($row['selected']) ? '#38a169' : ($value < 0 ? '#d9534f' : '#4e8fd3'));

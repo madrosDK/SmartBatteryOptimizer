@@ -345,6 +345,10 @@
       "caption": "Eigenverbrauch lernen",
       "items": [
         {
+          "type": "Label",
+          "caption": "Die Hausverbrauchsvariable wird zusätzlich zur Nachtberechnung als stündliches Lastprofil gelernt. Die PV-Prognose wird mit dem zeitgleichen Eigenverbrauch verrechnet, damit nur Energie eingespeist wird, die zum Erreichen des Ziel-SoC und zur Deckung des Eigenverbrauchs nicht benötigt wird."
+        },
+        {
           "type": "SelectVariable",
           "name": "HousePowerVariable",
           "caption": "Hausverbrauch Leistung (W)"
@@ -362,6 +366,38 @@
           "minimum": 3,
           "maximum": 90,
           "suffix": " Tage"
+        },
+        {
+          "type": "CheckBox",
+          "name": "ConsumptionProfileLearningEnabled",
+          "caption": "Verbraucherlasten als Stundenprofil aus dem Archiv lernen"
+        },
+        {
+          "type": "NumberSpinner",
+          "name": "FallbackDailyConsumptionKWh",
+          "caption": "Ersatzwert Tagesverbrauch bei fehlenden Archivdaten",
+          "digits": 2,
+          "minimum": 0,
+          "maximum": 200,
+          "suffix": " kWh"
+        },
+        {
+          "type": "NumberSpinner",
+          "name": "ConsumptionForecastSafetyPct",
+          "caption": "Sicherheitsaufschlag auf gelernte Verbrauchsprognose",
+          "digits": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "suffix": " %"
+        },
+        {
+          "type": "NumberSpinner",
+          "name": "BatteryTargetSOC",
+          "caption": "Ziel-SoC nach dem nächsten PV-Tag",
+          "digits": 0,
+          "minimum": 50,
+          "maximum": 100,
+          "suffix": " %"
         },
         {
           "type": "NumberSpinner",
@@ -609,6 +645,11 @@
       "type": "Button",
       "caption": "Nur Nachtverbrauch neu lernen",
       "onClick": "SBO_LearnNightConsumption($id);"
+    },
+    {
+      "type": "Button",
+      "caption": "Verbrauchsprofil neu lernen",
+      "onClick": "SBO_LearnConsumptionProfile($id);"
     },
     {
       "type": "Button",
