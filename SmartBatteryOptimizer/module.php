@@ -1293,6 +1293,45 @@ class SmartBatteryOptimizer extends IPSModule
         return $data;
     }
 
+
+    private function RenderPlanHTML(array $forecast, array $prices, array $plan): string
+    {
+        $html = '<div style="font-family:Tahoma;font-size:12px">';
+        $html .= '<details><summary style="cursor:pointer;font-family:Tahoma;font-size:12px;font-weight:bold;padding:6px 0">Einspeiseplan anzeigen / ausblenden</summary>';
+        $html .= '<div style="padding-top:6px"><b>Einspeiseplan / Preise – nächste 24 Stunden (15-Minuten-Raster)</b><br><span style="font-size:11px">Preiswerte werden 24 Stunden angezeigt; geplante Einspeisung nur bis zur nächsten PV-Phase.</span><br><br>';
+        $html .= '<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Zeit</th><th>Markt</th><th>Tarif</th><th>Leistung</th><th>Energie</th><th>Grund</th></tr>';
+        $now = time();
+        $displayEnd = $now + 24 * 3600;
+        foreach ($prices as $p) {
+            if ($p['end'] <= $now || $p['start'] >= $displayEnd) continue;
+            $slot = null;
+            foreach ($plan['slots'] as $s) {
+                if (abs($s['start'] - $p['start']) < 120 || ($s['start'] >= $p['start'] && $s['start'] < $p['end'])) { $slot = $s; break; }
+            }
+            $html .= '<tr style="border-top:1px solid #555"><td>' . date('d.m. H:i', $p['start']) . '–' . date('H:i', $p['end']) . '</td>';
+            $html .= '<td style="text-align:right">' . number_format($p['marketCt'], 2, ',', '.') . ' ct</td>';
+            $html .= '<td style="text-align:right"><b>' . number_format($p['priceCt'], 2, ',', '.') . ' ct</b></td>';
+            $html .= '<td style="text-align:right">' . ($slot ? number_format($slot['powerW']/1000, 2, ',', '.') . ' kW' : '-') . '</td>';
+            $html .= '<td style="text-align:right">' . ($slot ? number_format($slot['energyKWh'], 2, ',', '.') . ' kWh' : '-') . '</td>';
+            $reason = $slot ? (($slot['reason'] ?? 'price') === 'pv_space' ? 'PV-Speicher' : 'Preis') : '-';
+            $html .= '<td style="text-align:right">' . $reason . '</td></tr>';
+        }
+        $html .= '</table><br><b>PV-Flächen morgen</b><br>';
+        foreach (($forecast['surfaceTotals'] ?? []) as $name => $kwh) {
+            $html .= htmlspecialchars((string)$name) . ': ' . number_format((float)$kwh, 2, ',', '.') . ' kWh<br>';
+        }
+        if (isset($forecast['surfaceCalibration']) && is_array($forecast['surfaceCalibration'])) {
+            $html .= '<br><b>PV-Flächen Kalibrierung</b><br>';
+            foreach ($forecast['surfaceCalibration'] as $name => $c) {
+                $actual = ($c['actualW'] ?? null) === null ? '-' : number_format((float)$c['actualW'], 0, ',', '.') . ' W';
+                $expected = number_format((float)($c['expectedBaseW'] ?? 0), 0, ',', '.') . ' W';
+                $mode = empty($c['autoEnabled']) ? 'manuell' : ('Auto-Faktor ' . number_format((float)($c['autoFactor'] ?? 1.0), 3, ',', '.'));
+                $html .= htmlspecialchars((string)$name) . ': erwartet ' . $expected . ' | Ist ' . $actual . ' | ' . $mode . ' | ' . (int)($c['sampleCount'] ?? 0) . ' Werte<br>';
+            }
+        }
+        return $html . '</div></details></div>';
+    }
+
     private function BuildPriceChartRows(array $forecast, array $prices, array $plan): array
     {
         $rows = [];
