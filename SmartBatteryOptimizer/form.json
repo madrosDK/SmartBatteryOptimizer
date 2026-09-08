@@ -144,11 +144,11 @@
               "edit": {
                 "type": "NumberSpinner",
                 "digits": 0,
-                "minimum": 0,
-                "maximum": 360,
+                "minimum": -180,
+                "maximum": 180,
                 "suffix": " °"
               },
-              "add": 180
+              "add": 0
             },
             {
               "caption": "Neigung",

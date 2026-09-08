@@ -4,16 +4,17 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.1.2**
+**1.2.0**
+
+## Neu in 1.2.0
+
+- Börsenpreise als Highcharts-Balkendiagramm in der HTML-Übersicht.
+- Geplante Einspeisefenster werden im Diagramm hervorgehoben.
+- Negative Börsenpreise werden unterhalb der Nulllinie dargestellt.
+- Mindest-Einspeisepreis wird als Referenzlinie angezeigt.
+- Azimut-Eingabe jetzt direkt von -180° bis +180°: 0° Süd, -90° Ost, +90° West, ±180° Nord.
+- Highcharts wird lokal aus der IP-Symcon-Installation über `/highcharts/highcharts.js` geladen; kein CDN-Aufruf notwendig.
 
 ## Dokumentation
 
-Die ausführliche Erklärung aller Konfigurationspunkte befindet sich unter:
-
-- [Konfiguration](docs/Konfiguration.md)
-
-GitHub: https://github.com/madrosDK/SmartBatteryOptimizer
-
-## Installation
-
-Die ZIP-Datei enthält `library.json`, den Modulordner `SmartBatteryOptimizer/`, die Dokumentation und diese README ohne zusätzlichen Oberordner.
+Die Wiki-Dateien werden im Release-ZIP separat im Ordner `Wiki/` bereitgestellt.

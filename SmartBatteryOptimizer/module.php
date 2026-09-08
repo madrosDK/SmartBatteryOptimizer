@@ -18,7 +18,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('PVCalibrationMinFactor', 0.50);
         $this->RegisterPropertyFloat('PVCalibrationMaxFactor', 1.50);
         $this->RegisterPropertyString('PVSurfaces', json_encode([
-            ['Active' => true, 'Name' => 'Süd', 'KWp' => 10.0, 'OrientationKnown' => true, 'Azimuth' => 180, 'Tilt' => 25, 'Factor' => 1.0, 'AutoCalibrate' => true, 'PVVariable1' => 0, 'PVVariable2' => 0, 'PVVariable3' => 0]
+            ['Active' => true, 'Name' => 'Süd', 'KWp' => 10.0, 'OrientationKnown' => true, 'Azimuth' => 0, 'Tilt' => 25, 'Factor' => 1.0, 'AutoCalibrate' => true, 'PVVariable1' => 0, 'PVVariable2' => 0, 'PVVariable3' => 0]
         ]));
 
         $this->RegisterPropertyInteger('SOCVariable', 0);
@@ -86,6 +86,7 @@ class SmartBatteryOptimizer extends IPSModule
     public function ApplyChanges()
     {
         parent::ApplyChanges();
+        $this->EnsureLocalHighchartsCopy();
         $refresh = max(5, $this->ReadPropertyInteger('RefreshMinutes'));
         $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
         $this->SetTimerInterval('ControlTimer', 60 * 1000);
@@ -228,10 +229,9 @@ class SmartBatteryOptimizer extends IPSModule
             // Bei unbekannter Ausrichtung wird während der Lernphase eine horizontale Referenz verwendet.
             // Die reale Stringleistung kalibriert diese Referenz; die Einspeise-Automatik bleibt bis zum Ende der Lernphase gesperrt.
             $tilt = $orientationKnown ? (float)($surface['Tilt'] ?? 0) : 0.0;
-            $azCompass = $orientationKnown ? fmod(((float)($surface['Azimuth'] ?? 180) + 360.0), 360.0) : 180.0;
-            // Open-Meteo: 0=Süd, -90=Ost, +90=West, ±180=Nord.
-            $azOM = $azCompass - 180.0;
-            if ($azOM > 180) $azOM -= 360;
+            // Azimut wird direkt in der Open-Meteo-Konvention eingegeben:
+            // 0=Süd, -90=Ost, +90=West, -180/+180=Nord.
+            $azOM = $orientationKnown ? max(-180.0, min(180.0, (float)($surface['Azimuth'] ?? 0))) : 0.0;
             $manualFactor = max(0.01, (float)($surface['Factor'] ?? 1.0));
             $autoEnabled = !array_key_exists('AutoCalibrate', $surface) || (bool)$surface['AutoCalibrate'];
             $autoFactor = 1.0;
@@ -784,7 +784,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function HttpGetJson(string $url): array
     {
-        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.1.2\r\n"]];
+        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.0\r\n"]];
         $ctx = stream_context_create($opts);
         $raw = @file_get_contents($url, false, $ctx);
         if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen.');
@@ -795,8 +795,33 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderHTML(array $forecast, array $prices, array $plan, float $night): string
     {
-        $slotMap = [];
-        foreach ($plan['slots'] as $s) $slotMap[$s['start']] = $s;
+        $highchartsJS = $this->GetHighchartsJavaScript();
+        $chartId = 'sbo_price_chart_' . $this->InstanceID;
+        $chartRows = [];
+        foreach ($prices as $p) {
+            if ($p['end'] <= time() || $p['start'] > $forecast['morningTs']) continue;
+
+            $slot = null;
+            foreach ($plan['slots'] as $s) {
+                if (abs($s['start'] - $p['start']) < 120 || ($s['start'] >= $p['start'] && $s['start'] < $p['end'])) {
+                    $slot = $s;
+                    break;
+                }
+            }
+
+            $chartRows[] = [
+                'label' => date('d.m. H:i', $p['start']),
+                'marketCt' => round((float)$p['marketCt'], 4),
+                'priceCt' => round((float)$p['priceCt'], 4),
+                'selected' => $slot !== null,
+                'powerW' => $slot ? round((float)$slot['powerW'], 1) : 0.0,
+                'energyKWh' => $slot ? round((float)$slot['energyKWh'], 4) : 0.0
+            ];
+        }
+
+        $chartJson = json_encode($chartRows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $minimumPrice = $this->ReadPropertyFloat('MinimumFeedInPriceCt');
+
         $html = '<div style="font-family:Tahoma;font-size:12px">';
         $html .= '<b>Börsenpreis-Speicheroptimierung</b><br><br>';
         $html .= 'SoC: <b>' . number_format($plan['soc'], 1, ',', '.') . ' %</b><br>';
@@ -809,6 +834,28 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= 'Für Einspeisung verfügbar: <b>' . number_format($plan['availableKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'Erwarteter Erlös: <b>' . number_format($plan['expectedRevenueEUR'], 2, ',', '.') . ' €</b><br>';
         $html .= 'Status: <b>' . htmlspecialchars($plan['status']) . '</b><br><br>';
+
+        $html .= '<b>Börsenpreise bis zur nächsten PV-Phase</b><br>';
+        $html .= '<div id="' . $chartId . '" style="width:100%;height:360px;margin-top:8px;margin-bottom:14px"></div>';
+        $html .= '<script>' . $highchartsJS . '</script>';
+        $html .= '<script>(function(){';
+        $html .= 'var rows=' . $chartJson . ';';
+        $html .= 'function renderSBOChart(){';
+        $html .= 'if(typeof Highcharts==="undefined"){document.getElementById(' . json_encode($chartId) . ').innerHTML="Highcharts konnte nicht geladen werden.";return;}';
+        $html .= 'var categories=rows.map(function(r){return r.label;});';
+        $html .= 'var market=rows.map(function(r){return {y:r.marketCt,color:r.selected?"#38a169":(r.marketCt<0?"#d9534f":"#4e8fd3"),custom:r};});';
+        $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
+        $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false},';
+        $html .= 'title:{text:null},credits:{enabled:false},legend:{enabled:false},';
+        $html .= 'xAxis:{categories:categories,labels:{rotation:-45,style:{fontFamily:"Tahoma",fontSize:"10px"}}},';
+        $html .= 'yAxis:{title:{text:"ct/kWh"},gridLineColor:"rgba(128,128,128,0.25)",plotLines:[{value:0,color:"#888",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontSize:"10px"}}}]},';
+        $html .= 'tooltip:{useHTML:true,formatter:function(){var r=this.point.custom;return "<b>"+r.label+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>Einspeisung geplant</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"");}},';
+        $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03}},';
+        $html .= 'series:[{name:"Börsenpreis",data:market}]';
+        $html .= '});}';
+        $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOChart);}else{setTimeout(renderSBOChart,0);}';
+        $html .= '})();</script>';
+        $html .= '<div style="font-size:11px;margin-bottom:12px">Grün = für Batterieeinspeisung ausgewählt, Rot = negativer Börsenpreis, Blau = übrige Preisintervalle.</div>';
 
         $html .= '<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Zeit</th><th>Markt</th><th>Tarif</th><th>Leistung</th><th>Energie</th></tr>';
         foreach ($prices as $p) {
@@ -838,4 +885,38 @@ class SmartBatteryOptimizer extends IPSModule
         }
         return $html . '</div>';
     }
+
+
+    private function EnsureLocalHighchartsCopy(): void
+    {
+        $localDir = __DIR__ . DIRECTORY_SEPARATOR . 'highcharts';
+        $localFile = $localDir . DIRECTORY_SEPARATOR . 'highcharts.js';
+        if (is_file($localFile)) return;
+
+        $systemFile = rtrim(IPS_GetKernelDir(), '\\/') . DIRECTORY_SEPARATOR . 'highcharts' . DIRECTORY_SEPARATOR . 'highcharts.js';
+        if (!is_file($systemFile)) return;
+
+        if (!is_dir($localDir)) {
+            @mkdir($localDir, 0775, true);
+        }
+        @copy($systemFile, $localFile);
+    }
+    private function GetHighchartsJavaScript(): string
+    {
+        $candidates = [
+            __DIR__ . DIRECTORY_SEPARATOR . 'highcharts' . DIRECTORY_SEPARATOR . 'highcharts.js',
+            rtrim(IPS_GetKernelDir(), '\\/') . DIRECTORY_SEPARATOR . 'highcharts' . DIRECTORY_SEPARATOR . 'highcharts.js'
+        ];
+
+        foreach ($candidates as $file) {
+            if (!is_file($file)) continue;
+            $js = @file_get_contents($file);
+            if ($js === false || trim($js) === '') continue;
+            // Verhindert, dass der eingebettete JavaScript-Code das HTML-Script-Element vorzeitig beendet.
+            return str_replace('</script>', '<\/script>', $js);
+        }
+
+        throw new Exception('highcharts.js wurde nicht gefunden. Erwartet unter ' . $candidates[0] . ' oder ' . $candidates[1]);
+    }
+
 }
