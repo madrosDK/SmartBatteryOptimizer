@@ -1,6 +1,6 @@
 # SmartBatteryOptimizer für IP-Symcon
 
-Version 1.0
+Version 1.0.2
 
 Funktionen:
 - Börsenpreise Österreich über aWATTar / EPEX Spot AT
@@ -43,7 +43,18 @@ Beispiel Sunny Spot ähnlich abbilden:
 - PriceAdjustmentCt = 0
 
 ## Nachtverbrauch
-Die Hausverbrauchsvariable muss im Archiv geloggt werden und eine Leistung in Watt enthalten. Das Modul integriert die Leistung über die Nacht zu kWh. Weil AC_GetLoggedValues nur Änderungen speichert, wird der letzte bekannte Wert vor Beginn des Zeitfensters mit berücksichtigt.
+Im Konfigurationsformular wird die normale IP-Symcon-Hausverbrauchsvariable ausgewählt. Es ist keine separate Archivvariable erforderlich. Das Modul findet die Archiv-Control-Instanz selbst und liest die Historie der ausgewählten Variablen-ID.
+
+Ist die Variable noch nicht archiviert oder sind noch nicht genügend gültige Nächte vorhanden, läuft die Prognose mit dem konfigurierbaren Ersatzwert weiter. Ein bereits gelernter Wert wird dabei gegenüber dem Ersatzwert bevorzugt. Sobald genügend Archivdaten vorhanden sind, wechselt das Modul automatisch auf den aus dem Archiv gelernten Nachtverbrauch. Die Hausverbrauchsvariable muss eine Leistung in Watt enthalten. Weil AC_GetLoggedValues nur Änderungen speichert, wird der letzte bekannte Wert vor Beginn des Zeitfensters mit berücksichtigt.
 
 ## Wichtiger Sicherheitshinweis
 Vor Aktivierung der Automatik zuerst mit deaktivierter Automatik den Plan kontrollieren. Speicher-Hersteller unterscheiden sich bei Freigabevariablen, Vorzeichen und Leistungs-Sollwerten. Die Option "Sollleistung negativ schreiben" ist für Systeme vorgesehen, die Entladung mit negativem Vorzeichen erwarten.
+
+
+## Änderungen 1.0.2
+- Nachtverbrauch blockiert Prognose und Preisplanung bei fehlenden Archivdaten nicht mehr.
+- Konfigurierbarer Ersatzwert für den Nachtverbrauch.
+- Konfigurierbare Mindestanzahl gültiger Nächte.
+- Automatische Erkennung, ob die ausgewählte normale Variable archiviert wird.
+- Anzeige der Quelle des verwendeten Nachtverbrauchswerts und Anzahl gültiger Nächte.
+- Zeitgewichtete Auswertung der Archivnächte.

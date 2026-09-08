@@ -25,9 +25,11 @@
       {"type":"CheckBox","name":"InvertPowerSetpoint","caption":"Sollleistung negativ schreiben (z.B. -5000 W)"}
     ]},
     {"type":"ExpansionPanel","caption":"Eigenverbrauch lernen","items":[
-      {"type":"SelectVariable","name":"HousePowerVariable","caption":"Hausverbrauch Leistung (W), archiviert"},
-      {"type":"SelectVariable","name":"PVActualPowerVariable","caption":"PV-Istleistung (W), archiviert (optional)"},
+      {"type":"SelectVariable","name":"HousePowerVariable","caption":"Hausverbrauch Leistung (W)"},
+      {"type":"SelectVariable","name":"PVActualPowerVariable","caption":"PV-Istleistung (W) (optional)"},
       {"type":"NumberSpinner","name":"LearningDays","caption":"Lernzeitraum","digits":0,"minimum":3,"maximum":90,"suffix":" Tage"},
+      {"type":"NumberSpinner","name":"MinimumValidNights","caption":"Mindestens gültige Nächte zum Lernen","digits":0,"minimum":1,"maximum":30,"suffix":" Nächte"},
+      {"type":"NumberSpinner","name":"FallbackNightConsumptionKWh","caption":"Ersatzwert Nachtverbrauch bei fehlenden Archivdaten","digits":2,"minimum":0,"maximum":100,"suffix":" kWh"},
       {"type":"NumberSpinner","name":"NightStartHour","caption":"Nacht-Auswertung beginnt","digits":0,"minimum":0,"maximum":23,"suffix":" Uhr"},
       {"type":"NumberSpinner","name":"FallbackMorningHour","caption":"Morgenende ohne PV-Istvariable","digits":0,"minimum":0,"maximum":12,"suffix":" Uhr"},
       {"type":"NumberSpinner","name":"MorningPVThresholdW","caption":"PV-Schwelle für Morgenende","digits":0,"minimum":0,"maximum":10000,"suffix":" W"},

@@ -27,6 +27,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('HousePowerVariable', 0);
         $this->RegisterPropertyInteger('PVActualPowerVariable', 0);
         $this->RegisterPropertyInteger('LearningDays', 30);
+        $this->RegisterPropertyFloat('FallbackNightConsumptionKWh', 4.0);
+        $this->RegisterPropertyInteger('MinimumValidNights', 3);
         $this->RegisterPropertyInteger('NightStartHour', 18);
         $this->RegisterPropertyInteger('FallbackMorningHour', 8);
         $this->RegisterPropertyInteger('MorningPVThresholdW', 300);
@@ -49,6 +51,8 @@ class SmartBatteryOptimizer extends IPSModule
 
         $this->RegisterVariableFloat('PVForecastTomorrow', 'PV Prognose morgen', '~Electricity', 10);
         $this->RegisterVariableFloat('NightConsumptionForecast', 'Prognose Nachtverbrauch', '~Electricity', 20);
+        $this->RegisterVariableString('NightConsumptionSource', 'Quelle Nachtverbrauch', '', 21);
+        $this->RegisterVariableInteger('ValidNightSamples', 'Gültige Nächte', '', 22);
         $this->RegisterVariableFloat('AvailableFeedInEnergy', 'Für Einspeisung verfügbar', '~Electricity', 30);
         $this->RegisterVariableFloat('CurrentPrice', 'Aktueller Einspeisepreis', '', 40);
         $this->RegisterVariableFloat('HighestPrice', 'Höchster geplanter Einspeisepreis', '', 50);
@@ -64,6 +68,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeString('PlanJSON', '[]');
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
+        $this->RegisterAttributeString('NightLearningSource', 'Fallback');
+        $this->RegisterAttributeInteger('NightSampleCount', 0);
 
         $this->RegisterTimer('RefreshTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
@@ -101,6 +107,8 @@ class SmartBatteryOptimizer extends IPSModule
 
             SetValue($this->GetIDForIdent('PVForecastTomorrow'), round($forecast['tomorrowKWh'], 3));
             SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($night, 3));
+            SetValue($this->GetIDForIdent('NightConsumptionSource'), $this->ReadAttributeString('NightLearningSource'));
+            SetValue($this->GetIDForIdent('ValidNightSamples'), $this->ReadAttributeInteger('NightSampleCount'));
             SetValue($this->GetIDForIdent('AvailableFeedInEnergy'), round($plan['availableKWh'], 3));
             SetValue($this->GetIDForIdent('HighestPrice'), round($plan['highestPriceCt'], 3));
             SetValue($this->GetIDForIdent('ExpectedRevenue'), round($plan['expectedRevenueEUR'], 3));
@@ -123,7 +131,9 @@ class SmartBatteryOptimizer extends IPSModule
         try {
             $value = $this->LearnNightConsumptionInternal();
             SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($value, 3));
-            SetValue($this->GetIDForIdent('StatusText'), 'Nachtverbrauch neu gelernt: ' . number_format($value, 2, ',', '.') . ' kWh');
+            SetValue($this->GetIDForIdent('NightConsumptionSource'), $this->ReadAttributeString('NightLearningSource'));
+            SetValue($this->GetIDForIdent('ValidNightSamples'), $this->ReadAttributeInteger('NightSampleCount'));
+            SetValue($this->GetIDForIdent('StatusText'), 'Nachtverbrauch: ' . number_format($value, 2, ',', '.') . ' kWh (' . $this->ReadAttributeString('NightLearningSource') . ')');
         } catch (Throwable $e) {
             SetValue($this->GetIDForIdent('StatusText'), 'Lernen fehlgeschlagen: ' . $e->getMessage());
         }
@@ -368,12 +378,32 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function LearnNightConsumptionInternal(): float
     {
+        $fallback = max(0.0, $this->ReadPropertyFloat('FallbackNightConsumptionKWh'));
         $varID = $this->ReadPropertyInteger('HousePowerVariable');
-        if ($varID <= 0) throw new Exception('Hausverbrauchsvariable fehlt.');
+
+        if ($varID <= 0 || !@IPS_VariableExists($varID)) {
+            return $this->UseNightFallback($fallback, 'Fallback – Hausverbrauchsvariable fehlt', 0);
+        }
+
         $archiveID = $this->FindArchive();
-        if ($archiveID <= 0) throw new Exception('Archiv Control nicht gefunden.');
+        if ($archiveID <= 0) {
+            return $this->UseNightFallback($fallback, 'Fallback – Archiv nicht gefunden', 0);
+        }
+
+        // Der Benutzer wählt die normale Variable. Das Archiv protokolliert genau diese Variable-ID.
+        // Falls die Protokollierung nicht aktiv ist, wird nicht abgebrochen, sondern ein Ersatzwert benutzt.
+        if (function_exists('AC_GetLoggingStatus')) {
+            try {
+                if (!AC_GetLoggingStatus($archiveID, $varID)) {
+                    return $this->UseNightFallback($fallback, 'Fallback – Variable nicht archiviert', 0);
+                }
+            } catch (Throwable $e) {
+                $this->SendDebug('NightArchive', 'Logging-Status konnte nicht geprüft werden: ' . $e->getMessage(), 0);
+            }
+        }
 
         $days = max(3, $this->ReadPropertyInteger('LearningDays'));
+        $minimumSamples = max(1, min($days, $this->ReadPropertyInteger('MinimumValidNights')));
         $samples = [];
         for ($d = 1; $d <= $days; $d++) {
             $day = strtotime('-' . $d . ' days 00:00');
@@ -381,30 +411,68 @@ class SmartBatteryOptimizer extends IPSModule
             $end = $this->DetermineMorningEnd($archiveID, $day + 86400);
             if ($end <= $start) continue;
             $kwh = $this->IntegratePowerVariable($archiveID, $varID, $start, $end);
-            if ($kwh > 0.05) $samples[] = $kwh;
+            if ($kwh > 0.05 && is_finite($kwh)) {
+                // Reihenfolge beibehalten: zuerst die neuesten Nächte.
+                $samples[] = ['age' => $d, 'kWh' => $kwh];
+            }
         }
 
-        if (count($samples) < 2) {
-            $fallback = $this->ReadAttributeFloat('LearnedNightKWh');
-            if ($fallback > 0) return $fallback;
-            throw new Exception('Zu wenige Archivdaten für Nachtverbrauch.');
+        $this->WriteAttributeInteger('NightSampleCount', count($samples));
+
+        if (count($samples) < $minimumSamples) {
+            $learned = $this->ReadAttributeFloat('LearnedNightKWh');
+            if ($learned > 0.05) {
+                $source = 'Letzter Lernwert – nur ' . count($samples) . '/' . $minimumSamples . ' gültige Nächte';
+                $this->WriteAttributeString('NightLearningSource', $source);
+                $this->SendDebug('NightConsumption', $source, 0);
+                return $learned;
+            }
+            return $this->UseNightFallback($fallback, 'Fallback – nur ' . count($samples) . '/' . $minimumSamples . ' gültige Nächte', count($samples));
         }
 
-        sort($samples);
-        $median = $this->Median($samples);
+        $values = array_column($samples, 'kWh');
+        $median = $this->Median($values);
         $band = $this->ReadPropertyFloat('OutlierPct') / 100.0;
-        $filtered = array_values(array_filter($samples, function ($v) use ($median, $band) {
+        $filtered = array_values(array_filter($samples, function ($sample) use ($median, $band) {
+            $v = (float)$sample['kWh'];
             if ($median <= 0) return true;
             return $v >= $median * max(0.0, 1.0 - $band) && $v <= $median * (1.0 + $band);
         }));
-        if (count($filtered) < 2) $filtered = $samples;
+        if (count($filtered) < $minimumSamples) $filtered = $samples;
 
-        // Recency weighting: newest 7 nights 60%, days 8-14 25%, older 15%.
-        // Samples above lost ordering, so compute robust mean with median blend to avoid one-off loads.
-        $avg = array_sum($filtered) / count($filtered);
-        $learned = 0.65 * $avg + 0.35 * $median;
+        // Zeitgewichtung: neueste 7 Nächte 60 %, Tage 8–14 25 %, ältere Nächte 15 %.
+        $groups = [[], [], []];
+        foreach ($filtered as $sample) {
+            $age = (int)$sample['age'];
+            $idx = $age <= 7 ? 0 : ($age <= 14 ? 1 : 2);
+            $groups[$idx][] = (float)$sample['kWh'];
+        }
+        $groupWeights = [0.60, 0.25, 0.15];
+        $weightedSum = 0.0;
+        $usedWeight = 0.0;
+        foreach ($groups as $idx => $group) {
+            if (count($group) === 0) continue;
+            $groupAvg = array_sum($group) / count($group);
+            $weightedSum += $groupAvg * $groupWeights[$idx];
+            $usedWeight += $groupWeights[$idx];
+        }
+        $weightedAvg = $usedWeight > 0 ? $weightedSum / $usedWeight : $median;
+        $learned = 0.75 * $weightedAvg + 0.25 * $median;
+
         $this->WriteAttributeFloat('LearnedNightKWh', $learned);
+        $this->WriteAttributeInteger('NightSampleCount', count($filtered));
+        $source = 'Archiv gelernt – ' . count($filtered) . ' gültige Nächte';
+        $this->WriteAttributeString('NightLearningSource', $source);
+        $this->SendDebug('NightConsumption', $source . ', Prognose ' . round($learned, 3) . ' kWh', 0);
         return $learned;
+    }
+
+    private function UseNightFallback(float $fallback, string $source, int $samples): float
+    {
+        $this->WriteAttributeString('NightLearningSource', $source);
+        $this->WriteAttributeInteger('NightSampleCount', $samples);
+        $this->SendDebug('NightConsumption', $source . ', Wert ' . round($fallback, 3) . ' kWh', 0);
+        return $fallback;
     }
 
     private function DetermineMorningEnd(int $archiveID, int $morningDayTs): int
@@ -496,7 +564,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function HttpGetJson(string $url): array
     {
-        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.0\r\n"]];
+        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.0.2\r\n"]];
         $ctx = stream_context_create($opts);
         $raw = @file_get_contents($url, false, $ctx);
         if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen.');
@@ -514,6 +582,7 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= 'SoC: <b>' . number_format($plan['soc'], 1, ',', '.') . ' %</b><br>';
         $html .= 'Speicherinhalt: <b>' . number_format($plan['storedKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'Nachtverbrauch Prognose: <b>' . number_format($night, 2, ',', '.') . ' kWh</b><br>';
+        $html .= 'Quelle Nachtverbrauch: <b>' . htmlspecialchars($this->ReadAttributeString('NightLearningSource')) . '</b><br>';
         $html .= 'Reserve inkl. Sicherheit: <b>' . number_format($plan['reserveKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'PV morgen: <b>' . number_format($forecast['tomorrowKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'PV ausreichend ab ca.: <b>' . date('H:i', $forecast['morningTs']) . '</b><br>';
