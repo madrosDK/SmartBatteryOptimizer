@@ -4,10 +4,16 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.2.0**
+**1.2.2**
 
-## Neu in 1.2.0
+## Neu in 1.2.2
 
+
+- HTML-Ausgabe in drei eigene IP-Symcon-HTMLBox-Variablen aufgeteilt: `Übersicht`, `Börsenpreis Diagramm` und `Einspeiseplan`.
+- Das Highcharts-Diagramm liegt damit vollständig in der eigenen Variable `Börsenpreis Diagramm`.
+- Sämtliche Highcharts-Beschriftungen werden in weißer Schrift und Tahoma dargestellt.
+- Über jedem Preisbalken wird der Börsenpreis direkt in ct angezeigt.
+- Fallback-Balkengrafik ohne Highcharts: Wenn `highcharts.js` fehlt oder nicht lesbar ist, bleibt die HTML-Übersicht funktionsfähig und zeigt die Börsenpreise als reine HTML/CSS-Balkengrafik.
 - Börsenpreise als Highcharts-Balkendiagramm in der HTML-Übersicht.
 - Geplante Einspeisefenster werden im Diagramm hervorgehoben.
 - Negative Börsenpreise werden unterhalb der Nulllinie dargestellt.
