@@ -17,6 +17,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('PVCalibrationMinExpectedW', 300);
         $this->RegisterPropertyFloat('PVCalibrationMinFactor', 0.50);
         $this->RegisterPropertyFloat('PVCalibrationMaxFactor', 1.50);
+        $this->RegisterPropertyInteger('PVCalibrationFeedInVariable', 0);
+        $this->RegisterPropertyInteger('PVCalibrationFeedInLimitW', 10000);
+        $this->RegisterPropertyInteger('PVCalibrationFeedInToleranceW', 500);
+        $this->RegisterPropertyBoolean('PVCalibrationFeedInInvert', false);
         $this->RegisterPropertyString('PVSurfaces', json_encode([
             ['Active' => true, 'Name' => 'Süd', 'KWp' => 10.0, 'OrientationKnown' => true, 'Azimuth' => 0, 'Tilt' => 25, 'Factor' => 1.0, 'AutoCalibrate' => true, 'PVVariable1' => 0, 'PVVariable2' => 0, 'PVVariable3' => 0]
         ]));
@@ -233,6 +237,7 @@ class SmartBatteryOptimizer extends IPSModule
         $hours = [];
         $surfaceTotals = [];
         $surfaceCalibration = [];
+        $calibrationFeedInGate = $this->GetPVCalibrationFeedInGate();
         $nowHour = strtotime(date('Y-m-d H:00:00'));
 
         foreach ($surfaces as $idx => $surface) {
@@ -292,7 +297,7 @@ class SmartBatteryOptimizer extends IPSModule
             }
 
             $actualW = $this->ReadSurfaceActualPower($surface);
-            if ($autoEnabled && $actualW !== null && $currentExpectedBaseW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
+            if ($autoEnabled && $actualW !== null && $currentExpectedBaseW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW') && !$calibrationFeedInGate['blocked']) {
                 $calibration = $this->AddPVCalibrationSample($calibration, $key, $currentExpectedBaseW, $actualW);
                 $autoFactor = isset($calibration[$key]['factor']) ? (float)$calibration[$key]['factor'] : $autoFactor;
             }
@@ -307,7 +312,9 @@ class SmartBatteryOptimizer extends IPSModule
                 'effectiveFactor' => $manualFactor * ($autoEnabled ? $autoFactor : 1.0),
                 'expectedBaseW' => $currentExpectedBaseW,
                 'actualW' => $actualW,
-                'sampleCount' => isset($calibration[$key]['samples']) && is_array($calibration[$key]['samples']) ? count($calibration[$key]['samples']) : 0
+                'sampleCount' => isset($calibration[$key]['samples']) && is_array($calibration[$key]['samples']) ? count($calibration[$key]['samples']) : 0,
+                'calibrationBlocked' => (bool)$calibrationFeedInGate['blocked'],
+                'calibrationBlockReason' => (string)$calibrationFeedInGate['text']
             ];
         }
 
@@ -358,6 +365,34 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
         return $count > 0 ? $sum : null;
+    }
+
+    private function GetPVCalibrationFeedInGate(): array
+    {
+        $variableID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
+        if ($variableID <= 0 || !@IPS_VariableExists($variableID)) {
+            return ['blocked' => false, 'configured' => false, 'feedInW' => null, 'thresholdW' => null, 'text' => ''];
+        }
+
+        try {
+            $feedInW = (float)GetValue($variableID);
+            if ($this->ReadPropertyBoolean('PVCalibrationFeedInInvert')) {
+                $feedInW *= -1.0;
+            }
+        } catch (Throwable $e) {
+            $this->SendDebug('PVCalibration', 'Netzeinspeisung konnte nicht gelesen werden: ' . $e->getMessage(), 0);
+            return ['blocked' => false, 'configured' => true, 'feedInW' => null, 'thresholdW' => null, 'text' => 'Netzeinspeisung nicht lesbar'];
+        }
+
+        $limitW = max(0.0, (float)$this->ReadPropertyInteger('PVCalibrationFeedInLimitW'));
+        $toleranceW = max(0.0, (float)$this->ReadPropertyInteger('PVCalibrationFeedInToleranceW'));
+        $thresholdW = max(0.0, $limitW - $toleranceW);
+        $blocked = $limitW > 0.0 && $feedInW >= $thresholdW;
+        $text = $blocked
+            ? 'Lernen pausiert – Einspeisebegrenzung aktiv (' . number_format($feedInW, 0, ',', '.') . ' W / Grenze ' . number_format($limitW, 0, ',', '.') . ' W, Sperre ab ' . number_format($thresholdW, 0, ',', '.') . ' W)'
+            : '';
+
+        return ['blocked' => $blocked, 'configured' => true, 'feedInW' => $feedInW, 'thresholdW' => $thresholdW, 'text' => $text];
     }
 
     private function AddPVCalibrationSample(array $calibration, string $key, float $expectedW, float $actualW): array
@@ -416,6 +451,10 @@ class SmartBatteryOptimizer extends IPSModule
             }
             if ($c['actualW'] === null) {
                 $parts[] = $name . ': keine String-Variable';
+                continue;
+            }
+            if (!empty($c['calibrationBlocked'])) {
+                $parts[] = $name . ': ' . (string)$c['calibrationBlockReason'] . ' | Auto ' . number_format((float)$c['autoFactor'], 3, ',', '.') . ' (' . (int)$c['sampleCount'] . ' Werte)';
                 continue;
             }
                         if (empty($c['orientationKnown'])) {
@@ -518,7 +557,28 @@ class SmartBatteryOptimizer extends IPSModule
             ];
         }
         usort($prices, fn($a, $b) => $a['start'] <=> $b['start']);
-        return $prices;
+        return $this->ExpandPricesToQuarterHour($prices);
+    }
+
+    private function ExpandPricesToQuarterHour(array $prices): array
+    {
+        $result = [];
+        foreach ($prices as $p) {
+            $start = (int)($p['start'] ?? 0);
+            $end = (int)($p['end'] ?? 0);
+            if ($start <= 0 || $end <= $start) continue;
+            for ($slotStart = $start; $slotStart < $end; $slotStart += 900) {
+                $slotEnd = min($end, $slotStart + 900);
+                $result[] = [
+                    'start' => $slotStart,
+                    'end' => $slotEnd,
+                    'marketCt' => (float)$p['marketCt'],
+                    'priceCt' => (float)$p['priceCt']
+                ];
+            }
+        }
+        usort($result, fn($a, $b) => $a['start'] <=> $b['start']);
+        return $result;
     }
 
 
@@ -551,7 +611,7 @@ class SmartBatteryOptimizer extends IPSModule
             $marketCt = isset($row['marketCt']) ? (float)$row['marketCt'] : (float)$row['priceCt'];
             $prices[] = ['start' => $start, 'end' => $end, 'marketCt' => $marketCt, 'priceCt' => (float)$row['priceCt']];
         }
-        return $prices;
+        return $this->ExpandPricesToQuarterHour($prices);
     }
 
     private function BuildPlan(array $forecast, array $prices, float $nightKWh): array
@@ -949,7 +1009,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function HttpGetJson(string $url): array
     {
-        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.6\r\n"]];
+        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.7\r\n"]];
         $ctx = stream_context_create($opts);
         $raw = @file_get_contents($url, false, $ctx);
         if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen.');
@@ -976,6 +1036,8 @@ class SmartBatteryOptimizer extends IPSModule
 
             $rows[] = [
                 'label' => date('d.m. H:i', $p['start']),
+                'endLabel' => date('H:i', $p['end']),
+                'intervalMinutes' => (int)round(($p['end'] - $p['start']) / 60),
                 'marketCt' => round((float)$p['marketCt'], 4),
                 'priceCt' => round((float)$p['priceCt'], 4),
                 'selected' => $slot !== null,
@@ -1012,11 +1074,12 @@ class SmartBatteryOptimizer extends IPSModule
         $chartRows = $this->BuildPriceChartRows($forecast, $prices, $plan);
         $chartJson = json_encode($chartRows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $minimumPrice = $this->ReadPropertyFloat('MinimumFeedInPriceCt');
+        $chartWidth = max(900, count($chartRows) * 34);
 
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
-        $html .= '<b>Einspeisevergütung – nächste 24 Stunden</b><br>';
+        $html .= '<b>Einspeisevergütung – nächste 24 Stunden / 15-Minuten-Raster</b><br>';
         if ($highchartsJS !== '') {
-            $html .= '<div id="' . $chartId . '" style="width:100%;height:390px;margin-top:8px;margin-bottom:10px"></div>';
+            $html .= '<div style="width:100%;overflow-x:auto;overflow-y:hidden"><div id="' . $chartId . '" style="width:' . $chartWidth . 'px;height:390px;margin-top:8px;margin-bottom:10px"></div></div>';
             $html .= '<script>' . $highchartsJS . '</script>';
             $html .= '<script>(function(){';
             $html .= 'var rows=' . $chartJson . ';';
@@ -1027,10 +1090,10 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
             $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
             $html .= 'title:{text:null,style:{fontFamily:"Tahoma",color:"#ffffff"}},credits:{enabled:false},legend:{enabled:false,itemStyle:{fontFamily:"Tahoma",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
-            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
+            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,step:4,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
             $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
-            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
-            $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return Highcharts.numberFormat(this.y,2,",",".")+" ct";},style:{fontFamily:"Tahoma",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
+            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"–"+r.endLabel+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
+            $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.06,pointPadding:0.02,dataLabels:{enabled:true,crop:false,overflow:"allow",rotation:-90,y:-5,formatter:function(){return Highcharts.numberFormat(this.y,2,",",".")+" ct";},style:{fontFamily:"Tahoma",fontSize:"8px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
             $html .= 'series:[{name:"Einspeisevergütung",data:market}]';
             $html .= '});}';
             $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOChart);}else{setTimeout(renderSBOChart,0);}';
@@ -1038,14 +1101,14 @@ class SmartBatteryOptimizer extends IPSModule
         } else {
             $html .= $this->RenderFallbackPriceChart($chartRows, $minimumPrice);
         }
-        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Preisintervalle. Die Preisdarstellung zeigt rollierend die nächsten 24 Stunden; die aktuelle Einspeiseplanung endet weiterhin mit Beginn der nächsten PV-Phase.</div>';
+        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Preisintervalle. Die Planung arbeitet intern im 15-Minuten-Raster. Liefert die Quelle Stundenpreise, werden diese in vier gleich bepreiste Viertelstunden aufgeteilt; echte 15-Minuten-Preise bleiben unverändert. Die Preisdarstellung zeigt rollierend die nächsten 24 Stunden; die aktuelle Einspeiseplanung endet weiterhin mit Beginn der nächsten PV-Phase.</div>';
         return $html . '</div>';
     }
 
     private function RenderPlanHTML(array $forecast, array $prices, array $plan): string
     {
         $html = '<div style="font-family:Tahoma;font-size:12px">';
-        $html .= '<b>Einspeiseplan / Preise – nächste 24 Stunden</b><br><span style="font-size:11px">Preiswerte werden 24 Stunden angezeigt; geplante Einspeisung nur bis zur nächsten PV-Phase.</span><br><br>';
+        $html .= '<b>Einspeiseplan / Preise – nächste 24 Stunden (15-Minuten-Raster)</b><br><span style="font-size:11px">Preiswerte werden 24 Stunden angezeigt; geplante Einspeisung nur bis zur nächsten PV-Phase. Stundenpreise werden für die Planung in vier Viertelstunden aufgeteilt.</span><br><br>';
         $html .= '<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Zeit</th><th>Markt</th><th>Tarif</th><th>Leistung</th><th>Energie</th><th>Grund</th></tr>';
         $now = time();
         $displayEnd = $now + 24 * 3600;
@@ -1055,7 +1118,7 @@ class SmartBatteryOptimizer extends IPSModule
             foreach ($plan['slots'] as $s) {
                 if (abs($s['start'] - $p['start']) < 120 || ($s['start'] >= $p['start'] && $s['start'] < $p['end'])) { $slot = $s; break; }
             }
-            $html .= '<tr style="border-top:1px solid #555"><td>' . date('d.m. H:i', $p['start']) . '</td>';
+            $html .= '<tr style="border-top:1px solid #555"><td>' . date('d.m. H:i', $p['start']) . '–' . date('H:i', $p['end']) . '</td>';
             $html .= '<td style="text-align:right">' . number_format($p['marketCt'], 2, ',', '.') . ' ct</td>';
             $html .= '<td style="text-align:right"><b>' . number_format($p['priceCt'], 2, ',', '.') . ' ct</b></td>';
             $html .= '<td style="text-align:right">' . ($slot ? number_format($slot['powerW']/1000, 2, ',', '.') . ' kW' : '-') . '</td>';

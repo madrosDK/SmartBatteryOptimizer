@@ -86,6 +86,38 @@
           "maximum": 3.0
         },
         {
+          "type": "Label",
+          "caption": "PV-Autokalibrierung bei Einspeisebegrenzung pausieren: Sobald die Netzeinspeisung die Grenze minus Toleranz erreicht, werden keine neuen Auto-Faktor-Messwerte gespeichert."
+        },
+        {
+          "type": "SelectVariable",
+          "name": "PVCalibrationFeedInVariable",
+          "caption": "Netzeinspeisung für Kalibrier-Sperre"
+        },
+        {
+          "type": "NumberSpinner",
+          "name": "PVCalibrationFeedInLimitW",
+          "caption": "Einspeisegrenze",
+          "digits": 0,
+          "minimum": 0,
+          "maximum": 1000000,
+          "suffix": " W"
+        },
+        {
+          "type": "NumberSpinner",
+          "name": "PVCalibrationFeedInToleranceW",
+          "caption": "Toleranz unter Einspeisegrenze",
+          "digits": 0,
+          "minimum": 0,
+          "maximum": 100000,
+          "suffix": " W"
+        },
+        {
+          "type": "CheckBox",
+          "name": "PVCalibrationFeedInInvert",
+          "caption": "Vorzeichen der Netzeinspeisung invertieren (falls Einspeisung negativ geliefert wird)"
+        },
+        {
           "type": "List",
           "name": "PVSurfaces",
           "caption": "PV-Flächen",
@@ -442,6 +474,10 @@
               "value": 3
             }
           ]
+        },
+        {
+          "type": "Label",
+          "caption": "Die Batterieplanung arbeitet immer im 15-Minuten-Raster. Stundenpreise werden automatisch in vier gleich bepreiste Viertelstunden aufgeteilt; bereits vorhandene 15-Minuten-Preise bleiben unverändert."
         },
         {
           "type": "SelectVariable",
