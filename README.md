@@ -72,6 +72,16 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 - Automatischer Reflow nach dem Laden ergänzt.
 - Bei einem Highcharts-Laufzeitfehler wird die HTML/CSS-Fallback-Grafik eingeblendet und der Fehlertext sichtbar ausgegeben.
 
+
+## Änderungen v1.3.4
+
+- Highcharts-Diagramm auf den bewährten Aufbau aus Version 1.2.0 zurückgeführt.
+- Keine überlagerte 15-Minuten-Linie mehr.
+- Anzeige wieder als einfache Stunden-Balkengrafik.
+- Stundenpreis = arithmetischer Mittelwert der vier 15-Minuten-Werte.
+- Preis wird direkt über jedem Balken angezeigt.
+- Die Optimierung und Batteriesteuerung bleiben unverändert im 15-Minuten-Raster.
+
 ## Änderungen v1.3.3
 
 - Preisdiagramm bewusst auf die einfache Balkengrafik vor der Viertelstunden-Linienversion zurückgestellt.
