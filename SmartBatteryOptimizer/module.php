@@ -784,7 +784,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function HttpGetJson(string $url): array
     {
-        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.1.0\r\n"]];
+        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.1.2\r\n"]];
         $ctx = stream_context_create($opts);
         $raw = @file_get_contents($url, false, $ctx);
         if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen.');

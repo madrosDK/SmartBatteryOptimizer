@@ -2,11 +2,11 @@
   "id": "{7C6AAE5D-1E16-4CE9-9C8D-9E4B51A75D20}",
   "author": "madrosDK",
   "name": "SmartBatteryOptimizer",
-  "url": "",
+  "url": "https://github.com/madrosDK/SmartBatteryOptimizer",
   "compatibility": {
     "version": "7.0"
   },
-  "version": "1.1.0",
-  "build": 3,
-  "date": 1788863361
+  "version": "1.1.2",
+  "build": 4,
+  "date": 1788865425
 }
