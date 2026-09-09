@@ -110,10 +110,17 @@ Mit **„PV-Kalibrierung / Auto-Faktoren zurücksetzen“** werden alle gespeich
 
 
 ## Neu in 1.4.3
-- Eigenes Highcharts-Balkendiagramm **PV-Prognose Diagramm** für morgen (00:00–24:00).
+- Eigenes Highcharts-Balkendiagramm **PV-Prognose Diagramm** für heute und morgen. Für heute wird die tatsächlich gemessene PV-Produktion als gelber, überlagerter Balken dargestellt.
 - Balken zeigen die prognostizierte mittlere PV-Leistung je Stunde in kW; Wert steht über dem Balken.
 - Gesamtprognose in kWh und erwarteter Beginn oberhalb der Morgenschwelle werden unter der Grafik angezeigt.
 
+
+
+## Neu in 1.4.5 – Ist-Produktion über der PV-Prognose
+
+Im **PV-Prognose Diagramm** wird für den heutigen Tag zusätzlich die tatsächlich gemessene PV-Leistung aus dem IP-Symcon-Archiv dargestellt. Die Ist-Produktion liegt als schmalerer **gelber Balken** direkt über dem Prognosebalken. Unter der Grafik stehen die prognostizierte Tagesenergie heute, die tatsächlich erzeugte Energie heute bis zum aktuellen Zeitpunkt und die Prognose für morgen.
+
+Als Quelle wird bevorzugt die konfigurierte **PV-Istleistung Gesamtvariable** verwendet. Ist diese nicht gesetzt, summiert das Modul die konfigurierten PV-String-/MPPT-Variablen der aktiven Flächen. Die aktuelle Stunde wird als mittlere Ist-Leistung vom Stundenbeginn bis zum aktuellen Zeitpunkt dargestellt. Zukünftige Stunden erhalten keinen Ist-Wert.
 
 ## Neu in 1.4.4 – PV-Kalibrierdiagnose und Prognose heute + morgen
 
