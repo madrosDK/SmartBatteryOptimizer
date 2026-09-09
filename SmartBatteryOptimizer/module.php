@@ -54,8 +54,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('SafetyReservePct', 10.0);
         $this->RegisterPropertyFloat('OutlierPct', 70.0);
 
-        $this->RegisterPropertyInteger('PriceSource', 0);
-        $this->RegisterPropertyInteger('FeedInTariffProvider', 0);
+        $this->RegisterPropertyInteger('PriceProvider', 0);
         $this->RegisterPropertyInteger('PriceJSONVariable', 0);
         $this->RegisterPropertyInteger('PriceDisplayHours', 24);
         $this->RegisterPropertyFloat('PositivePriceFactor', 1.0);
@@ -742,44 +741,68 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function FetchPrices(): array
     {
-        // Die Preisquelle ist bewusst als Auswahl aufgebaut. Weitere Portale können
-        // später als zusätzliche Fälle ergänzt werden, ohne Tarif- oder Planlogik zu ändern.
-        switch ($this->ReadPropertyInteger('PriceSource')) {
+        // Ein einziges Auswahlfeld bestimmt Datenquelle und Tariflogik.
+        // 0 = EPEX SPOT AT 60 min, 1 = aWATTar SUNNY Spot,
+        // 2 = eigene JSON-Quelle, 3 = benutzerdefiniert auf EPEX-Basis.
+        switch ($this->ReadPropertyInteger('PriceProvider')) {
             case 1:
+                return $this->FetchEPEXHourlyPrices(1);
+
+            case 2:
                 return $this->FetchCustomJSONPrices();
+
+            case 3:
+                return $this->FetchEPEXHourlyPrices(3);
 
             case 0:
             default:
-                return $this->FetchEPEXSmartEnergyPrices();
+                return $this->FetchEPEXHourlyPrices(0);
         }
     }
 
-    private function FetchEPEXSmartEnergyPrices(): array
+    private function FetchEPEXHourlyPrices(int $tariffMode): array
     {
-        // EPEX SPOT AT Day-Ahead über smartENERGY. Die API liefert aktuell
-        // 15-Minuten-Werte; Anzeige und Bewertung können daraus Stundenmittel bilden.
+        // smartENERGY liefert EPEX SPOT AT derzeit in 15-Minuten-Werten.
+        // Für dieses Modul werden zunächst echte arithmetische 60-Minuten-Mittel
+        // gebildet. Erst danach wird der gewählte Tarif auf den Stundenpreis angewandt.
         $url = 'https://apis.smartenergy.at/market/v1/price';
         $data = $this->HttpGetJson($url);
         if (!isset($data['data']) || !is_array($data['data'])) {
             throw new Exception('Ungültige smartENERGY EPEX-SPOT-AT-Antwort.');
         }
 
-        $intervalMinutes = max(1, (int)($data['interval'] ?? 15));
-        $prices = [];
+        $hourly = [];
         foreach ($data['data'] as $row) {
             if (!isset($row['date'], $row['value'])) continue;
             $start = strtotime((string)$row['date']);
             if ($start === false) continue;
-            $rawCt = (float)$row['value'];
+            $hourStart = strtotime(date('Y-m-d H:00:00', $start));
+            if (!isset($hourly[$hourStart])) {
+                $hourly[$hourStart] = ['sum' => 0.0, 'count' => 0];
+            }
+            $hourly[$hourStart]['sum'] += (float)$row['value'];
+            $hourly[$hourStart]['count']++;
+        }
+
+        ksort($hourly);
+        $prices = [];
+        foreach ($hourly as $hourStart => $bucket) {
+            if (($bucket['count'] ?? 0) <= 0) continue;
+            $marketCt = (float)$bucket['sum'] / (int)$bucket['count'];
             $prices[] = [
-                'start' => $start,
-                'end' => $start + ($intervalMinutes * 60),
-                'marketCt' => $rawCt,
-                'priceCt' => $this->CalculateFeedInTariff($rawCt)
+                'start' => (int)$hourStart,
+                'end' => (int)$hourStart + 3600,
+                'marketCt' => $marketCt,
+                'priceCt' => $this->CalculateSelectedTariff($marketCt, $tariffMode)
             ];
         }
-        if (count($prices) === 0) throw new Exception('smartENERGY liefert keine EPEX-SPOT-AT-Preisdaten.');
-        usort($prices, fn($a, $b) => $a['start'] <=> $b['start']);
+
+        if (count($prices) === 0) {
+            throw new Exception('smartENERGY liefert keine EPEX-SPOT-AT-Preisdaten.');
+        }
+
+        // Die Batterieplanung arbeitet weiterhin in 15-Minuten-Slots. Innerhalb
+        // einer Stunde gilt dabei viermal derselbe 60-Minuten-Preis.
         return $this->ExpandPricesToQuarterHour($prices);
     }
 
@@ -813,23 +836,21 @@ class SmartBatteryOptimizer extends IPSModule
         return $result;
     }
 
-
-    private function CalculateFeedInTariff(float $marketCt): float
+    private function CalculateSelectedTariff(float $marketCt, int $tariffMode): float
     {
-        switch ($this->ReadPropertyInteger('FeedInTariffProvider')) {
-            case 0: // KELAG Sonnenplus Smart: EPEX SPOT AT Stundenpreis 1:1
-            case 1: // Reiner EPEX SPOT AT Marktpreis
-                return $marketCt;
-
-            case 2: // aWATTar SUNNY Spot 60min: Marktpreis minus 19 % des absoluten Marktpreises
+        switch ($tariffMode) {
+            case 1: // aWATTar SUNNY Spot 60min
                 return $marketCt - (abs($marketCt) * 0.19);
 
-            case 3: // Benutzerdefinierter Tarif
-            default:
+            case 3: // Benutzerdefiniert auf EPEX-60min-Basis
                 $factor = $marketCt >= 0
                     ? $this->ReadPropertyFloat('PositivePriceFactor')
                     : $this->ReadPropertyFloat('NegativePriceFactor');
                 return $marketCt * $factor + $this->ReadPropertyFloat('PriceAdjustmentCt');
+
+            case 0: // EPEX SPOT AT 60min, Marktpreis 1:1
+            default:
+                return $marketCt;
         }
     }
 

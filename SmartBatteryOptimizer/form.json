@@ -479,34 +479,19 @@
             "items": [
                 {
                     "type": "Select",
-                    "name": "PriceSource",
-                    "caption": "Preisportal / Marktdatenquelle",
+                    "name": "PriceProvider",
+                    "caption": "Preisquelle / Tarif",
                     "options": [
                         {
-                            "caption": "EPEX SPOT AT (smartENERGY)",
+                            "caption": "EPEX SPOT AT 60 min",
                             "value": 0
-                        },
-                        {
-                            "caption": "Eigene JSON-Quelle",
-                            "value": 1
-                        }
-                    ]
-                },
-                {
-                    "type": "Select",
-                    "name": "FeedInTariffProvider",
-                    "caption": "Einspeisetarif / Anbieter",
-                    "options": [
-                        {
-                            "caption": "KELAG Sonnenplus Smart (EPEX SPOT AT)",
-                            "value": 0
-                        },
-                        {
-                            "caption": "EPEX SPOT AT – Marktpreis 1:1",
-                            "value": 1
                         },
                         {
                             "caption": "aWATTar SUNNY Spot 60min",
+                            "value": 1
+                        },
+                        {
+                            "caption": "Eigene JSON-Quelle",
                             "value": 2
                         },
                         {
@@ -517,12 +502,12 @@
                 },
                 {
                     "type": "Label",
-                    "caption": "Preisportal auswählen. EPEX SPOT AT wird derzeit über smartENERGY bezogen. Die gelieferten 15-Minuten-Werte werden für das Diagramm zu Stundenmitteln zusammengefasst. Weitere Preisportale können später als zusätzliche Auswahl ergänzt werden."
+                    "caption": "EPEX wird über smartENERGY bezogen. Die gelieferten 15-Minuten-EPEX-Werte werden zuerst zu arithmetischen 60-Minuten-Mittelwerten zusammengefasst. aWATTar und Benutzerdefiniert werden anschließend aus diesem Stundenpreis berechnet."
                 },
                 {
                     "type": "SelectVariable",
                     "name": "PriceJSONVariable",
-                    "caption": "JSON-Preisvariable (nur eigene Quelle)"
+                    "caption": "JSON-Preisvariable (nur bei Eigene JSON-Quelle)"
                 },
                 {
                     "type": "NumberSpinner",

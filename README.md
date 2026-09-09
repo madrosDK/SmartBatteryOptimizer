@@ -2,9 +2,8 @@
 
 
 ### Neu in 1.2.4
-- Standard-Marktdaten: **echte EPEX SPOT AT 15-Minuten-Preise** über die kostenlose smartENERGY-API (`https://apis.smartenergy.at/market/v1/price`).
-- Eigene Auswahl **Einspeisetarif / Anbieter**: KELAG Sonnenplus Smart, EPEX SPOT AT 1:1, aWATTar SUNNY Spot 60min oder benutzerdefiniert.
-- KELAG Sonnenplus Smart verwendet den EPEX-SPOT-AT-Stundenpreis 1:1.
+- Standard-Marktdaten: **EPEX SPOT AT 60 min**. Die smartENERGY-API liefert 15-Minuten-Rohwerte, aus denen das Modul zuerst arithmetische Stundenmittel bildet.
+- Nur noch **ein Auswahlfeld „Preisquelle / Tarif“**: EPEX SPOT AT 60 min, aWATTar SUNNY Spot 60min, Eigene JSON-Quelle oder Benutzerdefiniert.
 - aWATTar SUNNY Spot 60min berücksichtigt automatisch den aktuellen 19-%-Abschlag auf den absoluten Marktpreis.
 - Highcharts und Fallback-Grafik zeigen jetzt den **effektiven Einspeisepreis** als Balken; der reine EPEX-Marktpreis bleibt im Tooltip sichtbar.
 - Tariflogik ist separat von der Marktdatenquelle aufgebaut, damit weitere Anbieter leicht ergänzt werden können.
@@ -55,7 +54,7 @@ Zusätzlich kann das Modul vor einer starken PV-Phase gezielt Speicherplatz scha
 
 ## Neu in 1.2.7
 
-Die Einspeiseplanung arbeitet mit einem **15-Minuten-Raster**. Die integrierte smartENERGY-API liefert dafür echte EPEX-SPOT-AT-Viertelstundenpreise. Eine eigene JSON-Quelle wird bei Bedarf auf 15-Minuten-Slots normalisiert. Dadurch kann insbesondere die AlphaESS-Dispatch-Steuerung viertelstundengenau starten, stoppen und die notwendige Energiemenge verteilen.
+Die Preisbewertung basiert bei EPEX auf **60-Minuten-Stundenpreisen**. Die von smartENERGY gelieferten 15-Minuten-Rohwerte werden zunächst pro Stunde gemittelt. Für die Batterieplanung wird derselbe Stundenpreis anschließend auf vier 15-Minuten-Slots verteilt. Dadurch bleibt die AlphaESS-Dispatch-Steuerung viertelstundengenau, ohne dass innerhalb einer Stunde unterschiedliche Börsenpreise angenommen werden.
 
 Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**. Dazu wird eine Variable für die aktuelle Netzeinspeisung gewählt. Bei einer Einspeisegrenze von 10.000 W und einer Toleranz von 500 W werden ab 9.500 W keine neuen Kalibrierwerte gespeichert. So wird eine technisch richtige PV-Prognose nicht nach unten korrigiert, nur weil der Wechselrichter wegen der Netzgrenze abregelt. Falls die Netzeinspeisung mit negativem Vorzeichen geliefert wird, kann das Vorzeichen in der Konfiguration invertiert werden.
 
@@ -165,6 +164,6 @@ Das gelernte Tagesverbrauchsprofil kann bereits ab **3 gültigen Tagen** verwend
 
 ## Preisportal und Vorschauhorizont
 
-Die Marktdatenquelle ist als **Preisportal / Marktdatenquelle** auswählbar. Aktuell stehen **EPEX SPOT AT (smartENERGY)** und eine **eigene JSON-Quelle** zur Verfügung. Die Struktur ist so vorbereitet, dass weitere Preisportale später als zusätzliche Auswahl ergänzt werden können.
+Es gibt nur noch das Auswahlfeld **Preisquelle / Tarif**. Zur Auswahl stehen **EPEX SPOT AT 60 min**, **aWATTar SUNNY Spot 60min**, **Eigene JSON-Quelle** und **Benutzerdefiniert (Faktoren unten)**. Weitere Portale oder Tarifmodelle können später als zusätzliche Auswahl ergänzt werden.
 
-Die Einstellung **Preisvorschau / Diagramm (Stunden)** legt den sichtbaren Horizont fest. Sie ist von **24 bis 72 Stunden** einstellbar. Bei EPEX werden ausschließlich tatsächlich veröffentlichte Day-Ahead-Werte angezeigt; noch nicht veröffentlichte Stunden bleiben leer und werden bei einem späteren Abruf ergänzt. Die von smartENERGY gelieferten 15-Minuten-Werte werden im Diagramm als arithmetisches Stundenmittel dargestellt.
+Die Einstellung **Preisvorschau / Diagramm (Stunden)** legt den sichtbaren Horizont fest. Sie ist von **24 bis 72 Stunden** einstellbar. Bei EPEX werden ausschließlich tatsächlich veröffentlichte Day-Ahead-Werte angezeigt; noch nicht veröffentlichte Stunden bleiben leer und werden bei einem späteren Abruf ergänzt. Die von smartENERGY gelieferten 15-Minuten-Rohwerte werden bereits vor der Tarifberechnung zu arithmetischen 60-Minuten-Mittelwerten zusammengefasst.
