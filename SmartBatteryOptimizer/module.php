@@ -1182,36 +1182,57 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $history = json_decode($this->ReadAttributeString('PVForecastHistoryJSON'), true);
         if (!is_array($history)) $history = [];
+
         $hours = is_array($forecast['hours'] ?? null) ? $forecast['hours'] : [];
-        $todayDate = date('Y-m-d');
-        $tomorrowDate = date('Y-m-d', strtotime('tomorrow'));
+        $now = time();
+        $todayDate = date('Y-m-d', $now);
+        $tomorrowDate = date('Y-m-d', strtotime('tomorrow', $now));
 
         foreach ([$todayDate, $tomorrowDate] as $date) {
-            // Für "heute" eine bereits am Vortag gespeicherte Day-Ahead-Prognose nicht mehr überschreiben.
-            // Nur bei einer Neuinstallation/leerem Verlauf wird der heutige Stand einmalig gespeichert.
-            if ($date === $todayDate && isset($history[$date]) && !empty($history[$date]['dayAhead'])) {
-                continue;
-            }
             $dayStart = strtotime($date . ' 00:00:00');
-            $hourlyKWh = [];
+            $existing = is_array($history[$date]['hourlyKWh'] ?? null)
+                ? array_values($history[$date]['hourlyKWh'])
+                : array_fill(0, 24, null);
+
+            // Immer exakt 24 Stunden vorhalten.
+            $existing = array_pad(array_slice($existing, 0, 24), 24, null);
+            $hourlyKWh = $existing;
+
             for ($h = 0; $h < 24; $h++) {
-                $ts = $dayStart + $h * 3600;
-                $hourlyKWh[$h] = round(max(0.0, (float)($hours[$ts]['totalKW'] ?? 0.0)), 4);
+                $hourStart = $dayStart + $h * 3600;
+                $hourEnd = $hourStart + 3600;
+
+                // Abgelaufene Stunden werden nie wieder verändert.
+                // Die aktuelle Stunde und alle zukünftigen Stunden dürfen durch
+                // neuere Open-Meteo-Prognosen aktualisiert werden.
+                if ($date === $todayDate && $hourEnd <= $now && $hourlyKWh[$h] !== null) {
+                    continue;
+                }
+
+                $hourlyKWh[$h] = round(
+                    max(0.0, (float)($hours[$hourStart]['totalKW'] ?? 0.0)),
+                    4
+                );
             }
+
             $history[$date] = [
                 'hourlyKWh' => $hourlyKWh,
-                'totalKWh' => array_sum($hourlyKWh),
-                'savedAt' => time(),
+                'totalKWh' => array_sum(array_map(
+                    static fn($v) => $v === null ? 0.0 : (float)$v,
+                    $hourlyKWh
+                )),
+                'savedAt' => $now,
                 'dayAhead' => ($date === $tomorrowDate)
             ];
         }
 
         ksort($history);
-        $cutoff = strtotime('-14 days 00:00:00');
+        $cutoff = strtotime('-14 days 00:00:00', $now);
         foreach (array_keys($history) as $date) {
             $ts = strtotime($date . ' 00:00:00');
             if ($ts !== false && $ts < $cutoff) unset($history[$date]);
         }
+
         $this->WriteAttributeString('PVForecastHistoryJSON', json_encode($history));
     }
 

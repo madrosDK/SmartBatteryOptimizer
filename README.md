@@ -170,3 +170,6 @@ Die Einstellung **Preisvorschau / Diagramm (Stunden)** legt den sichtbaren Horiz
 
 ### Einspeiseplan
 Der sichtbare Einspeiseplan wird ab Version 1.5.3 ausschließlich in Stundenwerten dargestellt. Marktpreis und Tarif sind Stundenmittelwerte; geplante Energie wird je Stunde aufsummiert. Die interne Batteriesteuerung bleibt feiner aufgelöst.
+
+### Historische PV-Prognosen
+Ab Version 1.5.4 werden bereits vergangene Prognosestunden nicht mehr nachträglich verändert. Bei einer neuen Wetteraktualisierung werden nur die aktuelle und zukünftige Stunden mit der neuesten Prognose überschrieben. Dadurch bleibt der spätere Vergleich zwischen damaliger Prognose und tatsächlicher PV-Erzeugung nachvollziehbar.
