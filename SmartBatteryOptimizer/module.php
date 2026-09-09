@@ -57,6 +57,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('PriceSource', 0);
         $this->RegisterPropertyInteger('FeedInTariffProvider', 0);
         $this->RegisterPropertyInteger('PriceJSONVariable', 0);
+        $this->RegisterPropertyInteger('PriceDisplayHours', 24);
         $this->RegisterPropertyFloat('PositivePriceFactor', 1.0);
         $this->RegisterPropertyFloat('NegativePriceFactor', 1.0);
         $this->RegisterPropertyFloat('PriceAdjustmentCt', 0.0);
@@ -741,17 +742,22 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function FetchPrices(): array
     {
-        if ($this->ReadPropertyInteger('PriceSource') === 1) {
-            $vid = $this->ReadPropertyInteger('PriceJSONVariable');
-            if ($vid <= 0) throw new Exception('JSON-Preisvariable nicht gewählt.');
-            $data = json_decode((string)GetValue($vid), true);
-            if (!is_array($data)) throw new Exception('JSON-Preisvariable enthält kein gültiges JSON.');
-            return $this->NormalizeCustomPrices($data);
-        }
+        // Die Preisquelle ist bewusst als Auswahl aufgebaut. Weitere Portale können
+        // später als zusätzliche Fälle ergänzt werden, ohne Tarif- oder Planlogik zu ändern.
+        switch ($this->ReadPropertyInteger('PriceSource')) {
+            case 1:
+                return $this->FetchCustomJSONPrices();
 
-        // Kostenlose smartENERGY-API: echte EPEX SPOT AT Day-Ahead-Preise
-        // im 15-Minuten-Raster. Laut API-Dokumentation sind die Werte in ct/kWh
-        // inklusive 20 % USt. und ohne Grund-/Abwicklungsgebühr angegeben.
+            case 0:
+            default:
+                return $this->FetchEPEXSmartEnergyPrices();
+        }
+    }
+
+    private function FetchEPEXSmartEnergyPrices(): array
+    {
+        // EPEX SPOT AT Day-Ahead über smartENERGY. Die API liefert aktuell
+        // 15-Minuten-Werte; Anzeige und Bewertung können daraus Stundenmittel bilden.
         $url = 'https://apis.smartenergy.at/market/v1/price';
         $data = $this->HttpGetJson($url);
         if (!isset($data['data']) || !is_array($data['data'])) {
@@ -775,6 +781,15 @@ class SmartBatteryOptimizer extends IPSModule
         if (count($prices) === 0) throw new Exception('smartENERGY liefert keine EPEX-SPOT-AT-Preisdaten.');
         usort($prices, fn($a, $b) => $a['start'] <=> $b['start']);
         return $this->ExpandPricesToQuarterHour($prices);
+    }
+
+    private function FetchCustomJSONPrices(): array
+    {
+        $vid = $this->ReadPropertyInteger('PriceJSONVariable');
+        if ($vid <= 0) throw new Exception('JSON-Preisvariable nicht gewählt.');
+        $data = json_decode((string)GetValue($vid), true);
+        if (!is_array($data)) throw new Exception('JSON-Preisvariable enthält kein gültiges JSON.');
+        return $this->NormalizeCustomPrices($data);
     }
 
     private function ExpandPricesToQuarterHour(array $prices): array
@@ -1847,10 +1862,11 @@ class SmartBatteryOptimizer extends IPSModule
 
         $now = time();
         $displayStart = mktime((int)date('H', $now), 0, 0, (int)date('m', $now), (int)date('d', $now), (int)date('Y', $now));
-        $displayEnd = $displayStart + 24 * 3600;
+        $displayHours = max(24, min(72, $this->ReadPropertyInteger('PriceDisplayHours')));
+        $displayEnd = $displayStart + $displayHours * 3600;
         $hourBuckets = [];
 
-        for ($i = 0; $i < 24; $i++) {
+        for ($i = 0; $i < $displayHours; $i++) {
             $hourTs = $displayStart + $i * 3600;
             $hourBuckets[$hourTs] = [
                 'market' => [], 'price' => [], 'selected' => false, 'reason' => '',
@@ -1907,7 +1923,7 @@ class SmartBatteryOptimizer extends IPSModule
         if ($chartJson === false) $chartJson = '[]';
 
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
-        $html .= '<b>Einspeisevergütung – Stundenmittel der nächsten 24 Stunden</b><br>';
+        $html .= '<b>Einspeisevergütung – Stundenmittel der nächsten ' . $displayHours . ' Stunden</b><br>';
         $html .= '<span style="font-size:11px;color:#bbb">Aktualisiert: ' . date('d.m.Y H:i:s') . '</span><br>';
         if ($highchartsJS !== '') {
             $html .= '<div id="' . $chartId . '" style="width:100%;height:390px;margin-top:8px;margin-bottom:10px"></div>';
@@ -1932,10 +1948,10 @@ class SmartBatteryOptimizer extends IPSModule
         } else {
             $html .= $this->RenderFallbackPriceChart($chartRows, $minimumPrice);
         }
-        $missingHours = 24 - $knownHours;
+        $missingHours = $displayHours - $knownHours;
         $priceAvailabilityText = $missingHours > 0
-            ? ' Für ' . $missingHours . ' der nächsten 24 Stunden sind vom Preislieferanten noch keine Day-Ahead-Werte veröffentlicht; diese Stunden werden beim nächsten Abruf automatisch ergänzt.'
-            : ' Für alle nächsten 24 Stunden liegen Preiswerte vor.';
+            ? ' Für ' . $missingHours . ' der nächsten ' . $displayHours . ' Stunden sind vom Preisportal noch keine veröffentlichten Werte vorhanden; diese Stunden werden beim nächsten Abruf automatisch ergänzt.'
+            : ' Für alle nächsten ' . $displayHours . ' Stunden liegen Preiswerte vor.';
         $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Jeder Balken ist der Mittelwert der 15-Minuten-Werte der jeweiligen Stunde. Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden. Die Optimierung selbst bleibt im 15-Minuten-Takt.' . htmlspecialchars($priceAvailabilityText) . '</div>';
         return $html . '</div>';
     }

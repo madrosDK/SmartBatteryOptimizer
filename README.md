@@ -161,3 +161,10 @@ Beispiel: 100,0 kWh theoretische Prognose und 118,0 kWh tatsächliche Erzeugung 
 Da die alten Kalibrierdaten aus früheren Versionen aus Watt-Samples bestehen, werden diese beim ersten Start von v1.5.0 automatisch verworfen. Manuelle PV-Flächenparameter wie kWp, Azimut, Neigung und manueller Faktor bleiben unverändert.
 
 Das gelernte Tagesverbrauchsprofil kann bereits ab **3 gültigen Tagen** verwendet werden. Die Mindestzahl ist über **„Mindestens gültige Tage für Tagesverbrauchsprofil“** einstellbar und steht standardmäßig auf 3 – analog zur Mindestanzahl gültiger Nächte.
+
+
+## Preisportal und Vorschauhorizont
+
+Die Marktdatenquelle ist als **Preisportal / Marktdatenquelle** auswählbar. Aktuell stehen **EPEX SPOT AT (smartENERGY)** und eine **eigene JSON-Quelle** zur Verfügung. Die Struktur ist so vorbereitet, dass weitere Preisportale später als zusätzliche Auswahl ergänzt werden können.
+
+Die Einstellung **Preisvorschau / Diagramm (Stunden)** legt den sichtbaren Horizont fest. Sie ist von **24 bis 72 Stunden** einstellbar. Bei EPEX werden ausschließlich tatsächlich veröffentlichte Day-Ahead-Werte angezeigt; noch nicht veröffentlichte Stunden bleiben leer und werden bei einem späteren Abruf ergänzt. Die von smartENERGY gelieferten 15-Minuten-Werte werden im Diagramm als arithmetisches Stundenmittel dargestellt.

@@ -480,14 +480,14 @@
                 {
                     "type": "Select",
                     "name": "PriceSource",
-                    "caption": "Marktdatenquelle",
+                    "caption": "Preisportal / Marktdatenquelle",
                     "options": [
                         {
-                            "caption": "EPEX SPOT AT 15 min (smartENERGY API)",
+                            "caption": "EPEX SPOT AT (smartENERGY)",
                             "value": 0
                         },
                         {
-                            "caption": "JSON-Variable (eigene Quelle)",
+                            "caption": "Eigene JSON-Quelle",
                             "value": 1
                         }
                     ]
@@ -517,12 +517,20 @@
                 },
                 {
                     "type": "Label",
-                    "caption": "Die integrierte Marktdatenquelle liefert echte EPEX-SPOT-AT-Preise im 15-Minuten-Raster. Eine eigene JSON-Quelle wird bei Bedarf ebenfalls auf 15-Minuten-Slots normalisiert."
+                    "caption": "Preisportal auswählen. EPEX SPOT AT wird derzeit über smartENERGY bezogen. Die gelieferten 15-Minuten-Werte werden für das Diagramm zu Stundenmitteln zusammengefasst. Weitere Preisportale können später als zusätzliche Auswahl ergänzt werden."
                 },
                 {
                     "type": "SelectVariable",
                     "name": "PriceJSONVariable",
                     "caption": "JSON-Preisvariable (nur eigene Quelle)"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PriceDisplayHours",
+                    "caption": "Preisvorschau / Diagramm (Stunden)",
+                    "minimum": 24,
+                    "maximum": 72,
+                    "suffix": " h"
                 },
                 {
                     "type": "NumberSpinner",
