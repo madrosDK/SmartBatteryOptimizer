@@ -134,3 +134,8 @@ Der Auto-Faktor wird aus den gespeicherten Lernwerten berechnet als `Summe Istle
 ## Historischer Prognosevergleich (v1.4.6)
 
 Die PV-Grafik zeigt die Stundenwerte als **kWh pro Stunde**. Transparente gelbe Balken zeigen die tatsächlich erzeugte Energie aus dem IP-Symcon-Archiv. Mit den Pfeiltasten unter der Grafik kann tageweise zurück- und vorgeblättert werden. Day-Ahead-Prognosen werden gespeichert, damit vergangene Prognosen mit den realen Produktionswerten verglichen werden können. Bereits vergangene Tage vor Installation dieser Version können nicht als ursprüngliche Prognose rekonstruiert werden.
+
+
+## Stabilisierung PV-Prognose-Diagramm (v1.4.7)
+
+Die Highcharts-Ausgabe wurde wieder auf einen einfachen, IP-Symcon-kompatiblen Aufbau zurückgeführt. Beim Blättern zwischen Tagen wird das Diagramm vollständig neu aufgebaut. Prognose und Ist-Produktion werden weiterhin als kWh je Stunde dargestellt; die Ist-Werte sind transparent gelb überlagert.

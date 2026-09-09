@@ -1578,23 +1578,34 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderPVForecastChartHTML(array $forecast): string
     {
+        // Bewusst einfacher Highcharts-Aufbau wie bei der stabilen Preisgrafik.
+        // Die Tagesnavigation erzeugt das Diagramm komplett neu, statt Serien dynamisch
+        // zu verändern. Das ist im IP-Symcon HTMLBox/WebFront deutlich robuster.
         $highchartsJS = $this->GetHighchartsJavaScript();
         $chartId = 'sbo_pv_forecast_chart_' . $this->InstanceID;
         $todayDate = date('Y-m-d');
         $tomorrowDate = date('Y-m-d', strtotime('tomorrow'));
         $history = json_decode($this->ReadAttributeString('PVForecastHistoryJSON'), true);
-        if (!is_array($history)) $history = [];
+        if (!is_array($history)) {
+            $history = [];
+        }
 
-        // Aktuelle Prognose als Fallback sicherstellen, falls die Instanz gerade erst aktualisiert wurde.
+        // Aktuelle Prognose sicherstellen, wenn noch kein historischer Eintrag existiert.
         $hours = is_array($forecast['hours'] ?? null) ? $forecast['hours'] : [];
         foreach ([$todayDate, $tomorrowDate] as $date) {
             if (!isset($history[$date])) {
                 $dayStart = strtotime($date . ' 00:00:00');
                 $hourly = [];
                 for ($h = 0; $h < 24; $h++) {
+                    // Stundenmittel in kW über eine volle Stunde entspricht der Energie kWh.
                     $hourly[$h] = round(max(0.0, (float)($hours[$dayStart + $h * 3600]['totalKW'] ?? 0.0)), 4);
                 }
-                $history[$date] = ['hourlyKWh' => $hourly, 'totalKWh' => array_sum($hourly), 'savedAt' => time(), 'dayAhead' => ($date === $tomorrowDate)];
+                $history[$date] = [
+                    'hourlyKWh' => $hourly,
+                    'totalKWh' => array_sum($hourly),
+                    'savedAt' => time(),
+                    'dayAhead' => ($date === $tomorrowDate)
+                ];
             }
         }
         ksort($history);
@@ -1605,16 +1616,21 @@ class SmartBatteryOptimizer extends IPSModule
         $maxTs = strtotime('tomorrow 00:00:00');
         foreach ($history as $date => $entry) {
             $dayStart = strtotime($date . ' 00:00:00');
-            if ($dayStart === false || $dayStart < $minTs || $dayStart > $maxTs) continue;
+            if ($dayStart === false || $dayStart < $minTs || $dayStart > $maxTs) {
+                continue;
+            }
             $hourlyForecast = is_array($entry['hourlyKWh'] ?? null) ? array_values($entry['hourlyKWh']) : array_fill(0, 24, 0.0);
             $actual = $this->GetActualPVHourlyForDay($dayStart);
-            if ($source === '' && !empty($actual['source'])) $source = (string)$actual['source'];
+            if ($source === '' && !empty($actual['source'])) {
+                $source = (string)$actual['source'];
+            }
             $rows = [];
             for ($h = 0; $h < 24; $h++) {
+                $actualValue = $actual['hourlyKWh'][$h] ?? null;
                 $rows[] = [
                     'label' => str_pad((string)$h, 2, '0', STR_PAD_LEFT) . ':00',
                     'forecastKWh' => round(max(0.0, (float)($hourlyForecast[$h] ?? 0.0)), 3),
-                    'actualKWh' => ($actual['hourlyKWh'][$h] ?? null) === null ? null : round(max(0.0, (float)$actual['hourlyKWh'][$h]), 3)
+                    'actualKWh' => $actualValue === null ? null : round(max(0.0, (float)$actualValue), 3)
                 ];
             }
             $days[] = [
@@ -1627,29 +1643,92 @@ class SmartBatteryOptimizer extends IPSModule
                 'rows' => $rows
             ];
         }
-        $dataJson = json_encode($days, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if ($dataJson === false) $dataJson = '[]';
+
+        $dataJson = json_encode($days, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($dataJson === false) {
+            $dataJson = '[]';
+        }
 
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
         $html .= '<b>PV-Prognose – Prognose und Ist-Produktion</b><br>';
+
         if ($highchartsJS !== '') {
             $html .= '<div id="' . $chartId . '" style="width:100%;height:410px;margin-top:8px;margin-bottom:6px"></div>';
             $html .= '<div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px 0">';
-            $html .= '<button id="' . $chartId . '_prev" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button>';
-            $html .= '<span id="' . $chartId . '_date" style="min-width:130px;text-align:center;font-weight:bold"></span>';
-            $html .= '<button id="' . $chartId . '_next" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button></div>';
+            $html .= '<button id="' . $chartId . '_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button>';
+            $html .= '<span id="' . $chartId . '_date" style="min-width:150px;text-align:center;font-weight:bold"></span>';
+            $html .= '<button id="' . $chartId . '_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button>';
+            $html .= '</div>';
             $html .= '<div id="' . $chartId . '_summary" style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px;text-align:center"></div>';
             $html .= '<script>' . $highchartsJS . '</script>';
             $html .= '<script>(function(){';
-            $html .= 'var days=' . $dataJson . ';var today=' . json_encode($todayDate) . ';var idx=Math.max(0,days.findIndex(function(d){return d.date===today;}));var chart=null;';
-            $html .= 'function renderDay(){if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],rows=d.rows;var categories=rows.map(function(r){return r.label;});var f=rows.map(function(r){return {y:r.forecastKWh,custom:r};});var a=rows.map(function(r){return r.actualKWh===null?null:{y:r.actualKWh,custom:r};});';
-            $html .= 'if(chart){chart.xAxis[0].setCategories(categories,false);chart.series[0].setData(f,false);chart.series[1].setData(a,false);chart.redraw();}else{chart=Highcharts.chart(' . json_encode($chartId) . ',{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},title:{text:null},credits:{enabled:false},legend:{enabled:true,itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff",fontWeight:"normal"},itemHoverStyle:{color:"#ffffff"}},xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",tickInterval:1,labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)"},tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+d.label+" "+this.point.custom.label+"</b><br>"+this.series.name+": <b>"+Highcharts.numberFormat(this.y,2,",",".")+" kWh</b></span>";}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:0.06,pointPadding:0.02}},series:[{name:"PV-Prognose",data:f,zIndex:1,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},{name:"Ist-Produktion",data:a,color:"rgba(255,213,79,0.52)",zIndex:3,pointPadding:0.20,dataLabels:{enabled:false}}]});}';
-            $html .= 'document.getElementById(' . json_encode($chartId . '_date') . ').textContent=d.label+(d.date===today?" – Heute":"");document.getElementById(' . json_encode($chartId . '_summary') . ').innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> · <span style=\\"color:#ffe082\\">Ist: <b>"+Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh</b></span>"+(d.dayAhead?" · gespeicherte Day-Ahead-Prognose":"");document.getElementById(' . json_encode($chartId . '_prev') . ').disabled=(idx<=0);document.getElementById(' . json_encode($chartId . '_next') . ').disabled=(idx>=days.length-1);}\n';
-            $html .= 'function init(){document.getElementById(' . json_encode($chartId . '_prev') . ').onclick=function(){if(idx>0){idx--;renderDay();}};document.getElementById(' . json_encode($chartId . '_next') . ').onclick=function(){if(idx<days.length-1){idx++;renderDay();}};renderDay();}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",init);}else{setTimeout(init,0);}})();</script>';
+            $html .= 'var days=' . $dataJson . ';';
+            $html .= 'var today=' . json_encode($todayDate) . ';';
+            $html .= 'var chartId=' . json_encode($chartId) . ';';
+            $html .= 'var idx=0;var i;for(i=0;i<days.length;i++){if(days[i].date===today){idx=i;break;}}';
+            $html .= 'function el(s){return document.getElementById(chartId+s);}';
+            $html .= 'function draw(){';
+            $html .= 'if(!days.length||typeof Highcharts==="undefined"){return;}';
+            $html .= 'var d=days[idx];var categories=[];var forecastData=[];var actualData=[];';
+            $html .= 'for(var j=0;j<d.rows.length;j++){var r=d.rows[j];categories.push(r.label);forecastData.push({y:r.forecastKWh,custom:r});actualData.push(r.actualKWh===null?null:{y:r.actualKWh,custom:r});}';
+            $html .= 'Highcharts.chart(chartId,{';
+            $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
+            $html .= 'title:{text:null},credits:{enabled:false},';
+            $html .= 'legend:{enabled:true,itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff",fontWeight:"normal"},itemHoverStyle:{color:"#ffffff"}},';
+            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",tickInterval:1,labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
+            $html .= 'yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)"},';
+            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+d.label+" "+this.point.custom.label+"</b><br>"+this.series.name+": <b>"+Highcharts.numberFormat(this.y,2,",",".")+" kWh</b></span>";}},';
+            $html .= 'plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:0.06,pointPadding:0.02}},';
+            $html .= 'series:[{name:"PV-Prognose",data:forecastData,zIndex:1,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},{name:"Ist-Produktion",data:actualData,color:"rgba(255,213,79,0.38)",zIndex:3,pointPadding:0.20,dataLabels:{enabled:false}}]';
+            $html .= '});';
+            $html .= 'var dateEl=el("_date");if(dateEl){dateEl.innerHTML=d.label+(d.date===today?" &ndash; Heute":"");}';
+            $html .= 'var sumEl=el("_summary");if(sumEl){sumEl.innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; <span style=\\"color:#ffe082\\">Ist: <b>"+Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh</b></span>"+(d.dayAhead?" &middot; gespeicherte Day-Ahead-Prognose":"");}';
+            $html .= 'var prev=el("_prev"),next=el("_next");if(prev){prev.disabled=(idx<=0);}if(next){next.disabled=(idx>=days.length-1);}';
+            $html .= '}';
+            $html .= 'function init(){var prev=el("_prev"),next=el("_next");if(prev){prev.onclick=function(){if(idx>0){idx--;draw();}};}if(next){next.onclick=function(){if(idx<days.length-1){idx++;draw();}};}draw();}';
+            $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",init);}else{setTimeout(init,0);}';
+            $html .= '})();</script>';
         } else {
-            $html .= '<div style="margin:8px 0;padding:8px;border:1px solid rgba(128,128,128,.45);border-radius:6px">Highcharts ist auf diesem System nicht verfügbar. Die historische Navigation benötigt Highcharts.</div>';
+            // Fallback: Heute als einfache HTML-Balken darstellen.
+            $selected = null;
+            foreach ($days as $day) {
+                if (($day['date'] ?? '') === $todayDate) {
+                    $selected = $day;
+                    break;
+                }
+            }
+            if ($selected === null && count($days) > 0) {
+                $selected = $days[count($days) - 1];
+            }
+            if ($selected !== null) {
+                $maxKWh = 0.01;
+                foreach ($selected['rows'] as $row) {
+                    $maxKWh = max($maxKWh, (float)$row['forecastKWh']);
+                    if ($row['actualKWh'] !== null) {
+                        $maxKWh = max($maxKWh, (float)$row['actualKWh']);
+                    }
+                }
+                $html .= '<div style="margin:8px 0 14px 0;padding:8px;border:1px solid rgba(128,128,128,.45);border-radius:6px">';
+                foreach ($selected['rows'] as $row) {
+                    $forecastWidth = max(0.0, min(100.0, ((float)$row['forecastKWh'] / $maxKWh) * 100.0));
+                    $actualWidth = $row['actualKWh'] === null ? 0.0 : max(0.0, min(100.0, ((float)$row['actualKWh'] / $maxKWh) * 100.0));
+                    $html .= '<div style="display:flex;align-items:center;margin:3px 0"><div style="width:45px;flex:0 0 45px">' . htmlspecialchars((string)$row['label']) . '</div><div style="flex:1;height:16px;position:relative;background:rgba(128,128,128,.08)"><div style="position:absolute;left:0;top:1px;height:14px;width:' . number_format($forecastWidth, 1, '.', '') . '%;background:#4e8fd3"></div>';
+                    if ($row['actualKWh'] !== null) {
+                        $html .= '<div style="position:absolute;left:0;top:4px;height:8px;width:' . number_format($actualWidth, 1, '.', '') . '%;background:rgba(255,213,79,.38)"></div>';
+                    }
+                    $html .= '</div><div style="width:125px;text-align:right">' . number_format((float)$row['forecastKWh'], 2, ',', '.') . ' kWh';
+                    if ($row['actualKWh'] !== null) {
+                        $html .= ' / <span style="color:#ffe082">' . number_format((float)$row['actualKWh'], 2, ',', '.') . '</span>';
+                    }
+                    $html .= '</div></div>';
+                }
+                $html .= '</div>';
+            } else {
+                $html .= '<div style="margin:8px 0;padding:8px;border:1px solid rgba(128,128,128,.45);border-radius:6px">Keine PV-Prognosedaten vorhanden.</div>';
+            }
         }
-        $html .= '<div style="font-size:11px;color:#ccc">Blau = prognostizierte Energie je Stunde in kWh. Transparentes Gelb = tatsächlich erzeugte Energie je Stunde aus dem IP-Symcon-Archiv. Quelle Ist-Werte: ' . htmlspecialchars($source) . '. Gespeicherte Prognosen werden bis zu 14 Tage vorgehalten; in der Grafik sind die letzten 7 Tage sowie morgen anwählbar. Für Tage vor Installation dieser Version existiert keine rückwirkend rekonstruierbare ursprüngliche Prognose.</div>';
+
+        $html .= '<div style="font-size:11px;color:#ccc">Blau = prognostizierte Energie je Stunde in kWh. Transparentes Gelb = tatsächlich erzeugte Energie je Stunde aus dem IP-Symcon-Archiv. Quelle Ist-Werte: ' . htmlspecialchars($source) . '. Gespeicherte Prognosen werden bis zu 14 Tage vorgehalten; in der Grafik sind die letzten 7 Tage sowie morgen anwählbar. Für Tage vor Installation der Speicherung existiert keine ursprüngliche Prognose.</div>';
         return $html . '</div>';
     }
 
