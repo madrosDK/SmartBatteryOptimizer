@@ -129,3 +129,8 @@ Die Instanz stellt zusätzlich **PV Prognose heute** bereit. Das PV-Prognose-Dia
 Die neue HTMLBox **PV-Kalibrierung Diagnose** zeigt für jede PV-Fläche die aktuelle theoretische Leistung **vor Auto-Faktor**, die daraus mit Auto-Faktor entstehende Prognose, die aktuell gemessene Leistung der zugeordneten PV-Variablen, das momentane Verhältnis Ist/Theorie, die Lern-Summen innerhalb des eingestellten Kalibrierzeitraums, den daraus resultierenden Auto-Faktor, die Zahl der verwendeten Samples und den letzten Sample-Zeitpunkt. Damit lässt sich insbesondere ein unerwarteter Auto-Faktor von z. B. 0,5 nachvollziehen.
 
 Der Auto-Faktor wird aus den gespeicherten Lernwerten berechnet als `Summe Istleistung / Summe theoretische Leistung vor Auto-Faktor`. Die theoretische Leistung enthält kWp, GTI, SystemEfficiency, Flächen-Faktor und GlobalPVFactor, aber noch nicht den Auto-Faktor selbst.
+
+
+## Historischer Prognosevergleich (v1.4.6)
+
+Die PV-Grafik zeigt die Stundenwerte als **kWh pro Stunde**. Transparente gelbe Balken zeigen die tatsächlich erzeugte Energie aus dem IP-Symcon-Archiv. Mit den Pfeiltasten unter der Grafik kann tageweise zurück- und vorgeblättert werden. Day-Ahead-Prognosen werden gespeichert, damit vergangene Prognosen mit den realen Produktionswerten verglichen werden können. Bereits vergangene Tage vor Installation dieser Version können nicht als ursprüngliche Prognose rekonstruiert werden.
