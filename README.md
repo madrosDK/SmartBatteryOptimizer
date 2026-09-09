@@ -149,3 +149,15 @@ Die Prognose- und Preisdaten werden über den konfigurierbaren **Aktualisierungs
 
 ### Aktualisierungsintervalle (v1.4.9)
 Die Aktualisierung ist getrennt einstellbar: Preise/Optimierung (Standard 30 min), PV-Prognose/Open-Meteo (Standard 30 min) und PV-Istwerte/PV-Grafik (Standard 5 min). Die Batteriesteuerung wird weiterhin jede Minute geprüft. Die 5-Minuten-PV-Istaktualisierung verwendet lokale IP-Symcon-Archivwerte und löst keinen zusätzlichen Open-Meteo-Abruf aus.
+
+## Änderungen v1.5.0 – PV-Kalibrierung in kWh
+
+Die automatische PV-Kalibrierung arbeitet ab v1.5.0 nicht mehr mit aufsummierten Watt-Momentanwerten. Zwischen aufeinanderfolgenden gültigen Messpunkten werden sowohl die theoretische PV-Leistung vor Auto-Faktor als auch die gemessene String-/MPPT-Leistung zeitlich integriert. Dadurch entstehen für exakt denselben Zeitraum zwei Energiemengen in **kWh**.
+
+`Auto-Faktor = Summe Ist-Erzeugung kWh / Summe Prognose vor Auto-Faktor kWh`
+
+Beispiel: 100,0 kWh theoretische Prognose und 118,0 kWh tatsächliche Erzeugung ergeben einen Auto-Faktor von 1,180. Der Faktor wird anschließend weiterhin durch die konfigurierten Minimal- und Maximalwerte begrenzt. Der einstellbare Lernzeitraum beträgt standardmäßig 30 Tage. Abregelphasen an der konfigurierten Einspeisegrenze werden nicht überbrückt und fließen nicht in die Energieintegration ein.
+
+Da die alten Kalibrierdaten aus früheren Versionen aus Watt-Samples bestehen, werden diese beim ersten Start von v1.5.0 automatisch verworfen. Manuelle PV-Flächenparameter wie kWp, Azimut, Neigung und manueller Faktor bleiben unverändert.
+
+Das gelernte Tagesverbrauchsprofil kann bereits ab **3 gültigen Tagen** verwendet werden. Die Mindestzahl ist über **„Mindestens gültige Tage für Tagesverbrauchsprofil“** einstellbar und steht standardmäßig auf 3 – analog zur Mindestanzahl gültiger Nächte.

@@ -374,6 +374,15 @@
                 },
                 {
                     "type": "NumberSpinner",
+                    "name": "MinimumValidConsumptionDays",
+                    "caption": "Mindestens gültige Tage für Tagesverbrauchsprofil",
+                    "digits": 0,
+                    "minimum": 1,
+                    "maximum": 30,
+                    "suffix": " Tage"
+                },
+                {
+                    "type": "NumberSpinner",
                     "name": "FallbackDailyConsumptionKWh",
                     "caption": "Ersatzwert Tagesverbrauch bei fehlenden Archivdaten",
                     "digits": 2,

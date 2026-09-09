@@ -43,6 +43,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('LearningDays', 30);
         $this->RegisterPropertyFloat('FallbackNightConsumptionKWh', 4.0);
         $this->RegisterPropertyBoolean('ConsumptionProfileLearningEnabled', true);
+        $this->RegisterPropertyInteger('MinimumValidConsumptionDays', 3);
         $this->RegisterPropertyFloat('FallbackDailyConsumptionKWh', 12.0);
         $this->RegisterPropertyFloat('ConsumptionForecastSafetyPct', 10.0);
         $this->RegisterPropertyFloat('BatteryTargetSOC', 100.0);
@@ -104,6 +105,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('ForecastJSON', '{}');
         $this->RegisterAttributeString('PVForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
+        $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeString('PlanJSON', '[]');
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
@@ -285,6 +287,7 @@ class SmartBatteryOptimizer extends IPSModule
     {
         try {
             $this->WriteAttributeString('PVCalibrationJSON', '{}');
+            $this->WriteAttributeInteger('PVCalibrationEnergyVersion', 1);
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), 'PV-Kalibrierung zurückgesetzt – Auto-Faktoren starten wieder bei 1,000.');
             SetValue($this->GetIDForIdent('StatusText'), 'PV-Kalibrierung zurückgesetzt. Neue Messwerte werden ab der nächsten Berechnung über den eingestellten Lernzeitraum neu angelernt.');
 
@@ -353,6 +356,12 @@ class SmartBatteryOptimizer extends IPSModule
             throw new Exception('Keine PV-Flächen konfiguriert.');
         }
 
+        // Ab v1.5.0 wird die PV-Autokalibrierung ausschließlich energetisch in kWh geführt.
+        // Alte Watt-Sample-Daten sind nicht kompatibel und werden einmalig verworfen.
+        if ($this->ReadAttributeInteger('PVCalibrationEnergyVersion') < 1) {
+            $this->WriteAttributeString('PVCalibrationJSON', '{}');
+            $this->WriteAttributeInteger('PVCalibrationEnergyVersion', 1);
+        }
         $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
         if (!is_array($calibration)) $calibration = [];
         $hours = [];
@@ -419,8 +428,11 @@ class SmartBatteryOptimizer extends IPSModule
 
             $actualW = $this->ReadSurfaceActualPower($surface);
             if ($autoEnabled && $actualW !== null && $currentExpectedBaseW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW') && !$calibrationFeedInGate['blocked']) {
-                $calibration = $this->AddPVCalibrationSample($calibration, $key, $currentExpectedBaseW, $actualW);
+                $calibration = $this->AddPVCalibrationEnergySample($calibration, $key, $currentExpectedBaseW, $actualW);
                 $autoFactor = isset($calibration[$key]['factor']) ? (float)$calibration[$key]['factor'] : $autoFactor;
+            } elseif ($autoEnabled && $calibrationFeedInGate['blocked'] && isset($calibration[$key])) {
+                // Kein Energieintervall über eine Abregelphase hinweg integrieren.
+                unset($calibration[$key]['lastPointTs'], $calibration[$key]['lastPointExpectedW'], $calibration[$key]['lastPointActualW']);
             }
 
             $surfaceTotals[$name] = $sum;
@@ -437,8 +449,8 @@ class SmartBatteryOptimizer extends IPSModule
                 'actualW' => $actualW,
                 'currentRatio' => ($actualW !== null && $currentExpectedBaseW > 0.0) ? ($actualW / $currentExpectedBaseW) : null,
                 'sampleCount' => $diag['sampleCount'],
-                'sumExpectedW' => $diag['sumExpectedW'],
-                'sumActualW' => $diag['sumActualW'],
+                'sumExpectedKWh' => $diag['sumExpectedKWh'],
+                'sumActualKWh' => $diag['sumActualKWh'],
                 'learnedRatio' => $diag['ratio'],
                 'firstSampleTs' => $diag['firstSampleTs'],
                 'lastSampleTs' => $diag['lastSampleTs'],
@@ -532,65 +544,83 @@ class SmartBatteryOptimizer extends IPSModule
         return ['blocked' => $blocked, 'configured' => true, 'feedInW' => $feedInW, 'thresholdW' => $thresholdW, 'text' => $text];
     }
 
-    private function AddPVCalibrationSample(array $calibration, string $key, float $expectedW, float $actualW): array
+    private function AddPVCalibrationEnergySample(array $calibration, string $key, float $expectedW, float $actualW): array
     {
         if (!isset($calibration[$key]) || !is_array($calibration[$key])) {
-            $calibration[$key] = ['factor' => 1.0, 'samples' => []];
+            $calibration[$key] = ['factor' => 1.0, 'energySamples' => []];
         }
-        if (!isset($calibration[$key]['samples']) || !is_array($calibration[$key]['samples'])) {
-            $calibration[$key]['samples'] = [];
+        if (!isset($calibration[$key]['energySamples']) || !is_array($calibration[$key]['energySamples'])) {
+            $calibration[$key]['energySamples'] = [];
         }
 
         $now = time();
-        // Höchstens ein Messpunkt je 20 Minuten, damit manuelles Neuberechnen den Lernwert nicht verzerrt.
-        $lastTs = isset($calibration[$key]['lastSampleTs']) ? (int)$calibration[$key]['lastSampleTs'] : 0;
-        if ($now - $lastTs >= 1200) {
-            $calibration[$key]['samples'][] = ['ts' => $now, 'expectedW' => $expectedW, 'actualW' => $actualW];
-            $calibration[$key]['lastSampleTs'] = $now;
+        $lastTs = (int)($calibration[$key]['lastPointTs'] ?? 0);
+        $lastExpectedW = (float)($calibration[$key]['lastPointExpectedW'] ?? 0.0);
+        $lastActualW = (float)($calibration[$key]['lastPointActualW'] ?? 0.0);
+
+        // Höchstens alle 20 Minuten einen neuen Integrationspunkt bilden.
+        // Zwischen zwei Punkten werden Leistungskurven trapezförmig integriert -> echte kWh.
+        if ($lastTs > 0 && $now - $lastTs >= 1200) {
+            $dt = $now - $lastTs;
+            // Große Datenlücken nicht als konstante Leistung interpretieren.
+            if ($dt <= 3600 && $lastExpectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
+                $expectedKWh = (($lastExpectedW + $expectedW) / 2.0) * ($dt / 3600.0) / 1000.0;
+                $actualKWh = (($lastActualW + $actualW) / 2.0) * ($dt / 3600.0) / 1000.0;
+                if ($expectedKWh > 0.0 && $actualKWh >= 0.0) {
+                    $calibration[$key]['energySamples'][] = [
+                        'ts' => $lastTs,
+                        'endTs' => $now,
+                        'expectedKWh' => $expectedKWh,
+                        'actualKWh' => $actualKWh
+                    ];
+                }
+            }
         }
 
-        // Messwerte werden für die ggf. längere Lernphase bei unbekannter Ausrichtung aufbewahrt.
-        // Für den eigentlichen Auto-Faktor zählen aber ausschließlich Werte innerhalb von PVCalibrationDays.
+        // Den aktuellen Punkt immer als Ausgangspunkt für das nächste Intervall merken.
+        if ($lastTs === 0 || $now - $lastTs >= 1200) {
+            $calibration[$key]['lastPointTs'] = $now;
+            $calibration[$key]['lastPointExpectedW'] = $expectedW;
+            $calibration[$key]['lastPointActualW'] = $actualW;
+        }
+
         $retentionDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'), $this->ReadPropertyInteger('UnknownOrientationLearningDays'));
         $retentionCutoff = $now - $retentionDays * 86400;
         $samples = [];
-        foreach ($calibration[$key]['samples'] as $sample) {
-            if ((int)($sample['ts'] ?? 0) < $retentionCutoff) continue;
-            $exp = (float)($sample['expectedW'] ?? 0);
-            $act = (float)($sample['actualW'] ?? 0);
-            if ($exp < $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) continue;
-            if ($act < 0) continue;
-            $samples[] = ['ts' => (int)$sample['ts'], 'expectedW' => $exp, 'actualW' => $act];
+        foreach ($calibration[$key]['energySamples'] as $sample) {
+            $ts = (int)($sample['ts'] ?? 0);
+            $exp = (float)($sample['expectedKWh'] ?? 0.0);
+            $act = (float)($sample['actualKWh'] ?? 0.0);
+            if ($ts < $retentionCutoff || $exp <= 0.0 || $act < 0.0) continue;
+            $samples[] = ['ts' => $ts, 'endTs' => (int)($sample['endTs'] ?? $ts), 'expectedKWh' => $exp, 'actualKWh' => $act];
         }
-        $calibration[$key]['samples'] = $samples;
+        $calibration[$key]['energySamples'] = $samples;
 
         $factorDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
         $factorCutoff = $now - $factorDays * 86400;
-        $factorSamples = array_values(array_filter($samples, static function (array $sample) use ($factorCutoff): bool {
-            return (int)$sample['ts'] >= $factorCutoff;
-        }));
-
-        if (count($factorSamples) > 0) {
-            $sumExpected = array_sum(array_column($factorSamples, 'expectedW'));
-            $sumActual = array_sum(array_column($factorSamples, 'actualW'));
-            if ($sumExpected > 0) {
-                $factor = $sumActual / $sumExpected;
-                $factor = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $factor));
-                $calibration[$key]['factor'] = $factor;
-            }
+        $sumExpectedKWh = 0.0;
+        $sumActualKWh = 0.0;
+        $count = 0;
+        foreach ($samples as $sample) {
+            if ((int)$sample['ts'] < $factorCutoff) continue;
+            $sumExpectedKWh += (float)$sample['expectedKWh'];
+            $sumActualKWh += (float)$sample['actualKWh'];
+            $count++;
+        }
+        if ($sumExpectedKWh > 0.0) {
+            $factor = $sumActualKWh / $sumExpectedKWh;
+            $calibration[$key]['factor'] = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $factor));
         } else {
             $calibration[$key]['factor'] = 1.0;
         }
-        $calibration[$key]['factorSampleCount'] = count($factorSamples);
-        $calibration[$key]['lastExpectedW'] = $expectedW;
-        $calibration[$key]['lastActualW'] = $actualW;
+        $calibration[$key]['factorSampleCount'] = $count;
         $calibration[$key]['updated'] = $now;
         return $calibration;
     }
 
     private function GetPVCalibrationDiagnostics(array $calibration, string $key): array
     {
-        $samples = isset($calibration[$key]['samples']) && is_array($calibration[$key]['samples']) ? $calibration[$key]['samples'] : [];
+        $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
         $factorDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
         $cutoff = time() - $factorDays * 86400;
         $sumExpected = 0.0;
@@ -600,19 +630,20 @@ class SmartBatteryOptimizer extends IPSModule
         $lastTs = 0;
         foreach ($samples as $sample) {
             $ts = (int)($sample['ts'] ?? 0);
-            $exp = (float)($sample['expectedW'] ?? 0.0);
-            $act = (float)($sample['actualW'] ?? 0.0);
-            if ($ts < $cutoff || $exp < $this->ReadPropertyInteger('PVCalibrationMinExpectedW') || $act < 0.0) continue;
+            $exp = (float)($sample['expectedKWh'] ?? 0.0);
+            $act = (float)($sample['actualKWh'] ?? 0.0);
+            if ($ts < $cutoff || $exp <= 0.0 || $act < 0.0) continue;
             $sumExpected += $exp;
             $sumActual += $act;
             $count++;
             if ($firstTs === 0 || $ts < $firstTs) $firstTs = $ts;
-            if ($ts > $lastTs) $lastTs = $ts;
+            $endTs = (int)($sample['endTs'] ?? $ts);
+            if ($endTs > $lastTs) $lastTs = $endTs;
         }
         return [
             'sampleCount' => $count,
-            'sumExpectedW' => $sumExpected,
-            'sumActualW' => $sumActual,
+            'sumExpectedKWh' => $sumExpected,
+            'sumActualKWh' => $sumActual,
             'ratio' => $sumExpected > 0.0 ? $sumActual / $sumExpected : null,
             'firstSampleTs' => $firstTs,
             'lastSampleTs' => $lastTs
@@ -695,14 +726,14 @@ class SmartBatteryOptimizer extends IPSModule
     private function GetSurfaceLearningDayCount(string $key): int
     {
         $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
-        if (!is_array($calibration) || !isset($calibration[$key]['samples']) || !is_array($calibration[$key]['samples'])) {
+        if (!is_array($calibration) || !isset($calibration[$key]['energySamples']) || !is_array($calibration[$key]['energySamples'])) {
             return 0;
         }
         $days = [];
-        foreach ($calibration[$key]['samples'] as $sample) {
+        foreach ($calibration[$key]['energySamples'] as $sample) {
             $ts = (int)($sample['ts'] ?? 0);
-            $exp = (float)($sample['expectedW'] ?? 0);
-            if ($ts <= 0 || $exp < $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) continue;
+            $exp = (float)($sample['expectedKWh'] ?? 0.0);
+            if ($ts <= 0 || $exp <= 0.0) continue;
             $days[date('Y-m-d', $ts)] = true;
         }
         return count($days);
@@ -1027,14 +1058,15 @@ class SmartBatteryOptimizer extends IPSModule
             $validDays++;
         }
 
-        if ($validDays < 3) {
+        $minimumConsumptionDays = max(1, min($days, $this->ReadPropertyInteger('MinimumValidConsumptionDays')));
+        if ($validDays < $minimumConsumptionDays) {
             if (is_array($cached) && isset($cached['hourlyKWh']) && count($cached['hourlyKWh']) === 24) {
-                $source = 'Letztes Verbrauchsprofil – nur ' . $validDays . '/3 gültige Tage';
+                $source = 'Letztes Verbrauchsprofil – nur ' . $validDays . '/' . $minimumConsumptionDays . ' gültige Tage';
                 $cached['source'] = $source;
                 $this->WriteAttributeString('ConsumptionLearningSource', $source);
                 return $cached;
             }
-            return $this->BuildFallbackConsumptionProfile($fallbackDaily, 'Fallback – nur ' . $validDays . '/3 gültige Verbrauchstage');
+            return $this->BuildFallbackConsumptionProfile($fallbackDaily, 'Fallback – nur ' . $validDays . '/' . $minimumConsumptionDays . ' gültige Verbrauchstage');
         }
 
         $profile = [];
@@ -1779,33 +1811,29 @@ class SmartBatteryOptimizer extends IPSModule
         $cal = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
         $days = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
-        $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = Summe gemessene Leistung / Summe theoretische Leistung vor Auto-Faktor über die letzten ' . $days . ' Tage.</span><br><br>';
+        $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = tatsächlich erzeugte Energie / prognostizierte Energie vor Auto-Faktor. Beide Werte werden über identische Zeitintervalle in kWh integriert und über die letzten ' . $days . ' Tage summiert.</span><br><br>';
         if (count($cal) === 0) return $html . 'Keine aktive PV-Fläche.</div>';
         $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff">';
-        $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Theorie jetzt<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose jetzt<br>mit Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Gemessen<br>jetzt</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Verhältnis<br>jetzt</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Lern-Summen<br>Ist / Theorie</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Samples</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Letzter Wert</th></tr>';
+        $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist-Erzeugung</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist / Prognose</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Intervalle</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Lernzeitraum</th></tr>';
         foreach ($cal as $name => $c) {
-            $exp = (float)($c['expectedBaseW'] ?? 0.0);
-            $corr = (float)($c['expectedCorrectedW'] ?? 0.0);
-            $act = $c['actualW'] ?? null;
-            $ratio = $c['currentRatio'] ?? null;
-            $sumE = (float)($c['sumExpectedW'] ?? 0.0);
-            $sumA = (float)($c['sumActualW'] ?? 0.0);
+            $sumE = (float)($c['sumExpectedKWh'] ?? 0.0);
+            $sumA = (float)($c['sumActualKWh'] ?? 0.0);
+            $ratio = $c['learnedRatio'] ?? null;
             $factor = (float)($c['autoFactor'] ?? 1.0);
+            $first = (int)($c['firstSampleTs'] ?? 0);
             $last = (int)($c['lastSampleTs'] ?? 0);
             $status = !empty($c['calibrationBlocked']) ? '<br><span style="color:#ffd166">' . htmlspecialchars((string)$c['calibrationBlockReason']) . '</span>' : '';
             $html .= '<tr>';
             $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . htmlspecialchars((string)$name) . '</b>' . $status . '</td>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($exp, 0, ',', '.') . ' W</td>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($corr, 0, ',', '.') . ' W</td>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($act === null ? '-' : number_format((float)$act, 0, ',', '.') . ' W') . '</td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumE, 2, ',', '.') . ' kWh</td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumA, 2, ',', '.') . ' kWh</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '-' : number_format((float)$ratio, 3, ',', '.')) . '</td>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumA / 1000.0, 1, ',', '.') . ' / ' . number_format($sumE / 1000.0, 1, ',', '.') . ' kWΣ</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . number_format($factor, 3, ',', '.') . '</b></td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . (int)($c['sampleCount'] ?? 0) . '</td>';
-            $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($last > 0 ? date('d.m. H:i', $last) : '-') . '</td>';
+            $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($first > 0 ? date('d.m. H:i', $first) : '-') . ' – ' . ($last > 0 ? date('d.m. H:i', $last) : '-') . '</td>';
             $html .= '</tr>';
         }
-        $html .= '</table></div><br><span style="font-size:11px"><b>Lesebeispiel:</b> Theorie 4.000 W, gemessen 6.000 W ⇒ Verhältnis 1,500. Ein Auto-Faktor um 0,500 wäre dann unplausibel und die Lern-Summen zeigen sofort, aus welchen gespeicherten Werten er entsteht.</span>';
+        $html .= '</table></div><br><span style="font-size:11px"><b>Beispiel:</b> Prognose vor Auto-Faktor 100,0 kWh, tatsächliche Erzeugung 118,0 kWh ⇒ Verhältnis 1,180 ⇒ Auto-Faktor 1,180 (begrenzt durch die eingestellten Min-/Max-Werte). Alte Watt-Samples aus Versionen vor 1.5.0 werden automatisch verworfen.</span>';
         return $html . '</div>';
     }
 
