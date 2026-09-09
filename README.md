@@ -113,3 +113,12 @@ Mit **„PV-Kalibrierung / Auto-Faktoren zurücksetzen“** werden alle gespeich
 - Eigenes Highcharts-Balkendiagramm **PV-Prognose Diagramm** für morgen (00:00–24:00).
 - Balken zeigen die prognostizierte mittlere PV-Leistung je Stunde in kW; Wert steht über dem Balken.
 - Gesamtprognose in kWh und erwarteter Beginn oberhalb der Morgenschwelle werden unter der Grafik angezeigt.
+
+
+## Neu in 1.4.4 – PV-Kalibrierdiagnose und Prognose heute + morgen
+
+Die Instanz stellt zusätzlich **PV Prognose heute** bereit. Das PV-Prognose-Diagramm zeigt nun 48 Stunden als Balken: den kompletten heutigen Tag und den kompletten morgigen Tag. Unter der Grafik werden die prognostizierten Tagesenergien für heute und morgen getrennt angegeben.
+
+Die neue HTMLBox **PV-Kalibrierung Diagnose** zeigt für jede PV-Fläche die aktuelle theoretische Leistung **vor Auto-Faktor**, die daraus mit Auto-Faktor entstehende Prognose, die aktuell gemessene Leistung der zugeordneten PV-Variablen, das momentane Verhältnis Ist/Theorie, die Lern-Summen innerhalb des eingestellten Kalibrierzeitraums, den daraus resultierenden Auto-Faktor, die Zahl der verwendeten Samples und den letzten Sample-Zeitpunkt. Damit lässt sich insbesondere ein unerwarteter Auto-Faktor von z. B. 0,5 nachvollziehen.
+
+Der Auto-Faktor wird aus den gespeicherten Lernwerten berechnet als `Summe Istleistung / Summe theoretische Leistung vor Auto-Faktor`. Die theoretische Leistung enthält kWp, GTI, SystemEfficiency, Flächen-Faktor und GlobalPVFactor, aber noch nicht den Auto-Faktor selbst.

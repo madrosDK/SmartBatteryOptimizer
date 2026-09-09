@@ -71,6 +71,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $this->RegisterPropertyInteger('RefreshMinutes', 30);
 
+        $this->RegisterVariableFloat('PVForecastToday', 'PV Prognose heute', '~Electricity', 9);
         $this->RegisterVariableFloat('PVForecastTomorrow', 'PV Prognose morgen', '~Electricity', 10);
         $this->RegisterVariableString('PVCalibrationStatus', 'PV Kalibrierung', '', 11);
         $this->RegisterVariableString('AutomaticReleaseStatus', 'Automatikfreigabe', '', 12);
@@ -94,7 +95,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('StatusText', 'Optimierungsstatus', '', 110);
         $this->RegisterVariableString('OverviewHTML', 'Übersicht', '~HTMLBox', 120);
         $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 121);
-        $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 122);
+        $this->RegisterVariableString('PVCalibrationDiagnosisHTML', 'PV-Kalibrierung Diagnose', '~HTMLBox', 122);
+        $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 123);
         $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 123);
 
         $this->RegisterAttributeString('ForecastJSON', '{}');
@@ -179,6 +181,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteAttributeString('PricesJSON', json_encode($prices));
             $this->WriteAttributeString('PlanJSON', json_encode($plan));
 
+            SetValue($this->GetIDForIdent('PVForecastToday'), round((float)($forecast['todayKWh'] ?? 0.0), 3));
             SetValue($this->GetIDForIdent('PVForecastTomorrow'), round($forecast['tomorrowKWh'], 3));
             SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($night, 3));
             SetValue($this->GetIDForIdent('NightConsumptionSource'), $this->ReadAttributeString('NightLearningSource'));
@@ -195,6 +198,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('LastUpdate'), date('d.m.Y H:i:s'));
             SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
             SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+            SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
             SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
             SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
             $this->SetStatus(($this->IsAutomaticEnabled() && !$gate['ready']) ? 202 : 102);
@@ -377,6 +381,7 @@ class SmartBatteryOptimizer extends IPSModule
             }
 
             $surfaceTotals[$name] = $sum;
+            $diag = $this->GetPVCalibrationDiagnostics($calibration, $key);
             $surfaceCalibration[$name] = [
                 'key' => $key,
                 'manualFactor' => $manualFactor,
@@ -385,8 +390,15 @@ class SmartBatteryOptimizer extends IPSModule
                 'autoFactor' => $autoFactor,
                 'effectiveFactor' => $manualFactor * ($autoEnabled ? $autoFactor : 1.0),
                 'expectedBaseW' => $currentExpectedBaseW,
+                'expectedCorrectedW' => $currentExpectedBaseW * ($autoEnabled ? $autoFactor : 1.0),
                 'actualW' => $actualW,
-                'sampleCount' => isset($calibration[$key]['factorSampleCount']) ? (int)$calibration[$key]['factorSampleCount'] : (isset($calibration[$key]['samples']) && is_array($calibration[$key]['samples']) ? count($calibration[$key]['samples']) : 0),
+                'currentRatio' => ($actualW !== null && $currentExpectedBaseW > 0.0) ? ($actualW / $currentExpectedBaseW) : null,
+                'sampleCount' => $diag['sampleCount'],
+                'sumExpectedW' => $diag['sumExpectedW'],
+                'sumActualW' => $diag['sumActualW'],
+                'learnedRatio' => $diag['ratio'],
+                'firstSampleTs' => $diag['firstSampleTs'],
+                'lastSampleTs' => $diag['lastSampleTs'],
                 'calibrationBlocked' => (bool)$calibrationFeedInGate['blocked'],
                 'calibrationBlockReason' => (string)$calibrationFeedInGate['text']
             ];
@@ -394,9 +406,16 @@ class SmartBatteryOptimizer extends IPSModule
 
         $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
         ksort($hours);
+        $today = 0.0;
         $tomorrow = 0.0;
+        $todayDate = date('Y-m-d');
+        $tomorrowDate = date('Y-m-d', strtotime('tomorrow'));
         foreach ($hours as $ts => $h) {
-            if (date('Y-m-d', (int)$ts) === date('Y-m-d', strtotime('tomorrow'))) {
+            $day = date('Y-m-d', (int)$ts);
+            if ($day === $todayDate) {
+                $today += $h['totalKW'];
+            }
+            if ($day === $tomorrowDate) {
                 $tomorrow += $h['totalKW'];
             }
         }
@@ -411,6 +430,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         return [
+            'todayKWh' => $today,
             'tomorrowKWh' => $tomorrow,
             'morningTs' => $morningTs,
             'hours' => $hours,
@@ -523,6 +543,37 @@ class SmartBatteryOptimizer extends IPSModule
         $calibration[$key]['lastActualW'] = $actualW;
         $calibration[$key]['updated'] = $now;
         return $calibration;
+    }
+
+    private function GetPVCalibrationDiagnostics(array $calibration, string $key): array
+    {
+        $samples = isset($calibration[$key]['samples']) && is_array($calibration[$key]['samples']) ? $calibration[$key]['samples'] : [];
+        $factorDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
+        $cutoff = time() - $factorDays * 86400;
+        $sumExpected = 0.0;
+        $sumActual = 0.0;
+        $count = 0;
+        $firstTs = 0;
+        $lastTs = 0;
+        foreach ($samples as $sample) {
+            $ts = (int)($sample['ts'] ?? 0);
+            $exp = (float)($sample['expectedW'] ?? 0.0);
+            $act = (float)($sample['actualW'] ?? 0.0);
+            if ($ts < $cutoff || $exp < $this->ReadPropertyInteger('PVCalibrationMinExpectedW') || $act < 0.0) continue;
+            $sumExpected += $exp;
+            $sumActual += $act;
+            $count++;
+            if ($firstTs === 0 || $ts < $firstTs) $firstTs = $ts;
+            if ($ts > $lastTs) $lastTs = $ts;
+        }
+        return [
+            'sampleCount' => $count,
+            'sumExpectedW' => $sumExpected,
+            'sumActualW' => $sumActual,
+            'ratio' => $sumExpected > 0.0 ? $sumActual / $sumExpected : null,
+            'firstSampleTs' => $firstTs,
+            'lastSampleTs' => $lastTs
+        ];
     }
 
     private function BuildPVCalibrationStatus(array $forecast): string
@@ -1378,6 +1429,7 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= 'Reserve inkl. Ziel-SoC: <b>' . number_format($plan['reserveKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'Ziel-SoC nach PV-Tag: <b>' . number_format((float)($plan['targetSOCPct'] ?? 100.0), 0, ',', '.') . ' %</b><br>';
         $html .= 'Benötigter Speicherstand am PV-Morgen: <b>' . number_format((float)($plan['requiredMorningStoredKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
+        $html .= 'PV heute: <b>' . number_format((float)($forecast['todayKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
         $html .= 'PV morgen: <b>' . number_format($forecast['tomorrowKWh'], 2, ',', '.') . ' kWh</b><br>';
         $html .= 'Gelernter Verbrauch morgen: <b>' . number_format((float)($forecast['consumptionTomorrowKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
         $html .= 'Davon während PV-Zeit: <b>' . number_format((float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
@@ -1393,36 +1445,37 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderPVForecastChartHTML(array $forecast): string
     {
-        // Bewährter Highcharts-Balkenaufbau wie beim funktionierenden Preisdiagramm.
-        // Angezeigt wird die stündliche Gesamtleistung der PV-Prognose für morgen.
         $highchartsJS = $this->GetHighchartsJavaScript();
         $chartId = 'sbo_pv_forecast_chart_' . $this->InstanceID;
+        $todayStart = strtotime('today 00:00:00');
         $tomorrowStart = strtotime('tomorrow 00:00:00');
-        $tomorrowEnd = $tomorrowStart + 86400;
+        $end = $tomorrowStart + 86400;
         $rows = [];
         $hours = is_array($forecast['hours'] ?? null) ? $forecast['hours'] : [];
 
-        for ($i = 0; $i < 24; $i++) {
-            $ts = $tomorrowStart + $i * 3600;
+        for ($i = 0; $i < 48; $i++) {
+            $ts = $todayStart + $i * 3600;
             $powerKW = 0.0;
             if (isset($hours[$ts]) && is_array($hours[$ts])) {
                 $powerKW = max(0.0, (float)($hours[$ts]['totalKW'] ?? 0.0));
             }
             $rows[] = [
                 'label' => date('H:i', $ts),
+                'day' => $ts < $tomorrowStart ? 'Heute' : 'Morgen',
                 'powerKW' => round($powerKW, 3)
             ];
         }
 
         $chartJson = json_encode($rows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($chartJson === false) $chartJson = '[]';
+        $todayKWh = (float)($forecast['todayKWh'] ?? 0.0);
         $tomorrowKWh = (float)($forecast['tomorrowKWh'] ?? 0.0);
         $morningTs = (int)($forecast['morningTs'] ?? 0);
 
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
-        $html .= '<b>PV-Prognose morgen – stündliche Leistung</b><br>';
+        $html .= '<b>PV-Prognose heute & morgen – stündliche Leistung</b><br>';
         if ($highchartsJS !== '') {
-            $html .= '<div id="' . $chartId . '" style="width:100%;height:390px;margin-top:8px;margin-bottom:10px"></div>';
+            $html .= '<div id="' . $chartId . '" style="width:100%;height:410px;margin-top:8px;margin-bottom:10px"></div>';
             $html .= '<script>' . $highchartsJS . '</script>';
             $html .= '<script>(function(){';
             $html .= 'var rows=' . $chartJson . ';';
@@ -1433,10 +1486,10 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
             $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
             $html .= 'title:{text:null},credits:{enabled:false},legend:{enabled:false},';
-            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
+            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",tickInterval:2,labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},plotLines:[{value:23.5,width:2,color:"#ffffff",dashStyle:"ShortDash",zIndex:5,label:{text:"Morgen",rotation:0,y:14,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
             $html .= 'yAxis:{min:0,title:{text:"kW",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)"},';
-            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+this.point.custom.label+"</b><br>PV-Prognose: <b>"+Highcharts.numberFormat(this.y,2,",",".")+" kW</b></span>";}},';
-            $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.05?Highcharts.numberFormat(this.y,2,",",".")+" kW":"";},style:{fontFamily:"Tahoma",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
+            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+this.point.custom.day+" "+this.point.custom.label+"</b><br>PV-Prognose: <b>"+Highcharts.numberFormat(this.y,2,",",".")+" kW</b></span>";}},';
+            $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.06,pointPadding:0.02,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
             $html .= 'series:[{name:"PV-Prognose",data:data}]';
             $html .= '});}';
             $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOPVChart);}else{setTimeout(renderSBOPVChart,0);}';
@@ -1445,17 +1498,53 @@ class SmartBatteryOptimizer extends IPSModule
             $maxKW = 0.01;
             foreach ($rows as $row) $maxKW = max($maxKW, (float)$row['powerKW']);
             $html .= '<div style="margin:8px 0 14px 0;padding:8px;border:1px solid rgba(128,128,128,.45);border-radius:6px">';
-            foreach ($rows as $row) {
+            foreach ($rows as $i => $row) {
+                if ($i === 24) $html .= '<div style="margin:8px 0 5px 0;border-top:1px dashed #fff;padding-top:5px"><b>Morgen</b></div>';
                 $width = max(0.0, min(100.0, ((float)$row['powerKW'] / $maxKW) * 100.0));
                 $html .= '<div style="display:flex;align-items:center;margin:3px 0"><div style="width:45px;flex:0 0 45px">' . htmlspecialchars($row['label']) . '</div><div style="flex:1;height:14px;background:rgba(128,128,128,.08)"><div style="height:14px;width:' . number_format($width, 1, '.', '') . '%;background:#4e8fd3"></div></div><div style="width:70px;text-align:right">' . number_format((float)$row['powerKW'], 2, ',', '.') . ' kW</div></div>';
             }
             $html .= '</div>';
         }
-        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Prognose für morgen: <b>' . number_format($tomorrowKWh, 2, ',', '.') . ' kWh</b>';
-        if ($morningTs > 0 && $morningTs >= $tomorrowStart && $morningTs < $tomorrowEnd) {
-            $html .= ' · PV über der eingestellten Morgenschwelle ab ca. <b>' . date('H:i', $morningTs) . '</b>';
+        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Heute: <b>' . number_format($todayKWh, 2, ',', '.') . ' kWh</b> · Morgen: <b>' . number_format($tomorrowKWh, 2, ',', '.') . ' kWh</b>';
+        if ($morningTs > 0 && $morningTs >= $tomorrowStart && $morningTs < $end) {
+            $html .= ' · Morgen über der eingestellten Morgenschwelle ab ca. <b>' . date('H:i', $morningTs) . '</b>';
         }
         $html .= '. Die Balken zeigen die prognostizierte mittlere PV-Leistung je Stunde.</div>';
+        return $html . '</div>';
+    }
+
+    private function RenderPVCalibrationDiagnosisHTML(array $forecast): string
+    {
+        $cal = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
+        $days = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
+        $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
+        $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = Summe gemessene Leistung / Summe theoretische Leistung vor Auto-Faktor über die letzten ' . $days . ' Tage.</span><br><br>';
+        if (count($cal) === 0) return $html . 'Keine aktive PV-Fläche.</div>';
+        $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff">';
+        $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Theorie jetzt<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose jetzt<br>mit Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Gemessen<br>jetzt</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Verhältnis<br>jetzt</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Lern-Summen<br>Ist / Theorie</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Samples</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Letzter Wert</th></tr>';
+        foreach ($cal as $name => $c) {
+            $exp = (float)($c['expectedBaseW'] ?? 0.0);
+            $corr = (float)($c['expectedCorrectedW'] ?? 0.0);
+            $act = $c['actualW'] ?? null;
+            $ratio = $c['currentRatio'] ?? null;
+            $sumE = (float)($c['sumExpectedW'] ?? 0.0);
+            $sumA = (float)($c['sumActualW'] ?? 0.0);
+            $factor = (float)($c['autoFactor'] ?? 1.0);
+            $last = (int)($c['lastSampleTs'] ?? 0);
+            $status = !empty($c['calibrationBlocked']) ? '<br><span style="color:#ffd166">' . htmlspecialchars((string)$c['calibrationBlockReason']) . '</span>' : '';
+            $html .= '<tr>';
+            $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . htmlspecialchars((string)$name) . '</b>' . $status . '</td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($exp, 0, ',', '.') . ' W</td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($corr, 0, ',', '.') . ' W</td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($act === null ? '-' : number_format((float)$act, 0, ',', '.') . ' W') . '</td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '-' : number_format((float)$ratio, 3, ',', '.')) . '</td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumA / 1000.0, 1, ',', '.') . ' / ' . number_format($sumE / 1000.0, 1, ',', '.') . ' kWΣ</td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . number_format($factor, 3, ',', '.') . '</b></td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . (int)($c['sampleCount'] ?? 0) . '</td>';
+            $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($last > 0 ? date('d.m. H:i', $last) : '-') . '</td>';
+            $html .= '</tr>';
+        }
+        $html .= '</table></div><br><span style="font-size:11px"><b>Lesebeispiel:</b> Theorie 4.000 W, gemessen 6.000 W ⇒ Verhältnis 1,500. Ein Auto-Faktor um 0,500 wäre dann unplausibel und die Lern-Summen zeigen sofort, aus welchen gespeicherten Werten er entsteht.</span>';
         return $html . '</div>';
     }
 
