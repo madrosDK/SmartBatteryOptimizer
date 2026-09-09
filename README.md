@@ -139,3 +139,13 @@ Die PV-Grafik zeigt die Stundenwerte als **kWh pro Stunde**. Transparente gelbe 
 ## Stabilisierung PV-Prognose-Diagramm (v1.4.7)
 
 Die Highcharts-Ausgabe wurde wieder auf einen einfachen, IP-Symcon-kompatiblen Aufbau zurückgeführt. Beim Blättern zwischen Tagen wird das Diagramm vollständig neu aufgebaut. Prognose und Ist-Produktion werden weiterhin als kWh je Stunde dargestellt; die Ist-Werte sind transparent gelb überlagert.
+
+## PV-Grafik 06:00–22:00 Uhr und Aktualisierungszeit (v1.4.8)
+
+Das PV-Prognose-Diagramm zeigt zur besseren Lesbarkeit nur noch die Stunden von **06:00 bis 22:00 Uhr**. Die interne PV-Prognose, die Kalibrierung und die angezeigten Tages-Gesamtsummen bleiben unverändert auf den vollständigen Tag bezogen. Sowohl im PV-Prognose-Diagramm als auch im Börsenpreis-Diagramm wird der Zeitpunkt der letzten Diagrammaktualisierung angezeigt.
+
+Die Prognose- und Preisdaten werden über den konfigurierbaren **Aktualisierungsintervall** (`RefreshMinutes`) neu berechnet und abgerufen; Standard sind 30 Minuten, technisch mindestens 5 Minuten. Zusätzlich erfolgt eine Neuberechnung bei manueller Neuberechnung sowie beim Aktivieren der Einspeiseautomatik. Die Batteriesteuerung selbst wird unabhängig davon jede Minute geprüft und verwendet die zuletzt berechneten Daten.
+
+
+### Aktualisierungsintervalle (v1.4.9)
+Die Aktualisierung ist getrennt einstellbar: Preise/Optimierung (Standard 30 min), PV-Prognose/Open-Meteo (Standard 30 min) und PV-Istwerte/PV-Grafik (Standard 5 min). Die Batteriesteuerung wird weiterhin jede Minute geprüft. Die 5-Minuten-PV-Istaktualisierung verwendet lokale IP-Symcon-Archivwerte und löst keinen zusätzlichen Open-Meteo-Abruf aus.

@@ -1,687 +1,701 @@
 {
-  "elements": [
-    {
-      "type": "Label",
-      "caption": "Börsenpreisabhängige Batterieeinspeisung mit PV-Prognose, Nachtverbrauchs-Lernfunktion und Mehrflächen-PV."
-    },
-    {
-      "type": "ExpansionPanel",
-      "caption": "Standort & PV-Prognose",
-      "items": [
+    "elements": [
         {
-          "type": "NumberSpinner",
-          "name": "Latitude",
-          "caption": "Breitengrad",
-          "digits": 5,
-          "minimum": -90,
-          "maximum": 90
+            "type": "Label",
+            "caption": "Börsenpreisabhängige Batterieeinspeisung mit PV-Prognose, Nachtverbrauchs-Lernfunktion und Mehrflächen-PV."
         },
         {
-          "type": "NumberSpinner",
-          "name": "Longitude",
-          "caption": "Längengrad",
-          "digits": 5,
-          "minimum": -180,
-          "maximum": 180
+            "type": "ExpansionPanel",
+            "caption": "Standort & PV-Prognose",
+            "items": [
+                {
+                    "type": "NumberSpinner",
+                    "name": "Latitude",
+                    "caption": "Breitengrad",
+                    "digits": 5,
+                    "minimum": -90,
+                    "maximum": 90
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "Longitude",
+                    "caption": "Längengrad",
+                    "digits": 5,
+                    "minimum": -180,
+                    "maximum": 180
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "GlobalPVFactor",
+                    "caption": "Globaler PV-Korrekturfaktor",
+                    "digits": 3,
+                    "minimum": 0.1,
+                    "maximum": 2.0,
+                    "suffix": " ×"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "SystemEfficiency",
+                    "caption": "Systemwirkungsgrad",
+                    "digits": 2,
+                    "minimum": 0.1,
+                    "maximum": 1.0,
+                    "suffix": " ×"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVCalibrationDays",
+                    "caption": "Lernzeitraum PV-Auto-Faktor",
+                    "digits": 0,
+                    "minimum": 1,
+                    "maximum": 90,
+                    "suffix": " Tage"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "UnknownOrientationLearningDays",
+                    "caption": "Lernphase bei unbekannter Ausrichtung",
+                    "digits": 0,
+                    "minimum": 1,
+                    "maximum": 90,
+                    "suffix": " Tage"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVCalibrationMinExpectedW",
+                    "caption": "Kalibrierung erst ab erwarteter Leistung",
+                    "digits": 0,
+                    "minimum": 50,
+                    "maximum": 10000,
+                    "suffix": " W"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVCalibrationMinFactor",
+                    "caption": "Minimaler Auto-Faktor",
+                    "digits": 2,
+                    "minimum": 0.1,
+                    "maximum": 2.0
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVCalibrationMaxFactor",
+                    "caption": "Maximaler Auto-Faktor",
+                    "digits": 2,
+                    "minimum": 0.2,
+                    "maximum": 3.0
+                },
+                {
+                    "type": "Label",
+                    "caption": "PV-Autokalibrierung bei Einspeisebegrenzung pausieren: Sobald die Netzeinspeisung die Grenze minus Toleranz erreicht, werden keine neuen Auto-Faktor-Messwerte gespeichert."
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "PVCalibrationFeedInVariable",
+                    "caption": "Netzeinspeisung für Kalibrier-Sperre"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVCalibrationFeedInLimitW",
+                    "caption": "Einspeisegrenze",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 1000000,
+                    "suffix": " W"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVCalibrationFeedInToleranceW",
+                    "caption": "Toleranz unter Einspeisegrenze",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 100000,
+                    "suffix": " W"
+                },
+                {
+                    "type": "CheckBox",
+                    "name": "PVCalibrationFeedInInvert",
+                    "caption": "Vorzeichen der Netzeinspeisung invertieren (falls Einspeisung negativ geliefert wird)"
+                },
+                {
+                    "type": "List",
+                    "name": "PVSurfaces",
+                    "caption": "PV-Flächen",
+                    "rowCount": 6,
+                    "add": true,
+                    "delete": true,
+                    "sort": {
+                        "column": "Name",
+                        "direction": "ascending"
+                    },
+                    "columns": [
+                        {
+                            "caption": "Aktiv",
+                            "name": "Active",
+                            "width": "70px",
+                            "edit": {
+                                "type": "CheckBox"
+                            },
+                            "add": true
+                        },
+                        {
+                            "caption": "Name",
+                            "name": "Name",
+                            "width": "180px",
+                            "edit": {
+                                "type": "ValidationTextBox"
+                            },
+                            "add": "Neue PV-Fläche"
+                        },
+                        {
+                            "caption": "Leistung",
+                            "name": "KWp",
+                            "width": "110px",
+                            "edit": {
+                                "type": "NumberSpinner",
+                                "digits": 2,
+                                "minimum": 0,
+                                "maximum": 1000,
+                                "suffix": " kWp"
+                            },
+                            "add": 1.0
+                        },
+                        {
+                            "caption": "Ausrichtung bekannt",
+                            "name": "OrientationKnown",
+                            "width": "120px",
+                            "edit": {
+                                "type": "CheckBox"
+                            },
+                            "add": true
+                        },
+                        {
+                            "caption": "Azimut",
+                            "name": "Azimuth",
+                            "width": "100px",
+                            "edit": {
+                                "type": "NumberSpinner",
+                                "digits": 0,
+                                "minimum": -180,
+                                "maximum": 180,
+                                "suffix": " °"
+                            },
+                            "add": 0
+                        },
+                        {
+                            "caption": "Neigung",
+                            "name": "Tilt",
+                            "width": "100px",
+                            "edit": {
+                                "type": "NumberSpinner",
+                                "digits": 0,
+                                "minimum": 0,
+                                "maximum": 90,
+                                "suffix": " °"
+                            },
+                            "add": 30
+                        },
+                        {
+                            "caption": "Faktor",
+                            "name": "Factor",
+                            "width": "100px",
+                            "edit": {
+                                "type": "NumberSpinner",
+                                "digits": 2,
+                                "minimum": 0.1,
+                                "maximum": 2.0
+                            },
+                            "add": 1.0
+                        },
+                        {
+                            "caption": "Auto",
+                            "name": "AutoCalibrate",
+                            "width": "70px",
+                            "edit": {
+                                "type": "CheckBox"
+                            },
+                            "add": true
+                        },
+                        {
+                            "caption": "PV String 1",
+                            "name": "PVVariable1",
+                            "width": "160px",
+                            "edit": {
+                                "type": "SelectVariable"
+                            },
+                            "add": 0
+                        },
+                        {
+                            "caption": "PV String 2",
+                            "name": "PVVariable2",
+                            "width": "160px",
+                            "edit": {
+                                "type": "SelectVariable"
+                            },
+                            "add": 0
+                        },
+                        {
+                            "caption": "PV String 3",
+                            "name": "PVVariable3",
+                            "width": "160px",
+                            "edit": {
+                                "type": "SelectVariable"
+                            },
+                            "add": 0
+                        }
+                    ],
+                    "values": []
+                }
+            ]
         },
         {
-          "type": "NumberSpinner",
-          "name": "GlobalPVFactor",
-          "caption": "Globaler PV-Korrekturfaktor",
-          "digits": 3,
-          "minimum": 0.1,
-          "maximum": 2.0,
-          "suffix": " ×"
+            "type": "ExpansionPanel",
+            "caption": "Batterie",
+            "items": [
+                {
+                    "type": "SelectVariable",
+                    "name": "SOCVariable",
+                    "caption": "SoC Variable (%)"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "BatteryCapacityKWh",
+                    "caption": "Speicherkapazität",
+                    "digits": 2,
+                    "minimum": 0.1,
+                    "maximum": 1000,
+                    "suffix": " kWh"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "MinimumSOC",
+                    "caption": "Mindest-SoC",
+                    "digits": 1,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "suffix": " %"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "MaxDischargePowerW",
+                    "caption": "Max. Einspeise-/Entladeleistung",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 1000000,
+                    "suffix": " W"
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "DischargePowerVariable",
+                    "caption": "Sollleistung Entladung (optional)"
+                },
+                {
+                    "type": "CheckBox",
+                    "name": "InvertPowerSetpoint",
+                    "caption": "Sollleistung negativ schreiben (z.B. -5000 W)"
+                },
+                {
+                    "type": "Select",
+                    "name": "BatteryControlMode",
+                    "caption": "Batteriesteuerung",
+                    "options": [
+                        {
+                            "caption": "Allgemein über IP-Symcon Variablen",
+                            "value": 0
+                        },
+                        {
+                            "caption": "AlphaESS Dispatch über Modbus-Variablen",
+                            "value": 1
+                        }
+                    ]
+                },
+                {
+                    "type": "Label",
+                    "caption": "AlphaESS Dispatch: im Modbus-TCP-Modul die Register 2176, 2177, 2181, 2182 und 2183 als schreibbare Variablen anlegen und hier auswählen."
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "AlphaDispatchStartVariable",
+                    "caption": "AlphaESS Dispatch Start (2176, UINT16, FC06)"
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "AlphaDispatchPowerVariable",
+                    "caption": "AlphaESS Active Power (2177, INT32, FC16)"
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "AlphaDispatchModeVariable",
+                    "caption": "AlphaESS Dispatch Mode (2181, UINT16, FC06)"
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "AlphaDispatchSOCVariable",
+                    "caption": "AlphaESS Dispatch SoC (2182, UINT16, FC06)"
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "AlphaDispatchTimeVariable",
+                    "caption": "AlphaESS Dispatch Time (2183, UINT32, FC16)"
+                }
+            ]
         },
         {
-          "type": "NumberSpinner",
-          "name": "SystemEfficiency",
-          "caption": "Systemwirkungsgrad",
-          "digits": 2,
-          "minimum": 0.1,
-          "maximum": 1.0,
-          "suffix": " ×"
+            "type": "ExpansionPanel",
+            "caption": "Eigenverbrauch lernen",
+            "items": [
+                {
+                    "type": "Label",
+                    "caption": "Die Hausverbrauchsvariable wird zusätzlich zur Nachtberechnung als stündliches Lastprofil gelernt. Die PV-Prognose wird mit dem zeitgleichen Eigenverbrauch verrechnet, damit nur Energie eingespeist wird, die zum Erreichen des Ziel-SoC und zur Deckung des Eigenverbrauchs nicht benötigt wird."
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "HousePowerVariable",
+                    "caption": "Hausverbrauch Leistung (W)"
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "PVActualPowerVariable",
+                    "caption": "PV-Istleistung (W) (optional)"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "LearningDays",
+                    "caption": "Lernzeitraum",
+                    "digits": 0,
+                    "minimum": 3,
+                    "maximum": 90,
+                    "suffix": " Tage"
+                },
+                {
+                    "type": "CheckBox",
+                    "name": "ConsumptionProfileLearningEnabled",
+                    "caption": "Verbraucherlasten als Stundenprofil aus dem Archiv lernen"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "FallbackDailyConsumptionKWh",
+                    "caption": "Ersatzwert Tagesverbrauch bei fehlenden Archivdaten",
+                    "digits": 2,
+                    "minimum": 0,
+                    "maximum": 200,
+                    "suffix": " kWh"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "ConsumptionForecastSafetyPct",
+                    "caption": "Sicherheitsaufschlag auf gelernte Verbrauchsprognose",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "suffix": " %"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "BatteryTargetSOC",
+                    "caption": "Ziel-SoC nach dem nächsten PV-Tag",
+                    "digits": 0,
+                    "minimum": 50,
+                    "maximum": 100,
+                    "suffix": " %"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "MinimumValidNights",
+                    "caption": "Mindestens gültige Nächte zum Lernen",
+                    "digits": 0,
+                    "minimum": 1,
+                    "maximum": 30,
+                    "suffix": " Nächte"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "FallbackNightConsumptionKWh",
+                    "caption": "Ersatzwert Nachtverbrauch bei fehlenden Archivdaten",
+                    "digits": 2,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "suffix": " kWh"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "NightStartHour",
+                    "caption": "Nacht-Auswertung beginnt",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 23,
+                    "suffix": " Uhr"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "FallbackMorningHour",
+                    "caption": "Morgenende ohne PV-Istvariable",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 12,
+                    "suffix": " Uhr"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "MorningPVThresholdW",
+                    "caption": "PV-Schwelle für Morgenende",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 10000,
+                    "suffix": " W"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "SafetyReservePct",
+                    "caption": "Sicherheitsaufschlag Nachtverbrauch",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "suffix": " %"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "OutlierPct",
+                    "caption": "Ausreißergrenze um Median",
+                    "digits": 0,
+                    "minimum": 10,
+                    "maximum": 300,
+                    "suffix": " %"
+                }
+            ]
         },
         {
-          "type": "NumberSpinner",
-          "name": "PVCalibrationDays",
-          "caption": "Lernzeitraum PV-Auto-Faktor",
-          "digits": 0,
-          "minimum": 1,
-          "maximum": 90,
-          "suffix": " Tage"
+            "type": "ExpansionPanel",
+            "caption": "Börsenpreis & Optimierung",
+            "items": [
+                {
+                    "type": "Select",
+                    "name": "PriceSource",
+                    "caption": "Marktdatenquelle",
+                    "options": [
+                        {
+                            "caption": "EPEX SPOT AT 15 min (smartENERGY API)",
+                            "value": 0
+                        },
+                        {
+                            "caption": "JSON-Variable (eigene Quelle)",
+                            "value": 1
+                        }
+                    ]
+                },
+                {
+                    "type": "Select",
+                    "name": "FeedInTariffProvider",
+                    "caption": "Einspeisetarif / Anbieter",
+                    "options": [
+                        {
+                            "caption": "KELAG Sonnenplus Smart (EPEX SPOT AT)",
+                            "value": 0
+                        },
+                        {
+                            "caption": "EPEX SPOT AT – Marktpreis 1:1",
+                            "value": 1
+                        },
+                        {
+                            "caption": "aWATTar SUNNY Spot 60min",
+                            "value": 2
+                        },
+                        {
+                            "caption": "Benutzerdefiniert (Faktoren unten)",
+                            "value": 3
+                        }
+                    ]
+                },
+                {
+                    "type": "Label",
+                    "caption": "Die integrierte Marktdatenquelle liefert echte EPEX-SPOT-AT-Preise im 15-Minuten-Raster. Eine eigene JSON-Quelle wird bei Bedarf ebenfalls auf 15-Minuten-Slots normalisiert."
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "PriceJSONVariable",
+                    "caption": "JSON-Preisvariable (nur eigene Quelle)"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PositivePriceFactor",
+                    "caption": "Benutzerdefiniert: Faktor bei positivem Marktpreis",
+                    "digits": 3,
+                    "minimum": -5,
+                    "maximum": 5
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "NegativePriceFactor",
+                    "caption": "Benutzerdefiniert: Faktor bei negativem Marktpreis",
+                    "digits": 3,
+                    "minimum": -5,
+                    "maximum": 5
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PriceAdjustmentCt",
+                    "caption": "Benutzerdefiniert: fixer Auf-/Abschlag",
+                    "digits": 3,
+                    "minimum": -100,
+                    "maximum": 100,
+                    "suffix": " ct/kWh"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "MinimumFeedInPriceCt",
+                    "caption": "Mindest-Einspeisepreis",
+                    "digits": 2,
+                    "minimum": -100,
+                    "maximum": 500,
+                    "suffix": " ct/kWh"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "MinimumTomorrowPVKWh",
+                    "caption": "Min. PV-Prognose morgen für normale Freigabe",
+                    "digits": 1,
+                    "minimum": 0,
+                    "maximum": 500,
+                    "suffix": " kWh"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PoorForecastExtraReservePct",
+                    "caption": "Zusatzreserve bei schlechter PV-Prognose",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 300,
+                    "suffix": " %"
+                },
+                {
+                    "type": "CheckBox",
+                    "name": "DisableFeedInOnVeryPoorForecast",
+                    "caption": "Bei sehr schlechter PV-Prognose Einspeisung sperren"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "VeryPoorForecastKWh",
+                    "caption": "Sehr schlechte PV-Prognose unter",
+                    "digits": 1,
+                    "minimum": 0,
+                    "maximum": 500,
+                    "suffix": " kWh"
+                },
+                {
+                    "type": "CheckBox",
+                    "name": "PreventPVCurtailment",
+                    "caption": "Speicher vor PV-Überschuss freihalten / PV-Abregelung vermeiden"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVHeadroomTargetSOC",
+                    "caption": "Maximaler Ziel-SoC bei erwarteter starker PV",
+                    "digits": 1,
+                    "minimum": 20,
+                    "maximum": 100,
+                    "suffix": " %"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVStorageSharePct",
+                    "caption": "Anteil der PV-Prognose als möglicher Batterieüberschuss",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "suffix": " %"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVSpaceMinimumPriceCt",
+                    "caption": "Mindestpreis bei notwendiger Speicherfreihaltung",
+                    "digits": 2,
+                    "minimum": -100,
+                    "maximum": 100,
+                    "suffix": " ct/kWh"
+                }
+            ]
         },
         {
-          "type": "NumberSpinner",
-          "name": "UnknownOrientationLearningDays",
-          "caption": "Lernphase bei unbekannter Ausrichtung",
-          "digits": 0,
-          "minimum": 1,
-          "maximum": 90,
-          "suffix": " Tage"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PVCalibrationMinExpectedW",
-          "caption": "Kalibrierung erst ab erwarteter Leistung",
-          "digits": 0,
-          "minimum": 50,
-          "maximum": 10000,
-          "suffix": " W"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PVCalibrationMinFactor",
-          "caption": "Minimaler Auto-Faktor",
-          "digits": 2,
-          "minimum": 0.1,
-          "maximum": 2.0
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PVCalibrationMaxFactor",
-          "caption": "Maximaler Auto-Faktor",
-          "digits": 2,
-          "minimum": 0.2,
-          "maximum": 3.0
-        },
-        {
-          "type": "Label",
-          "caption": "PV-Autokalibrierung bei Einspeisebegrenzung pausieren: Sobald die Netzeinspeisung die Grenze minus Toleranz erreicht, werden keine neuen Auto-Faktor-Messwerte gespeichert."
-        },
-        {
-          "type": "SelectVariable",
-          "name": "PVCalibrationFeedInVariable",
-          "caption": "Netzeinspeisung für Kalibrier-Sperre"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PVCalibrationFeedInLimitW",
-          "caption": "Einspeisegrenze",
-          "digits": 0,
-          "minimum": 0,
-          "maximum": 1000000,
-          "suffix": " W"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PVCalibrationFeedInToleranceW",
-          "caption": "Toleranz unter Einspeisegrenze",
-          "digits": 0,
-          "minimum": 0,
-          "maximum": 100000,
-          "suffix": " W"
-        },
-        {
-          "type": "CheckBox",
-          "name": "PVCalibrationFeedInInvert",
-          "caption": "Vorzeichen der Netzeinspeisung invertieren (falls Einspeisung negativ geliefert wird)"
-        },
-        {
-          "type": "List",
-          "name": "PVSurfaces",
-          "caption": "PV-Flächen",
-          "rowCount": 6,
-          "add": true,
-          "delete": true,
-          "sort": {
-            "column": "Name",
-            "direction": "ascending"
-          },
-          "columns": [
-            {
-              "caption": "Aktiv",
-              "name": "Active",
-              "width": "70px",
-              "edit": {
-                "type": "CheckBox"
-              },
-              "add": true
-            },
-            {
-              "caption": "Name",
-              "name": "Name",
-              "width": "180px",
-              "edit": {
-                "type": "ValidationTextBox"
-              },
-              "add": "Neue PV-Fläche"
-            },
-            {
-              "caption": "Leistung",
-              "name": "KWp",
-              "width": "110px",
-              "edit": {
-                "type": "NumberSpinner",
-                "digits": 2,
-                "minimum": 0,
-                "maximum": 1000,
-                "suffix": " kWp"
-              },
-              "add": 1.0
-            },
-            {
-              "caption": "Ausrichtung bekannt",
-              "name": "OrientationKnown",
-              "width": "120px",
-              "edit": {
-                "type": "CheckBox"
-              },
-              "add": true
-            },
-            {
-              "caption": "Azimut",
-              "name": "Azimuth",
-              "width": "100px",
-              "edit": {
-                "type": "NumberSpinner",
-                "digits": 0,
-                "minimum": -180,
-                "maximum": 180,
-                "suffix": " °"
-              },
-              "add": 0
-            },
-            {
-              "caption": "Neigung",
-              "name": "Tilt",
-              "width": "100px",
-              "edit": {
-                "type": "NumberSpinner",
-                "digits": 0,
-                "minimum": 0,
-                "maximum": 90,
-                "suffix": " °"
-              },
-              "add": 30
-            },
-            {
-              "caption": "Faktor",
-              "name": "Factor",
-              "width": "100px",
-              "edit": {
-                "type": "NumberSpinner",
-                "digits": 2,
-                "minimum": 0.1,
-                "maximum": 2.0
-              },
-              "add": 1.0
-            },
-            {
-              "caption": "Auto",
-              "name": "AutoCalibrate",
-              "width": "70px",
-              "edit": {
-                "type": "CheckBox"
-              },
-              "add": true
-            },
-            {
-              "caption": "PV String 1",
-              "name": "PVVariable1",
-              "width": "160px",
-              "edit": {
-                "type": "SelectVariable"
-              },
-              "add": 0
-            },
-            {
-              "caption": "PV String 2",
-              "name": "PVVariable2",
-              "width": "160px",
-              "edit": {
-                "type": "SelectVariable"
-              },
-              "add": 0
-            },
-            {
-              "caption": "PV String 3",
-              "name": "PVVariable3",
-              "width": "160px",
-              "edit": {
-                "type": "SelectVariable"
-              },
-              "add": 0
-            }
-          ],
-          "values": []
+            "type": "ExpansionPanel",
+            "caption": "Automatik",
+            "items": [
+                {
+                    "type": "Label",
+                    "caption": "Die Einspeiseautomatik wird über den Schalter 'Einspeiseautomatik' in der Instanz ein-/ausgeschaltet. Prognosen, Nachtverbrauch und Lernfunktionen laufen unabhängig davon weiter."
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "RefreshMinutes",
+                    "caption": "Preise / Optimierung aktualisieren (Minuten)",
+                    "digits": 0,
+                    "minimum": 5,
+                    "maximum": 180,
+                    "suffix": " min"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVForecastRefreshMinutes",
+                    "caption": "PV-Prognose aktualisieren (Minuten)",
+                    "minimum": 5,
+                    "maximum": 1440
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVActualRefreshMinutes",
+                    "caption": "PV-Istwerte / PV-Grafik aktualisieren (Minuten)",
+                    "minimum": 1,
+                    "maximum": 1440
+                }
+            ]
         }
-      ]
-    },
-    {
-      "type": "ExpansionPanel",
-      "caption": "Batterie",
-      "items": [
+    ],
+    "actions": [
         {
-          "type": "SelectVariable",
-          "name": "SOCVariable",
-          "caption": "SoC Variable (%)"
+            "type": "Button",
+            "caption": "Jetzt Prognose & Plan berechnen",
+            "onClick": "SBO_Recalculate($id);"
         },
         {
-          "type": "NumberSpinner",
-          "name": "BatteryCapacityKWh",
-          "caption": "Speicherkapazität",
-          "digits": 2,
-          "minimum": 0.1,
-          "maximum": 1000,
-          "suffix": " kWh"
+            "type": "Button",
+            "caption": "Nur Nachtverbrauch neu lernen",
+            "onClick": "SBO_LearnNightConsumption($id);"
         },
         {
-          "type": "NumberSpinner",
-          "name": "MinimumSOC",
-          "caption": "Mindest-SoC",
-          "digits": 1,
-          "minimum": 0,
-          "maximum": 100,
-          "suffix": " %"
+            "type": "Button",
+            "caption": "Verbrauchsprofil neu lernen",
+            "onClick": "SBO_LearnConsumptionProfile($id);"
         },
         {
-          "type": "NumberSpinner",
-          "name": "MaxDischargePowerW",
-          "caption": "Max. Einspeise-/Entladeleistung",
-          "digits": 0,
-          "minimum": 0,
-          "maximum": 1000000,
-          "suffix": " W"
+            "type": "Button",
+            "caption": "PV-Kalibrierung / Auto-Faktoren zurücksetzen",
+            "onClick": "SBO_ResetPVCalibration($id);"
         },
         {
-          "type": "SelectVariable",
-          "name": "DischargePowerVariable",
-          "caption": "Sollleistung Entladung (optional)"
-        },
-        {
-          "type": "CheckBox",
-          "name": "InvertPowerSetpoint",
-          "caption": "Sollleistung negativ schreiben (z.B. -5000 W)"
-        },
-        {
-          "type": "Select",
-          "name": "BatteryControlMode",
-          "caption": "Batteriesteuerung",
-          "options": [
-            {
-              "caption": "Allgemein über IP-Symcon Variablen",
-              "value": 0
-            },
-            {
-              "caption": "AlphaESS Dispatch über Modbus-Variablen",
-              "value": 1
-            }
-          ]
-        },
-        {
-          "type": "Label",
-          "caption": "AlphaESS Dispatch: im Modbus-TCP-Modul die Register 2176, 2177, 2181, 2182 und 2183 als schreibbare Variablen anlegen und hier auswählen."
-        },
-        {
-          "type": "SelectVariable",
-          "name": "AlphaDispatchStartVariable",
-          "caption": "AlphaESS Dispatch Start (2176, UINT16, FC06)"
-        },
-        {
-          "type": "SelectVariable",
-          "name": "AlphaDispatchPowerVariable",
-          "caption": "AlphaESS Active Power (2177, INT32, FC16)"
-        },
-        {
-          "type": "SelectVariable",
-          "name": "AlphaDispatchModeVariable",
-          "caption": "AlphaESS Dispatch Mode (2181, UINT16, FC06)"
-        },
-        {
-          "type": "SelectVariable",
-          "name": "AlphaDispatchSOCVariable",
-          "caption": "AlphaESS Dispatch SoC (2182, UINT16, FC06)"
-        },
-        {
-          "type": "SelectVariable",
-          "name": "AlphaDispatchTimeVariable",
-          "caption": "AlphaESS Dispatch Time (2183, UINT32, FC16)"
+            "type": "Button",
+            "caption": "Einspeisung sofort stoppen",
+            "onClick": "SBO_StopFeedIn($id);"
         }
-      ]
-    },
-    {
-      "type": "ExpansionPanel",
-      "caption": "Eigenverbrauch lernen",
-      "items": [
+    ],
+    "status": [
         {
-          "type": "Label",
-          "caption": "Die Hausverbrauchsvariable wird zusätzlich zur Nachtberechnung als stündliches Lastprofil gelernt. Die PV-Prognose wird mit dem zeitgleichen Eigenverbrauch verrechnet, damit nur Energie eingespeist wird, die zum Erreichen des Ziel-SoC und zur Deckung des Eigenverbrauchs nicht benötigt wird."
+            "code": 102,
+            "icon": "active",
+            "caption": "Aktiv"
         },
         {
-          "type": "SelectVariable",
-          "name": "HousePowerVariable",
-          "caption": "Hausverbrauch Leistung (W)"
+            "code": 200,
+            "icon": "error",
+            "caption": "Konfiguration unvollständig"
         },
         {
-          "type": "SelectVariable",
-          "name": "PVActualPowerVariable",
-          "caption": "PV-Istleistung (W) (optional)"
+            "code": 201,
+            "icon": "error",
+            "caption": "Prognose/Preisabruf fehlgeschlagen"
         },
         {
-          "type": "NumberSpinner",
-          "name": "LearningDays",
-          "caption": "Lernzeitraum",
-          "digits": 0,
-          "minimum": 3,
-          "maximum": 90,
-          "suffix": " Tage"
-        },
-        {
-          "type": "CheckBox",
-          "name": "ConsumptionProfileLearningEnabled",
-          "caption": "Verbraucherlasten als Stundenprofil aus dem Archiv lernen"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "FallbackDailyConsumptionKWh",
-          "caption": "Ersatzwert Tagesverbrauch bei fehlenden Archivdaten",
-          "digits": 2,
-          "minimum": 0,
-          "maximum": 200,
-          "suffix": " kWh"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "ConsumptionForecastSafetyPct",
-          "caption": "Sicherheitsaufschlag auf gelernte Verbrauchsprognose",
-          "digits": 0,
-          "minimum": 0,
-          "maximum": 100,
-          "suffix": " %"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "BatteryTargetSOC",
-          "caption": "Ziel-SoC nach dem nächsten PV-Tag",
-          "digits": 0,
-          "minimum": 50,
-          "maximum": 100,
-          "suffix": " %"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "MinimumValidNights",
-          "caption": "Mindestens gültige Nächte zum Lernen",
-          "digits": 0,
-          "minimum": 1,
-          "maximum": 30,
-          "suffix": " Nächte"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "FallbackNightConsumptionKWh",
-          "caption": "Ersatzwert Nachtverbrauch bei fehlenden Archivdaten",
-          "digits": 2,
-          "minimum": 0,
-          "maximum": 100,
-          "suffix": " kWh"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "NightStartHour",
-          "caption": "Nacht-Auswertung beginnt",
-          "digits": 0,
-          "minimum": 0,
-          "maximum": 23,
-          "suffix": " Uhr"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "FallbackMorningHour",
-          "caption": "Morgenende ohne PV-Istvariable",
-          "digits": 0,
-          "minimum": 0,
-          "maximum": 12,
-          "suffix": " Uhr"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "MorningPVThresholdW",
-          "caption": "PV-Schwelle für Morgenende",
-          "digits": 0,
-          "minimum": 0,
-          "maximum": 10000,
-          "suffix": " W"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "SafetyReservePct",
-          "caption": "Sicherheitsaufschlag Nachtverbrauch",
-          "digits": 0,
-          "minimum": 0,
-          "maximum": 100,
-          "suffix": " %"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "OutlierPct",
-          "caption": "Ausreißergrenze um Median",
-          "digits": 0,
-          "minimum": 10,
-          "maximum": 300,
-          "suffix": " %"
+            "code": 202,
+            "icon": "inactive",
+            "caption": "PV-Lernphase – Automatik gesperrt"
         }
-      ]
-    },
-    {
-      "type": "ExpansionPanel",
-      "caption": "Börsenpreis & Optimierung",
-      "items": [
-        {
-          "type": "Select",
-          "name": "PriceSource",
-          "caption": "Marktdatenquelle",
-          "options": [
-            {
-              "caption": "EPEX SPOT AT 15 min (smartENERGY API)",
-              "value": 0
-            },
-            {
-              "caption": "JSON-Variable (eigene Quelle)",
-              "value": 1
-            }
-          ]
-        },
-        {
-          "type": "Select",
-          "name": "FeedInTariffProvider",
-          "caption": "Einspeisetarif / Anbieter",
-          "options": [
-            {
-              "caption": "KELAG Sonnenplus Smart (EPEX SPOT AT)",
-              "value": 0
-            },
-            {
-              "caption": "EPEX SPOT AT – Marktpreis 1:1",
-              "value": 1
-            },
-            {
-              "caption": "aWATTar SUNNY Spot 60min",
-              "value": 2
-            },
-            {
-              "caption": "Benutzerdefiniert (Faktoren unten)",
-              "value": 3
-            }
-          ]
-        },
-        {
-          "type": "Label",
-          "caption": "Die integrierte Marktdatenquelle liefert echte EPEX-SPOT-AT-Preise im 15-Minuten-Raster. Eine eigene JSON-Quelle wird bei Bedarf ebenfalls auf 15-Minuten-Slots normalisiert."
-        },
-        {
-          "type": "SelectVariable",
-          "name": "PriceJSONVariable",
-          "caption": "JSON-Preisvariable (nur eigene Quelle)"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PositivePriceFactor",
-          "caption": "Benutzerdefiniert: Faktor bei positivem Marktpreis",
-          "digits": 3,
-          "minimum": -5,
-          "maximum": 5
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "NegativePriceFactor",
-          "caption": "Benutzerdefiniert: Faktor bei negativem Marktpreis",
-          "digits": 3,
-          "minimum": -5,
-          "maximum": 5
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PriceAdjustmentCt",
-          "caption": "Benutzerdefiniert: fixer Auf-/Abschlag",
-          "digits": 3,
-          "minimum": -100,
-          "maximum": 100,
-          "suffix": " ct/kWh"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "MinimumFeedInPriceCt",
-          "caption": "Mindest-Einspeisepreis",
-          "digits": 2,
-          "minimum": -100,
-          "maximum": 500,
-          "suffix": " ct/kWh"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "MinimumTomorrowPVKWh",
-          "caption": "Min. PV-Prognose morgen für normale Freigabe",
-          "digits": 1,
-          "minimum": 0,
-          "maximum": 500,
-          "suffix": " kWh"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PoorForecastExtraReservePct",
-          "caption": "Zusatzreserve bei schlechter PV-Prognose",
-          "digits": 0,
-          "minimum": 0,
-          "maximum": 300,
-          "suffix": " %"
-        },
-        {
-          "type": "CheckBox",
-          "name": "DisableFeedInOnVeryPoorForecast",
-          "caption": "Bei sehr schlechter PV-Prognose Einspeisung sperren"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "VeryPoorForecastKWh",
-          "caption": "Sehr schlechte PV-Prognose unter",
-          "digits": 1,
-          "minimum": 0,
-          "maximum": 500,
-          "suffix": " kWh"
-        },
-        {
-          "type": "CheckBox",
-          "name": "PreventPVCurtailment",
-          "caption": "Speicher vor PV-Überschuss freihalten / PV-Abregelung vermeiden"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PVHeadroomTargetSOC",
-          "caption": "Maximaler Ziel-SoC bei erwarteter starker PV",
-          "digits": 1,
-          "minimum": 20,
-          "maximum": 100,
-          "suffix": " %"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PVStorageSharePct",
-          "caption": "Anteil der PV-Prognose als möglicher Batterieüberschuss",
-          "digits": 0,
-          "minimum": 0,
-          "maximum": 100,
-          "suffix": " %"
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "PVSpaceMinimumPriceCt",
-          "caption": "Mindestpreis bei notwendiger Speicherfreihaltung",
-          "digits": 2,
-          "minimum": -100,
-          "maximum": 100,
-          "suffix": " ct/kWh"
-        }
-      ]
-    },
-    {
-      "type": "ExpansionPanel",
-      "caption": "Automatik",
-      "items": [
-        {
-          "type": "Label",
-          "caption": "Die Einspeiseautomatik wird über den Schalter 'Einspeiseautomatik' in der Instanz ein-/ausgeschaltet. Prognosen, Nachtverbrauch und Lernfunktionen laufen unabhängig davon weiter."
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "RefreshMinutes",
-          "caption": "Daten/Plan aktualisieren alle",
-          "digits": 0,
-          "minimum": 5,
-          "maximum": 180,
-          "suffix": " min"
-        }
-      ]
-    }
-  ],
-  "actions": [
-    {
-      "type": "Button",
-      "caption": "Jetzt Prognose & Plan berechnen",
-      "onClick": "SBO_Recalculate($id);"
-    },
-    {
-      "type": "Button",
-      "caption": "Nur Nachtverbrauch neu lernen",
-      "onClick": "SBO_LearnNightConsumption($id);"
-    },
-    {
-      "type": "Button",
-      "caption": "Verbrauchsprofil neu lernen",
-      "onClick": "SBO_LearnConsumptionProfile($id);"
-    },
-    {
-      "type": "Button",
-      "caption": "PV-Kalibrierung / Auto-Faktoren zurücksetzen",
-      "onClick": "SBO_ResetPVCalibration($id);"
-    },
-    {
-      "type": "Button",
-      "caption": "Einspeisung sofort stoppen",
-      "onClick": "SBO_StopFeedIn($id);"
-    }
-  ],
-  "status": [
-    {
-      "code": 102,
-      "icon": "active",
-      "caption": "Aktiv"
-    },
-    {
-      "code": 200,
-      "icon": "error",
-      "caption": "Konfiguration unvollständig"
-    },
-    {
-      "code": 201,
-      "icon": "error",
-      "caption": "Prognose/Preisabruf fehlgeschlagen"
-    },
-    {
-      "code": 202,
-      "icon": "inactive",
-      "caption": "PV-Lernphase – Automatik gesperrt"
-    }
-  ]
+    ]
 }

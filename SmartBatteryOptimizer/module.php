@@ -70,6 +70,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('PVSpaceMinimumPriceCt', -100.0);
 
         $this->RegisterPropertyInteger('RefreshMinutes', 30);
+        $this->RegisterPropertyInteger('PVForecastRefreshMinutes', 30);
+        $this->RegisterPropertyInteger('PVActualRefreshMinutes', 5);
 
         $this->RegisterVariableFloat('PVForecastToday', 'PV Prognose heute', '~Electricity', 9);
         $this->RegisterVariableFloat('PVForecastTomorrow', 'PV Prognose morgen', '~Electricity', 10);
@@ -113,7 +115,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeBoolean('AlphaDispatchActive', false);
         $this->RegisterAttributeString('AlphaDispatchCommandKey', '');
 
-        $this->RegisterTimer('RefreshTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('RefreshTimer', 0, 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
     }
 
@@ -121,7 +125,11 @@ class SmartBatteryOptimizer extends IPSModule
     {
         parent::ApplyChanges();
         $refresh = max(5, $this->ReadPropertyInteger('RefreshMinutes'));
+        $pvForecastRefresh = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes'));
+        $pvActualRefresh = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes'));
         $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
+        $this->SetTimerInterval('PVForecastTimer', $pvForecastRefresh * 60 * 1000);
+        $this->SetTimerInterval('PVActualTimer', $pvActualRefresh * 60 * 1000);
         $this->SetTimerInterval('ControlTimer', 60 * 1000);
 
         if ($this->ReadPropertyInteger('SOCVariable') <= 0 || $this->ReadPropertyInteger('HousePowerVariable') <= 0) {
@@ -167,11 +175,44 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function Recalculate()
     {
+        $this->RecalculateInternal(true);
+    }
+
+    public function RefreshOptimization()
+    {
+        $this->RecalculateInternal(false);
+    }
+
+    public function RefreshPVActual()
+    {
+        try {
+            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+            if (!is_array($forecast) || empty($forecast)) {
+                $this->RecalculateInternal(true);
+                return;
+            }
+            SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+        } catch (Throwable $e) {
+            $this->SendDebug('RefreshPVActual', $e->getMessage(), 0);
+        }
+    }
+
+    private function RecalculateInternal(bool $refreshPVForecast)
+    {
         try {
             $night = $this->LearnNightConsumptionInternal();
             $consumptionProfile = $this->LearnConsumptionProfileInternal(false);
-            $forecast = $this->FetchPVForecast();
-            $this->StorePVForecastHistory($forecast);
+            $forecast = [];
+            if (!$refreshPVForecast) {
+                $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+                if (!is_array($forecast) || empty($forecast)) {
+                    $refreshPVForecast = true;
+                }
+            }
+            if ($refreshPVForecast) {
+                $forecast = $this->FetchPVForecast();
+                $this->StorePVForecastHistory($forecast);
+            }
             $forecast = $this->ApplyConsumptionForecastToPV($forecast, $consumptionProfile);
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
             $gate = $this->GetAutomaticLearningGateStatus();
@@ -1625,7 +1666,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $source = (string)$actual['source'];
             }
             $rows = [];
-            for ($h = 0; $h < 24; $h++) {
+            for ($h = 6; $h < 22; $h++) {
                 $actualValue = $actual['hourlyKWh'][$h] ?? null;
                 $rows[] = [
                     'label' => str_pad((string)$h, 2, '0', STR_PAD_LEFT) . ':00',
@@ -1651,6 +1692,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
         $html .= '<b>PV-Prognose – Prognose und Ist-Produktion</b><br>';
+        $html .= '<span style="font-size:11px;color:#bbb">Aktualisiert: ' . date('d.m.Y H:i:s') . ' &middot; Darstellung 06:00–22:00 Uhr</span><br>';
 
         if ($highchartsJS !== '') {
             $html .= '<div id="' . $chartId . '" style="width:100%;height:410px;margin-top:8px;margin-bottom:6px"></div>';
@@ -1728,7 +1770,7 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
 
-        $html .= '<div style="font-size:11px;color:#ccc">Blau = prognostizierte Energie je Stunde in kWh. Transparentes Gelb = tatsächlich erzeugte Energie je Stunde aus dem IP-Symcon-Archiv. Quelle Ist-Werte: ' . htmlspecialchars($source) . '. Gespeicherte Prognosen werden bis zu 14 Tage vorgehalten; in der Grafik sind die letzten 7 Tage sowie morgen anwählbar. Für Tage vor Installation der Speicherung existiert keine ursprüngliche Prognose.</div>';
+        $html .= '<div style="font-size:11px;color:#ccc">Angezeigt werden nur die Stunden 06:00–22:00 Uhr; die Tages-Gesamtsummen beziehen sich weiterhin auf den vollständigen Tag. Blau = prognostizierte Energie je Stunde in kWh. Transparentes Gelb = tatsächlich erzeugte Energie je Stunde aus dem IP-Symcon-Archiv. Quelle Ist-Werte: ' . htmlspecialchars($source) . '. Gespeicherte Prognosen werden bis zu 14 Tage vorgehalten; in der Grafik sind die letzten 7 Tage sowie morgen anwählbar. Für Tage vor Installation der Speicherung existiert keine ursprüngliche Prognose.</div>';
         return $html . '</div>';
     }
 
@@ -1838,6 +1880,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
         $html .= '<b>Einspeisevergütung – Stundenmittel der nächsten 24 Stunden</b><br>';
+        $html .= '<span style="font-size:11px;color:#bbb">Aktualisiert: ' . date('d.m.Y H:i:s') . '</span><br>';
         if ($highchartsJS !== '') {
             $html .= '<div id="' . $chartId . '" style="width:100%;height:390px;margin-top:8px;margin-bottom:10px"></div>';
             $html .= '<script>' . $highchartsJS . '</script>';
