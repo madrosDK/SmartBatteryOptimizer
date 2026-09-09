@@ -1593,24 +1593,99 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $html = '<div style="font-family:Tahoma;font-size:12px">';
         $html .= '<details><summary style="cursor:pointer;font-family:Tahoma;font-size:12px;font-weight:bold;padding:6px 0">Einspeiseplan anzeigen / ausblenden</summary>';
-        $html .= '<div style="padding-top:6px"><b>Einspeiseplan / Preise – nächste 24 Stunden (15-Minuten-Raster)</b><br><span style="font-size:11px">Preiswerte werden 24 Stunden angezeigt; geplante Einspeisung nur bis zur nächsten PV-Phase.</span><br><br>';
-        $html .= '<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Zeit</th><th>Markt</th><th>Tarif</th><th>Leistung</th><th>Energie</th><th>Grund</th></tr>';
+
+        $displayHours = max(24, min(72, $this->ReadPropertyInteger('PriceDisplayHours')));
         $now = time();
-        $displayEnd = $now + 24 * 3600;
+        $displayStart = strtotime(date('Y-m-d H:00:00', $now));
+        $displayEnd = $displayStart + $displayHours * 3600;
+
+        $hours = [];
+        for ($i = 0; $i < $displayHours; $i++) {
+            $hStart = $displayStart + $i * 3600;
+            $hours[$hStart] = [
+                'start' => $hStart,
+                'end' => $hStart + 3600,
+                'marketWeighted' => 0.0,
+                'tariffWeighted' => 0.0,
+                'priceSeconds' => 0,
+                'energyKWh' => 0.0,
+                'reasonPrice' => false,
+                'reasonPVSpace' => false
+            ];
+        }
+
+        // Preiswerte auf volle Stunden zusammenfassen. Bei 15-Minuten-Daten entsteht
+        // daraus der zeitgewichtete Stundenmittelwert.
         foreach ($prices as $p) {
-            if ($p['end'] <= $now || $p['start'] >= $displayEnd) continue;
-            $slot = null;
-            foreach ($plan['slots'] as $s) {
-                if (abs($s['start'] - $p['start']) < 120 || ($s['start'] >= $p['start'] && $s['start'] < $p['end'])) { $slot = $s; break; }
+            foreach ($hours as $hStart => &$h) {
+                $overlapStart = max((int)$p['start'], $h['start']);
+                $overlapEnd = min((int)$p['end'], $h['end']);
+                if ($overlapEnd <= $overlapStart) continue;
+                $seconds = $overlapEnd - $overlapStart;
+                $h['marketWeighted'] += (float)$p['marketCt'] * $seconds;
+                $h['tariffWeighted'] += (float)$p['priceCt'] * $seconds;
+                $h['priceSeconds'] += $seconds;
             }
-            $html .= '<tr style="border-top:1px solid #555"><td>' . date('d.m. H:i', $p['start']) . '–' . date('H:i', $p['end']) . '</td>';
-            $html .= '<td style="text-align:right">' . number_format($p['marketCt'], 2, ',', '.') . ' ct</td>';
-            $html .= '<td style="text-align:right"><b>' . number_format($p['priceCt'], 2, ',', '.') . ' ct</b></td>';
-            $html .= '<td style="text-align:right">' . ($slot ? number_format($slot['powerW']/1000, 2, ',', '.') . ' kW' : '-') . '</td>';
-            $html .= '<td style="text-align:right">' . ($slot ? number_format($slot['energyKWh'], 2, ',', '.') . ' kWh' : '-') . '</td>';
-            $reason = $slot ? (($slot['reason'] ?? 'price') === 'pv_space' ? 'PV-Speicher' : 'Preis') : '-';
+            unset($h);
+        }
+
+        // Interne 15-Minuten-Einspeiseslots für die Anzeige zu Stundenwerten addieren.
+        foreach (($plan['slots'] ?? []) as $slot) {
+            $slotStart = (int)$slot['start'];
+            $slotEnd = isset($slot['end']) ? (int)$slot['end'] : ($slotStart + 900);
+            foreach ($hours as $hStart => &$h) {
+                $overlapStart = max($slotStart, $h['start']);
+                $overlapEnd = min($slotEnd, $h['end']);
+                if ($overlapEnd <= $overlapStart) continue;
+
+                $slotDuration = max(1, $slotEnd - $slotStart);
+                $fraction = ($overlapEnd - $overlapStart) / $slotDuration;
+                $h['energyKWh'] += (float)($slot['energyKWh'] ?? 0.0) * $fraction;
+
+                if (($slot['reason'] ?? 'price') === 'pv_space') {
+                    $h['reasonPVSpace'] = true;
+                } else {
+                    $h['reasonPrice'] = true;
+                }
+            }
+            unset($h);
+        }
+
+        $html .= '<div style="padding-top:6px"><b>Einspeiseplan / Preise – nächste ' . $displayHours . ' Stunden (Stundenwerte)</b><br>';
+        $html .= '<span style="font-size:11px">Die Anzeige ist auf volle Stunden zusammengefasst. Die Batteriesteuerung arbeitet intern weiterhin im feineren Raster.</span><br><br>';
+        $html .= '<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Zeit</th><th>Markt</th><th>Tarif</th><th>Leistung Ø</th><th>Energie</th><th>Grund</th></tr>';
+
+        foreach ($hours as $h) {
+            if ($h['end'] <= $now) continue;
+
+            $hasPrice = $h['priceSeconds'] > 0;
+            $marketCt = $hasPrice ? $h['marketWeighted'] / $h['priceSeconds'] : null;
+            $tariffCt = $hasPrice ? $h['tariffWeighted'] / $h['priceSeconds'] : null;
+            $energy = (float)$h['energyKWh'];
+            $hasPlan = $energy > 0.0001;
+
+            // kWh innerhalb einer Stunde entsprechen der über die ganze Stunde
+            // gemittelten geplanten Leistung in kW.
+            $avgPowerKW = $energy;
+
+            if ($h['reasonPVSpace'] && $h['reasonPrice']) {
+                $reason = 'Preis + PV-Speicher';
+            } elseif ($h['reasonPVSpace']) {
+                $reason = 'PV-Speicher';
+            } elseif ($h['reasonPrice']) {
+                $reason = 'Preis';
+            } else {
+                $reason = '-';
+            }
+
+            $html .= '<tr style="border-top:1px solid #555"><td>' . date('d.m. H:i', $h['start']) . '–' . date('H:i', $h['end']) . '</td>';
+            $html .= '<td style="text-align:right">' . ($marketCt === null ? '-' : number_format($marketCt, 2, ',', '.') . ' ct') . '</td>';
+            $html .= '<td style="text-align:right"><b>' . ($tariffCt === null ? '-' : number_format($tariffCt, 2, ',', '.') . ' ct') . '</b></td>';
+            $html .= '<td style="text-align:right">' . ($hasPlan ? number_format($avgPowerKW, 2, ',', '.') . ' kW' : '-') . '</td>';
+            $html .= '<td style="text-align:right">' . ($hasPlan ? number_format($energy, 2, ',', '.') . ' kWh' : '-') . '</td>';
             $html .= '<td style="text-align:right">' . $reason . '</td></tr>';
         }
+
         $html .= '</table><br><b>PV-Flächen morgen</b><br>';
         foreach (($forecast['surfaceTotals'] ?? []) as $name => $kwh) {
             $html .= htmlspecialchars((string)$name) . ': ' . number_format((float)$kwh, 2, ',', '.') . ' kWh<br>';

@@ -167,3 +167,6 @@ Das gelernte Tagesverbrauchsprofil kann bereits ab **3 gültigen Tagen** verwend
 Es gibt nur noch das Auswahlfeld **Preisquelle / Tarif**. Zur Auswahl stehen **EPEX SPOT AT 60 min**, **aWATTar SUNNY Spot 60min**, **Eigene JSON-Quelle** und **Benutzerdefiniert (Faktoren unten)**. Weitere Portale oder Tarifmodelle können später als zusätzliche Auswahl ergänzt werden.
 
 Die Einstellung **Preisvorschau / Diagramm (Stunden)** legt den sichtbaren Horizont fest. Sie ist von **24 bis 72 Stunden** einstellbar. Bei EPEX werden ausschließlich tatsächlich veröffentlichte Day-Ahead-Werte angezeigt; noch nicht veröffentlichte Stunden bleiben leer und werden bei einem späteren Abruf ergänzt. Die von smartENERGY gelieferten 15-Minuten-Rohwerte werden bereits vor der Tarifberechnung zu arithmetischen 60-Minuten-Mittelwerten zusammengefasst.
+
+### Einspeiseplan
+Der sichtbare Einspeiseplan wird ab Version 1.5.3 ausschließlich in Stundenwerten dargestellt. Marktpreis und Tarif sind Stundenmittelwerte; geplante Energie wird je Stunde aufsummiert. Die interne Batteriesteuerung bleibt feiner aufgelöst.
