@@ -12,6 +12,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('Longitude', 14.31);
         $this->RegisterPropertyFloat('GlobalPVFactor', 1.0);
         $this->RegisterPropertyFloat('SystemEfficiency', 0.86);
+        $this->RegisterPropertyBoolean('UseOpenMeteoForecast', true);
+        $this->RegisterPropertyBoolean('UseForecastSolarForecast', false);
+        $this->RegisterPropertyString('ForecastSolarAPIKey', '');
+        $this->RegisterPropertyInteger('ForecastWeightLearningDays', 7);
         $this->RegisterPropertyInteger('PVCalibrationDays', 30);
         $this->RegisterPropertyInteger('UnknownOrientationLearningDays', 30);
         $this->RegisterPropertyInteger('PVCalibrationMinExpectedW', 300);
@@ -104,6 +108,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $this->RegisterAttributeString('ForecastJSON', '{}');
         $this->RegisterAttributeString('PVForecastHistoryJSON', '{}');
+        $this->RegisterAttributeString('PVSourceForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
@@ -351,147 +356,281 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $lat = $this->ReadPropertyFloat('Latitude');
         $lon = $this->ReadPropertyFloat('Longitude');
+        $useOpenMeteo = $this->ReadPropertyBoolean('UseOpenMeteoForecast');
+        $useForecastSolar = $this->ReadPropertyBoolean('UseForecastSolarForecast');
+        if (!$useOpenMeteo && !$useForecastSolar) {
+            throw new Exception('Mindestens eine PV-Prognosequelle muss aktiviert sein.');
+        }
+
         $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
         if (!is_array($surfaces) || count($surfaces) === 0) {
             throw new Exception('Keine PV-Flächen konfiguriert.');
         }
 
-        // Ab v1.5.0 wird die PV-Autokalibrierung ausschließlich energetisch in kWh geführt.
-        // Alte Watt-Sample-Daten sind nicht kompatibel und werden einmalig verworfen.
         if ($this->ReadAttributeInteger('PVCalibrationEnergyVersion') < 1) {
             $this->WriteAttributeString('PVCalibrationJSON', '{}');
             $this->WriteAttributeInteger('PVCalibrationEnergyVersion', 1);
         }
         $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
         if (!is_array($calibration)) $calibration = [];
-        $hours = [];
-        $surfaceTotals = [];
+
+        $sourceHours = ['openmeteo' => [], 'forecastsolar' => []];
+        $surfaceTotalsBySource = ['openmeteo' => [], 'forecastsolar' => []];
         $surfaceCalibration = [];
         $calibrationFeedInGate = $this->GetPVCalibrationFeedInGate();
         $nowHour = strtotime(date('Y-m-d H:00:00'));
 
         foreach ($surfaces as $idx => $surface) {
-            if (empty($surface['Active']) || (float)($surface['KWp'] ?? 0) <= 0) {
-                continue;
-            }
+            if (empty($surface['Active']) || (float)($surface['KWp'] ?? 0) <= 0) continue;
+
             $name = trim((string)($surface['Name'] ?? 'PV'));
             if ($name === '') $name = 'PV ' . ($idx + 1);
             $key = $this->SurfaceKey($name, $idx);
             $kwp = (float)$surface['KWp'];
             $orientationKnown = !array_key_exists('OrientationKnown', $surface) || (bool)$surface['OrientationKnown'];
-            // Bei unbekannter Ausrichtung wird während der Lernphase eine horizontale Referenz verwendet.
-            // Die reale Stringleistung kalibriert diese Referenz; die Einspeise-Automatik bleibt bis zum Ende der Lernphase gesperrt.
-            $tilt = $orientationKnown ? (float)($surface['Tilt'] ?? 0) : 0.0;
-            // Azimut wird direkt in der Open-Meteo-Konvention eingegeben:
-            // 0=Süd, -90=Ost, +90=West, -180/+180=Nord.
-            $azOM = $orientationKnown ? max(-180.0, min(180.0, (float)($surface['Azimuth'] ?? 0))) : 0.0;
+            $tilt = $orientationKnown ? max(0.0, min(90.0, (float)($surface['Tilt'] ?? 0))) : 0.0;
+            $azimuth = $orientationKnown ? max(-180.0, min(180.0, (float)($surface['Azimuth'] ?? 0))) : 0.0;
             $manualFactor = max(0.01, (float)($surface['Factor'] ?? 1.0));
-            $autoEnabled = !array_key_exists('AutoCalibrate', $surface) || (bool)$surface['AutoCalibrate'];
+            $autoEnabled = !empty($surface['AutoCalibrate']);
             $autoFactor = 1.0;
-            if ($autoEnabled && isset($calibration[$key]['factor'])) {
-                $autoFactor = (float)$calibration[$key]['factor'];
-            }
+            if ($autoEnabled && isset($calibration[$key]['factor'])) $autoFactor = (float)$calibration[$key]['factor'];
             $autoFactor = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $autoFactor));
 
-            $url = 'https://api.open-meteo.com/v1/forecast?' . http_build_query([
-                'latitude' => $lat,
-                'longitude' => $lon,
-                'hourly' => 'global_tilted_irradiance',
-                'tilt' => $tilt,
-                'azimuth' => $azOM,
-                'timezone' => 'auto',
-                'forecast_days' => 3
-            ]);
-            $data = $this->HttpGetJson($url);
-            if (!isset($data['hourly']['time'], $data['hourly']['global_tilted_irradiance'])) {
-                throw new Exception('Ungültige Open-Meteo-Antwort für Fläche ' . $name);
+            $currentExpectedBaseW = 0.0;
+
+            if ($useOpenMeteo) {
+                $url = 'https://api.open-meteo.com/v1/forecast?' . http_build_query([
+                    'latitude' => $lat,
+                    'longitude' => $lon,
+                    'hourly' => 'global_tilted_irradiance',
+                    'tilt' => $tilt,
+                    'azimuth' => $azimuth,
+                    'timezone' => 'auto',
+                    'forecast_days' => 3
+                ]);
+                $data = $this->HttpGetJson($url);
+                if (!isset($data['hourly']['time'], $data['hourly']['global_tilted_irradiance'])) {
+                    throw new Exception('Ungültige Open-Meteo-Antwort für Fläche ' . $name);
+                }
+
+                $sum = 0.0;
+                foreach ($data['hourly']['time'] as $i => $timeStr) {
+                    $ts = strtotime($timeStr);
+                    $gti = max(0.0, (float)$data['hourly']['global_tilted_irradiance'][$i]);
+                    $basePowerKW = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
+                    $powerKW = $basePowerKW * ($autoEnabled ? $autoFactor : 1.0);
+                    if (!isset($sourceHours['openmeteo'][$ts])) $sourceHours['openmeteo'][$ts] = 0.0;
+                    $sourceHours['openmeteo'][$ts] += $powerKW;
+                    if ($ts === $nowHour) $currentExpectedBaseW = $basePowerKW * 1000.0;
+                    if (date('Y-m-d', $ts) === date('Y-m-d', strtotime('tomorrow'))) $sum += $powerKW;
+                }
+                $surfaceTotalsBySource['openmeteo'][$name] = $sum;
             }
 
-            $sum = 0.0;
-            $currentExpectedBaseW = 0.0;
-            foreach ($data['hourly']['time'] as $i => $timeStr) {
-                $ts = strtotime($timeStr);
-                $gti = max(0.0, (float)$data['hourly']['global_tilted_irradiance'][$i]);
-                $basePowerKW = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
-                $powerKW = $basePowerKW * ($autoEnabled ? $autoFactor : 1.0);
-                if (!isset($hours[$ts])) $hours[$ts] = ['totalKW' => 0.0, 'surfaces' => []];
-                $hours[$ts]['totalKW'] += $powerKW;
-                $hours[$ts]['surfaces'][$name] = $powerKW;
-
-                if ($ts === $nowHour) {
-                    $currentExpectedBaseW = $basePowerKW * 1000.0;
-                }
-                if (date('Y-m-d', $ts) === date('Y-m-d', strtotime('tomorrow'))) {
-                    $sum += $powerKW;
+            if ($useForecastSolar) {
+                try {
+                    $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp);
+                    $sum = 0.0;
+                    foreach ($fsHours as $ts => $powerKW) {
+                        // Forecast.Solar liefert bereits eine PV-Leistungsprognose für die
+                        // konfigurierte kWp-Leistung. Nur die anlagenspezifischen Korrekturen
+                        // werden zusätzlich angewendet; SystemEfficiency wird nicht doppelt angesetzt.
+                        $correctedKW = max(0.0, (float)$powerKW) * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
+                        if (!isset($sourceHours['forecastsolar'][$ts])) $sourceHours['forecastsolar'][$ts] = 0.0;
+                        $sourceHours['forecastsolar'][$ts] += $correctedKW;
+                        if (date('Y-m-d', (int)$ts) === date('Y-m-d', strtotime('tomorrow'))) $sum += $correctedKW;
+                    }
+                    $surfaceTotalsBySource['forecastsolar'][$name] = $sum;
+                } catch (Throwable $e) {
+                    $this->SendDebug('ForecastSolar', $e->getMessage(), 0);
                 }
             }
 
             $actualW = $this->ReadSurfaceActualPower($surface);
-            if ($autoEnabled && $actualW !== null && $currentExpectedBaseW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW') && !$calibrationFeedInGate['blocked']) {
+            // Die bestehende PV-Autokalibrierung bleibt an Open-Meteo gekoppelt.
+            if ($useOpenMeteo && $autoEnabled && $actualW !== null && $currentExpectedBaseW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW') && !$calibrationFeedInGate['blocked']) {
                 $calibration = $this->AddPVCalibrationEnergySample($calibration, $key, $currentExpectedBaseW, $actualW);
                 $autoFactor = isset($calibration[$key]['factor']) ? (float)$calibration[$key]['factor'] : $autoFactor;
-            } elseif ($autoEnabled && $calibrationFeedInGate['blocked'] && isset($calibration[$key])) {
-                // Kein Energieintervall über eine Abregelphase hinweg integrieren.
+            } elseif ($useOpenMeteo && $autoEnabled && $calibrationFeedInGate['blocked'] && isset($calibration[$key])) {
                 unset($calibration[$key]['lastPointTs'], $calibration[$key]['lastPointExpectedW'], $calibration[$key]['lastPointActualW']);
             }
 
-            $surfaceTotals[$name] = $sum;
             $diag = $this->GetPVCalibrationDiagnostics($calibration, $key);
             $surfaceCalibration[$name] = [
-                'key' => $key,
-                'manualFactor' => $manualFactor,
-                'orientationKnown' => $orientationKnown,
-                'autoEnabled' => $autoEnabled,
-                'autoFactor' => $autoFactor,
+                'key' => $key, 'manualFactor' => $manualFactor, 'orientationKnown' => $orientationKnown,
+                'autoEnabled' => $autoEnabled, 'autoFactor' => $autoFactor,
                 'effectiveFactor' => $manualFactor * ($autoEnabled ? $autoFactor : 1.0),
                 'expectedBaseW' => $currentExpectedBaseW,
                 'expectedCorrectedW' => $currentExpectedBaseW * ($autoEnabled ? $autoFactor : 1.0),
                 'actualW' => $actualW,
                 'currentRatio' => ($actualW !== null && $currentExpectedBaseW > 0.0) ? ($actualW / $currentExpectedBaseW) : null,
-                'sampleCount' => $diag['sampleCount'],
-                'sumExpectedKWh' => $diag['sumExpectedKWh'],
-                'sumActualKWh' => $diag['sumActualKWh'],
-                'learnedRatio' => $diag['ratio'],
-                'firstSampleTs' => $diag['firstSampleTs'],
-                'lastSampleTs' => $diag['lastSampleTs'],
+                'sampleCount' => $diag['sampleCount'], 'sumExpectedKWh' => $diag['sumExpectedKWh'],
+                'sumActualKWh' => $diag['sumActualKWh'], 'learnedRatio' => $diag['ratio'],
+                'firstSampleTs' => $diag['firstSampleTs'], 'lastSampleTs' => $diag['lastSampleTs'],
                 'calibrationBlocked' => (bool)$calibrationFeedInGate['blocked'],
                 'calibrationBlockReason' => (string)$calibrationFeedInGate['text']
             ];
         }
 
         $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
-        ksort($hours);
-        $today = 0.0;
-        $tomorrow = 0.0;
-        $todayDate = date('Y-m-d');
-        $tomorrowDate = date('Y-m-d', strtotime('tomorrow'));
+
+        $availableSources = [];
+        if ($useOpenMeteo && count($sourceHours['openmeteo']) > 0) $availableSources[] = 'openmeteo';
+        if ($useForecastSolar && count($sourceHours['forecastsolar']) > 0) $availableSources[] = 'forecastsolar';
+        if (count($availableSources) === 0) throw new Exception('Keine PV-Prognosequelle lieferte verwertbare Daten.');
+
+        $this->StorePVSourceForecastHistory($sourceHours, $availableSources);
+        $weights = $this->CalculatePVSourceWeights($availableSources);
+
+        $allTs = [];
+        foreach ($availableSources as $source) foreach ($sourceHours[$source] as $ts => $_) $allTs[(int)$ts] = true;
+        ksort($allTs);
+        $hours = [];
+        foreach (array_keys($allTs) as $ts) {
+            $weighted = 0.0;
+            $weightSum = 0.0;
+            $sourceValues = [];
+            foreach ($availableSources as $source) {
+                if (!array_key_exists($ts, $sourceHours[$source])) continue;
+                $value = max(0.0, (float)$sourceHours[$source][$ts]);
+                $w = max(0.0, (float)($weights[$source] ?? 0.0));
+                $weighted += $value * $w;
+                $weightSum += $w;
+                $sourceValues[$source] = $value;
+            }
+            if ($weightSum <= 0.0) continue;
+            $hours[$ts] = ['totalKW' => $weighted / $weightSum, 'surfaces' => [], 'sources' => $sourceValues];
+        }
+
+        $today = 0.0; $tomorrow = 0.0;
+        $todayDate = date('Y-m-d'); $tomorrowDate = date('Y-m-d', strtotime('tomorrow'));
         foreach ($hours as $ts => $h) {
             $day = date('Y-m-d', (int)$ts);
-            if ($day === $todayDate) {
-                $today += $h['totalKW'];
+            if ($day === $todayDate) $today += $h['totalKW'];
+            if ($day === $tomorrowDate) $tomorrow += $h['totalKW'];
+        }
+
+        $surfaceTotals = [];
+        foreach ($surfaces as $idx => $surface) {
+            if (empty($surface['Active'])) continue;
+            $name = trim((string)($surface['Name'] ?? 'PV'));
+            if ($name === '') $name = 'PV ' . ($idx + 1);
+            $v = 0.0; $ws = 0.0;
+            foreach ($availableSources as $source) {
+                if (!isset($surfaceTotalsBySource[$source][$name])) continue;
+                $w = (float)($weights[$source] ?? 0.0);
+                $v += (float)$surfaceTotalsBySource[$source][$name] * $w; $ws += $w;
             }
-            if ($day === $tomorrowDate) {
-                $tomorrow += $h['totalKW'];
-            }
+            $surfaceTotals[$name] = $ws > 0 ? $v / $ws : 0.0;
         }
 
         $morningThresholdKW = max(0.1, $this->ReadPropertyInteger('MorningPVThresholdW') / 1000.0);
         $morningTs = strtotime('tomorrow ' . str_pad((string)$this->ReadPropertyInteger('FallbackMorningHour'), 2, '0', STR_PAD_LEFT) . ':00');
         foreach ($hours as $ts => $h) {
             if ((int)$ts >= strtotime('tomorrow 00:00') && (int)$ts < strtotime('tomorrow 12:00') && $h['totalKW'] >= $morningThresholdKW) {
-                $morningTs = (int)$ts;
-                break;
+                $morningTs = (int)$ts; break;
             }
         }
 
         return [
-            'todayKWh' => $today,
-            'tomorrowKWh' => $tomorrow,
-            'morningTs' => $morningTs,
-            'hours' => $hours,
-            'surfaceTotals' => $surfaceTotals,
-            'surfaceCalibration' => $surfaceCalibration
+            'todayKWh' => $today, 'tomorrowKWh' => $tomorrow, 'morningTs' => $morningTs,
+            'hours' => $hours, 'surfaceTotals' => $surfaceTotals, 'surfaceCalibration' => $surfaceCalibration,
+            'forecastSources' => $availableSources, 'forecastSourceWeights' => $weights
         ];
+    }
+
+    private function FetchForecastSolarSurface(float $lat, float $lon, float $tilt, float $azimuth, float $kwp): array
+    {
+        $key = trim($this->ReadPropertyString('ForecastSolarAPIKey'));
+        $base = 'https://api.forecast.solar/';
+        if ($key !== '') $base .= rawurlencode($key) . '/';
+        $url = $base . 'estimate/' . rawurlencode((string)$lat) . '/' . rawurlencode((string)$lon) . '/' .
+            rawurlencode((string)$tilt) . '/' . rawurlencode((string)$azimuth) . '/' . rawurlencode((string)$kwp);
+
+        $data = $this->HttpGetJson($url);
+        if (!isset($data['result']['watts']) || !is_array($data['result']['watts'])) {
+            throw new Exception('Ungültige Forecast.Solar-Antwort.');
+        }
+
+        $points = [];
+        foreach ($data['result']['watts'] as $timeStr => $watts) {
+            $ts = strtotime((string)$timeStr);
+            if ($ts === false) continue;
+            $hourTs = strtotime(date('Y-m-d H:00:00', $ts));
+            if (!isset($points[$hourTs])) $points[$hourTs] = [];
+            $points[$hourTs][] = max(0.0, (float)$watts) / 1000.0;
+        }
+        $hours = [];
+        foreach ($points as $ts => $values) $hours[$ts] = array_sum($values) / max(1, count($values));
+        ksort($hours);
+        return $hours;
+    }
+
+    private function StorePVSourceForecastHistory(array $sourceHours, array $sources): void
+    {
+        $history = json_decode($this->ReadAttributeString('PVSourceForecastHistoryJSON'), true);
+        if (!is_array($history)) $history = [];
+        $now = time();
+
+        foreach ($sources as $source) {
+            foreach ($sourceHours[$source] as $ts => $value) {
+                $ts = (int)$ts;
+                $date = date('Y-m-d', $ts);
+                $hour = (int)date('G', $ts);
+                if (!isset($history[$source][$date])) $history[$source][$date] = array_fill(0, 24, null);
+
+                // Vollständig vergangene Prognosestunden niemals nachträglich überschreiben.
+                if (($ts + 3600) <= $now && $history[$source][$date][$hour] !== null) continue;
+                $history[$source][$date][$hour] = round(max(0.0, (float)$value), 4);
+            }
+        }
+
+        $cutoff = strtotime('-' . max(7, $this->ReadPropertyInteger('ForecastWeightLearningDays') + 2) . ' days 00:00:00');
+        foreach ($history as $source => $days) {
+            foreach (array_keys($days) as $date) {
+                if (strtotime($date . ' 00:00:00') < $cutoff) unset($history[$source][$date]);
+            }
+        }
+        $this->WriteAttributeString('PVSourceForecastHistoryJSON', json_encode($history));
+    }
+
+    private function CalculatePVSourceWeights(array $sources): array
+    {
+        if (count($sources) === 1) return [$sources[0] => 1.0];
+
+        $history = json_decode($this->ReadAttributeString('PVSourceForecastHistoryJSON'), true);
+        if (!is_array($history)) $history = [];
+        $days = max(1, min(30, $this->ReadPropertyInteger('ForecastWeightLearningDays')));
+        $scores = [];
+
+        foreach ($sources as $source) {
+            $errors = [];
+            for ($d = 1; $d <= $days; $d++) {
+                $dayStart = strtotime('-' . $d . ' days 00:00:00');
+                $date = date('Y-m-d', $dayStart);
+                $forecast = $history[$source][$date] ?? null;
+                if (!is_array($forecast)) continue;
+                $actual = $this->GetActualPVHourlyForDay($dayStart);
+                foreach ($forecast as $h => $pred) {
+                    $act = $actual['hourlyKWh'][$h] ?? null;
+                    if ($pred === null || $act === null) continue;
+                    // Nachtstunden ohne Erzeugung tragen keine Information zur Quellenqualität bei.
+                    if ((float)$pred < 0.02 && (float)$act < 0.02) continue;
+                    $errors[] = abs((float)$pred - (float)$act);
+                }
+            }
+            if (count($errors) >= 6) {
+                $mae = array_sum($errors) / count($errors);
+                $scores[$source] = 1.0 / max(0.05, $mae);
+            } else {
+                $scores[$source] = 1.0; // Noch keine belastbare Historie: zunächst gleich gewichten.
+            }
+        }
+
+        $sum = array_sum($scores);
+        if ($sum <= 0.0) return array_fill_keys($sources, 1.0 / count($sources));
+        foreach ($scores as $source => $score) $scores[$source] = $score / $sum;
+        return $scores;
     }
 
     private function SurfaceKey(string $name, int $index): string

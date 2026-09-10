@@ -173,3 +173,8 @@ Der sichtbare Einspeiseplan wird ab Version 1.5.3 ausschließlich in Stundenwert
 
 ### Historische PV-Prognosen
 Ab Version 1.5.4 werden bereits vergangene Prognosestunden nicht mehr nachträglich verändert. Bei einer neuen Wetteraktualisierung werden nur die aktuelle und zukünftige Stunden mit der neuesten Prognose überschrieben. Dadurch bleibt der spätere Vergleich zwischen damaliger Prognose und tatsächlicher PV-Erzeugung nachvollziehbar.
+
+### Zwei PV-Prognosequellen und automatische Gewichtung
+Ab Version 1.5.5 können Open-Meteo und Forecast.Solar einzeln oder gemeinsam aktiviert werden. Mindestens eine Quelle muss aktiv sein. Forecast.Solar kann ohne API-Key über die Public API verwendet werden; ein eigener API-Key kann optional eingetragen werden.
+
+Sind beide Quellen aktiv, speichert das Modul die Stundenprognosen jeder Quelle getrennt. Vollständig vergangene Prognosestunden werden nicht mehr verändert. Für den einstellbaren Lernzeitraum wird jede damalige Stundenprognose mit der tatsächlichen PV-Erzeugung aus dem IP-Symcon-Archiv verglichen. Aus dem mittleren absoluten Stundenfehler (MAE) wird automatisch ein Gewicht gebildet: Je kleiner der historische Fehler, desto höher das Gewicht. Solange noch nicht genügend Vergleichswerte vorliegen, starten beide Quellen mit gleicher Gewichtung.
