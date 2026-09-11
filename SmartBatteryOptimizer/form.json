@@ -26,7 +26,7 @@
                 },
                 {
                     "type": "Label",
-                    "caption": "PV-Prognosequellen: Mindestens eine Quelle aktivieren. Sind beide aktiv, wird die kombinierte Prognose automatisch nach der historischen Genauigkeit der Quellen gewichtet."
+                    "caption": "PV-Prognosequellen: Mindestens eine Quelle aktivieren. Sind mehrere Quellen aktiv, wird die kombinierte Prognose automatisch nach der historischen Genauigkeit gewichtet."
                 },
                 {
                     "type": "CheckBox",
@@ -44,6 +44,25 @@
                     "caption": "Forecast.Solar API-Key (optional; leer = Public API)"
                 },
                 {
+                    "type": "CheckBox",
+                    "name": "UsePVNodeForecast",
+                    "caption": "pvnode verwenden"
+                },
+                {
+                    "type": "ValidationTextBox",
+                    "name": "PVNodeSiteID",
+                    "caption": "pvnode Site-ID"
+                },
+                {
+                    "type": "PasswordTextBox",
+                    "name": "PVNodeAPIKey",
+                    "caption": "pvnode API-Key"
+                },
+                {
+                    "type": "Label",
+                    "caption": "pvnode benötigt Site-ID und API-Key. Nach 3 aufeinanderfolgenden Ablehnungen wegen ungültigem Zugang bzw. ungültiger Site wird pvnode automatisch deaktiviert und der Haken entfernt. Erst erneutes Anhaken aktiviert die Quelle wieder. Rate-Limits, Server- oder Netzwerkfehler zählen nicht als falsche Zugangsdaten."
+                },
+                {
                     "type": "NumberSpinner",
                     "name": "ForecastWeightLearningDays",
                     "caption": "Lernzeitraum Quellengewichtung",
@@ -54,7 +73,7 @@
                 },
                 {
                     "type": "Label",
-                    "caption": "Bei zwei Quellen lernt das Modul aus eingefrorenen historischen Stundenprognosen und der tatsächlichen PV-Erzeugung. Die Quelle mit dem kleineren mittleren Stundenfehler erhält automatisch das höhere Gewicht."
+                    "caption": "Bei mehreren Quellen lernt das Modul aus eingefrorenen historischen Stundenprognosen und der tatsächlichen PV-Erzeugung. Quellen mit kleinerem mittleren Stundenfehler erhalten automatisch ein höheres Gewicht."
                 },
                 {
                     "type": "NumberSpinner",

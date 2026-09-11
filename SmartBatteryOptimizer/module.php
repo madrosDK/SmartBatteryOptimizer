@@ -15,6 +15,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyBoolean('UseOpenMeteoForecast', true);
         $this->RegisterPropertyBoolean('UseForecastSolarForecast', false);
         $this->RegisterPropertyString('ForecastSolarAPIKey', '');
+        $this->RegisterPropertyBoolean('UsePVNodeForecast', false);
+        $this->RegisterPropertyString('PVNodeAPIKey', '');
+        $this->RegisterPropertyString('PVNodeSiteID', '');
         $this->RegisterPropertyInteger('ForecastWeightLearningDays', 7);
         $this->RegisterPropertyInteger('PVCalibrationDays', 30);
         $this->RegisterPropertyInteger('UnknownOrientationLearningDays', 30);
@@ -109,6 +112,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('ForecastJSON', '{}');
         $this->RegisterAttributeString('PVForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('PVSourceForecastHistoryJSON', '{}');
+        $this->RegisterAttributeInteger('PVNodeConsecutiveRejects', 0);
+        $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
+        $this->RegisterAttributeString('PVNodeLastError', '');
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
@@ -131,6 +137,14 @@ class SmartBatteryOptimizer extends IPSModule
     public function ApplyChanges()
     {
         parent::ApplyChanges();
+
+        // Wurde pvnode nach einer automatischen Sperre vom Benutzer wieder angehakt,
+        // beginnt die Prüfung der Zugangsdaten bewusst wieder bei null.
+        if ($this->ReadPropertyBoolean('UsePVNodeForecast') && $this->ReadAttributeBoolean('PVNodeAutoDisabled')) {
+            $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
+            $this->WriteAttributeBoolean('PVNodeAutoDisabled', false);
+            $this->WriteAttributeString('PVNodeLastError', '');
+        }
         $refresh = max(5, $this->ReadPropertyInteger('RefreshMinutes'));
         $pvForecastRefresh = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes'));
         $pvActualRefresh = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes'));
@@ -358,7 +372,8 @@ class SmartBatteryOptimizer extends IPSModule
         $lon = $this->ReadPropertyFloat('Longitude');
         $useOpenMeteo = $this->ReadPropertyBoolean('UseOpenMeteoForecast');
         $useForecastSolar = $this->ReadPropertyBoolean('UseForecastSolarForecast');
-        if (!$useOpenMeteo && !$useForecastSolar) {
+        $usePVNode = $this->ReadPropertyBoolean('UsePVNodeForecast');
+        if (!$useOpenMeteo && !$useForecastSolar && !$usePVNode) {
             throw new Exception('Mindestens eine PV-Prognosequelle muss aktiviert sein.');
         }
 
@@ -374,7 +389,7 @@ class SmartBatteryOptimizer extends IPSModule
         $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
         if (!is_array($calibration)) $calibration = [];
 
-        $sourceHours = ['openmeteo' => [], 'forecastsolar' => []];
+        $sourceHours = ['openmeteo' => [], 'forecastsolar' => [], 'pvnode' => []];
         $surfaceTotalsBySource = ['openmeteo' => [], 'forecastsolar' => []];
         $surfaceCalibration = [];
         $calibrationFeedInGate = $this->GetPVCalibrationFeedInGate();
@@ -472,11 +487,33 @@ class SmartBatteryOptimizer extends IPSModule
             ];
         }
 
+        // pvnode V2 arbeitet mit einem in pvnode gespeicherten Gesamtstandort
+        // (Site-ID) und liefert deshalb die gesamte Anlage in einer Abfrage.
+        if ($usePVNode) {
+            $pvnodeKey = trim($this->ReadPropertyString('PVNodeAPIKey'));
+            $pvnodeSiteID = trim($this->ReadPropertyString('PVNodeSiteID'));
+
+            if ($pvnodeKey === '' || $pvnodeSiteID === '') {
+                $this->WriteAttributeString('PVNodeLastError', 'API-Key und Site-ID sind erforderlich.');
+                $this->SendDebug('pvnode', 'Aktiviert, aber API-Key oder Site-ID fehlt. Es wurde keine API-Anfrage gesendet.', 0);
+            } else {
+                try {
+                    $sourceHours['pvnode'] = $this->FetchPVNodeForecast($pvnodeKey, $pvnodeSiteID);
+                    $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
+                    $this->WriteAttributeString('PVNodeLastError', '');
+                } catch (Throwable $e) {
+                    $this->WriteAttributeString('PVNodeLastError', $e->getMessage());
+                    $this->SendDebug('pvnode', $e->getMessage(), 0);
+                }
+            }
+        }
+
         $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
 
         $availableSources = [];
         if ($useOpenMeteo && count($sourceHours['openmeteo']) > 0) $availableSources[] = 'openmeteo';
         if ($useForecastSolar && count($sourceHours['forecastsolar']) > 0) $availableSources[] = 'forecastsolar';
+        if ($usePVNode && count($sourceHours['pvnode']) > 0) $availableSources[] = 'pvnode';
         if (count($availableSources) === 0) throw new Exception('Keine PV-Prognosequelle lieferte verwertbare Daten.');
 
         $this->StorePVSourceForecastHistory($sourceHours, $availableSources);
@@ -564,6 +601,79 @@ class SmartBatteryOptimizer extends IPSModule
         foreach ($points as $ts => $values) $hours[$ts] = array_sum($values) / max(1, count($values));
         ksort($hours);
         return $hours;
+    }
+
+    private function FetchPVNodeForecast(string $apiKey, string $siteID): array
+    {
+        $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc';
+
+        try {
+            $data = $this->HttpGetJsonWithHeaders($url, [
+                'Authorization: Bearer ' . $apiKey
+            ]);
+        } catch (Throwable $e) {
+            $status = (int)$e->getCode();
+
+            // Nur echte Ablehnungen wegen Authentifizierung / ungültiger Site-Konfiguration
+            // zählen gegen die 3-Fehlversuche-Sperre. Rate-Limits, Server- und
+            // Verbindungsfehler dürfen den Benutzer nicht aussperren.
+            if (in_array($status, [400, 401, 403, 404, 422], true)) {
+                $this->RegisterPVNodeRejection($status, $e->getMessage());
+            }
+            throw $e;
+        }
+
+        if (!isset($data['values']) || !is_array($data['values'])) {
+            throw new Exception('pvnode: Antwort enthält keine Prognosewerte.');
+        }
+
+        // pvnode liefert 15-Minuten-Leistungswerte in Watt. Für unsere gemeinsame
+        // Prognose werden diese zu einem mittleren kW-Stundenwert zusammengefasst.
+        // Dieser Stundenwert entspricht bei einer vollen Stunde zugleich den kWh.
+        $quarterValues = [];
+        foreach ($data['values'] as $row) {
+            if (!is_array($row) || !isset($row['timestamp'], $row['pv_power'])) continue;
+            $ts = strtotime((string)$row['timestamp']);
+            if ($ts === false) continue;
+
+            // UTC-Zeitstempel in lokale IP-Symcon/PHP-Zeit auf volle Stunde abbilden.
+            $hourTs = strtotime(date('Y-m-d H:00:00', $ts));
+            if (!isset($quarterValues[$hourTs])) $quarterValues[$hourTs] = [];
+            $quarterValues[$hourTs][] = max(0.0, (float)$row['pv_power']) / 1000.0;
+        }
+
+        $hours = [];
+        foreach ($quarterValues as $hourTs => $values) {
+            if (count($values) === 0) continue;
+            $hours[(int)$hourTs] = array_sum($values) / count($values);
+        }
+        ksort($hours);
+
+        if (count($hours) === 0) {
+            throw new Exception('pvnode: Keine verwertbaren PV-Leistungswerte erhalten.');
+        }
+
+        return $hours;
+    }
+
+    private function RegisterPVNodeRejection(int $status, string $message): void
+    {
+        $count = $this->ReadAttributeInteger('PVNodeConsecutiveRejects') + 1;
+        $this->WriteAttributeInteger('PVNodeConsecutiveRejects', $count);
+        $this->WriteAttributeString('PVNodeLastError', 'HTTP ' . $status . ': ' . $message);
+
+        if ($count < 3) {
+            $this->SendDebug('pvnode', 'Zugang/Site abgelehnt (' . $count . '/3, HTTP ' . $status . ').', 0);
+            return;
+        }
+
+        $this->WriteAttributeBoolean('PVNodeAutoDisabled', true);
+        $this->SendDebug('pvnode', 'Nach 3 aufeinanderfolgenden Ablehnungen automatisch deaktiviert. Erneutes Anhaken aktiviert pvnode wieder.', 0);
+
+        // Konfigurationshaken tatsächlich entfernen. Erst wenn der Benutzer pvnode
+        // später wieder anhakt und übernimmt, wird die Sperre in ApplyChanges aufgehoben.
+        @IPS_SetProperty($this->InstanceID, 'UsePVNodeForecast', false);
+        @IPS_ApplyChanges($this->InstanceID);
     }
 
     private function StorePVSourceForecastHistory(array $sourceHours, array $sources): void
@@ -1735,6 +1845,54 @@ class SmartBatteryOptimizer extends IPSModule
         $n = count($values);
         $m = intdiv($n, 2);
         return ($n % 2) ? (float)$values[$m] : ((float)$values[$m - 1] + (float)$values[$m]) / 2.0;
+    }
+
+    private function HttpGetJsonWithHeaders(string $url, array $headers = []): array
+    {
+        $allHeaders = array_merge(
+            ['User-Agent: IP-Symcon-SmartBatteryOptimizer/1.5.6'],
+            $headers
+        );
+
+        $opts = [
+            'http' => [
+                'timeout' => 12,
+                'ignore_errors' => true,
+                'header' => implode("\r\n", $allHeaders) . "\r\n"
+            ]
+        ];
+        $ctx = stream_context_create($opts);
+        $raw = @file_get_contents($url, false, $ctx);
+
+        $status = 0;
+        if (isset($http_response_header) && is_array($http_response_header)) {
+            foreach ($http_response_header as $line) {
+                if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $line, $m)) {
+                    $status = (int)$m[1];
+                }
+            }
+        }
+
+        if ($raw === false) {
+            throw new Exception('HTTP-Abruf fehlgeschlagen.', $status);
+        }
+
+        $data = json_decode($raw, true);
+
+        if ($status >= 400) {
+            $detail = '';
+            if (is_array($data)) {
+                $detail = (string)($data['detail'] ?? $data['message'] ?? $data['error'] ?? '');
+            }
+            $text = 'HTTP ' . $status . ($detail !== '' ? ' – ' . $detail : '');
+            throw new Exception($text, $status);
+        }
+
+        if (!is_array($data)) {
+            throw new Exception('Antwort ist kein gültiges JSON.', $status);
+        }
+
+        return $data;
     }
 
     private function HttpGetJson(string $url): array

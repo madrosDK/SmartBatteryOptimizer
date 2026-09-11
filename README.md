@@ -178,3 +178,10 @@ Ab Version 1.5.4 werden bereits vergangene Prognosestunden nicht mehr nachträgl
 Ab Version 1.5.5 können Open-Meteo und Forecast.Solar einzeln oder gemeinsam aktiviert werden. Mindestens eine Quelle muss aktiv sein. Forecast.Solar kann ohne API-Key über die Public API verwendet werden; ein eigener API-Key kann optional eingetragen werden.
 
 Sind beide Quellen aktiv, speichert das Modul die Stundenprognosen jeder Quelle getrennt. Vollständig vergangene Prognosestunden werden nicht mehr verändert. Für den einstellbaren Lernzeitraum wird jede damalige Stundenprognose mit der tatsächlichen PV-Erzeugung aus dem IP-Symcon-Archiv verglichen. Aus dem mittleren absoluten Stundenfehler (MAE) wird automatisch ein Gewicht gebildet: Je kleiner der historische Fehler, desto höher das Gewicht. Solange noch nicht genügend Vergleichswerte vorliegen, starten beide Quellen mit gleicher Gewichtung.
+
+### pvnode als dritte PV-Prognosequelle
+Ab Version 1.5.6 kann zusätzlich pvnode V2 verwendet werden. In pvnode wird die PV-Anlage als Standort mit einer Site-ID angelegt. Im Modul werden bei aktivierter Quelle die pvnode Site-ID und der API-Key eingetragen. Die Abfrage erfolgt über den V2-Forecast-Endpunkt und liefert 15-Minuten-PV-Leistungswerte, die für die gemeinsame Prognose zu Stundenwerten zusammengefasst werden.
+
+Sind Open-Meteo, Forecast.Solar und/oder pvnode gemeinsam aktiv, nimmt pvnode an derselben lernenden Quellengewichtung teil. Auch für pvnode werden bereits vergangene Stundenprognosen eingefroren und später mit der tatsächlichen PV-Erzeugung verglichen.
+
+Schutz vor falschen Zugangsdaten: Nur echte API-Ablehnungen wegen Authentifizierung oder ungültiger Site-Konfiguration zählen als Fehlversuch. Nach drei aufeinanderfolgenden Ablehnungen wird `pvnode verwenden` automatisch ausgeschaltet und der Konfigurationshaken entfernt. Erst wenn der Benutzer pvnode erneut anhakt und die Konfiguration übernimmt, werden weitere pvnode-Abfragen zugelassen. Netzwerkfehler, Serverfehler und Rate-Limits lösen diese Sperre nicht aus.
