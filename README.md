@@ -199,3 +199,10 @@ Ab Version 1.5.8 wird ein Wechsel des Debug-Modus beim Klick auf **Übernehmen**
 Ab Version 1.5.9 führt `ApplyChanges()` beim Ein- oder Ausschalten des Debug-Modus keine externen API-Abfragen mehr synchron aus. Stattdessen wird ein kurzer One-Shot-Timer gestartet. Der Übernehmen-Dialog kann dadurch sofort beendet werden; die HTMLBoxen werden danach im Timer-Kontext neu aufgebaut und anschließend werden die Prognosequellen vollständig aktualisiert.
 
 Im Debug-PV-Diagramm werden alle in der Konfiguration aktivierten Prognoseanbieter als einzeln schaltbare Serien angeboten. Forecast.Solar, Open-Meteo oder pvnode verschwinden nicht mehr aus der Legende, nur weil ein einzelner API-Abruf temporär fehlschlägt. Die Legende zeigt die zuletzt gelernte Gewichtung.
+
+### Automatische Tag-/Nachtbestimmung
+Ab Version 1.6.0 kann die Nachtzeit automatisch aus IP-Symcon-Variablen für Sonnenaufgang und Sonnenuntergang bestimmt werden. Standardmäßig beginnt die Nacht 60 Minuten vor Sonnenuntergang und endet 60 Minuten nach Sonnenaufgang; beide Werte sind getrennt einstellbar.
+
+Ist der Automatikmodus aktiviert, zeigt die Konfiguration nur Sonnenaufgang, Sonnenuntergang und die beiden Zeitversätze. Die manuellen Felder für Nachtbeginn und Nachtende werden ausgeblendet. Bei deaktivierter Automatik ist es genau umgekehrt.
+
+Die Sonnenvariablen können Unix-Zeitstempel, Sekunden seit Mitternacht oder Uhrzeiten als Text enthalten. Beim Lernen historischer Nächte werden nach Möglichkeit archivierte Werte der Sonnenvariablen verwendet. Fehlt ein verwertbarer Wert, fällt das Modul auf die manuell gespeicherten Nachtzeiten zurück.

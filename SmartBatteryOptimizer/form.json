@@ -478,27 +478,73 @@
                     "suffix": " kWh"
                 },
                 {
+                    "type": "CheckBox",
+                    "name": "AutomaticDayNight",
+                    "caption": "Tag/Nacht automatisch bestimmen",
+                    "onChange": "IPS_RequestAction($id, 'NightModeVisibility', $value);"
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "SunsetVariable",
+                    "caption": "Variable Sonnenuntergang",
+                    "visible": false
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "NightBeforeSunsetMinutes",
+                    "caption": "Nacht beginnt vor Sonnenuntergang",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 360,
+                    "suffix": " min",
+                    "visible": false
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "SunriseVariable",
+                    "caption": "Variable Sonnenaufgang",
+                    "visible": false
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "NightAfterSunriseMinutes",
+                    "caption": "Nacht endet nach Sonnenaufgang",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 360,
+                    "suffix": " min",
+                    "visible": false
+                },
+                {
+                    "type": "Label",
+                    "name": "AutomaticDayNightInfo",
+                    "caption": "Automatik: Nachtbeginn = Sonnenuntergang minus Vorlauf; Nachtende = Sonnenaufgang plus Nachlauf. Standard jeweils 60 Minuten.",
+                    "visible": false
+                },
+                {
                     "type": "NumberSpinner",
                     "name": "NightStartHour",
-                    "caption": "Nacht-Auswertung beginnt",
+                    "caption": "Nacht beginnt manuell",
                     "digits": 0,
                     "minimum": 0,
                     "maximum": 23,
-                    "suffix": " Uhr"
+                    "suffix": " Uhr",
+                    "visible": true
                 },
                 {
                     "type": "NumberSpinner",
                     "name": "FallbackMorningHour",
-                    "caption": "Morgenende ohne PV-Istvariable",
+                    "caption": "Nacht endet manuell",
                     "digits": 0,
                     "minimum": 0,
                     "maximum": 12,
-                    "suffix": " Uhr"
+                    "suffix": " Uhr",
+                    "visible": true
                 },
                 {
                     "type": "NumberSpinner",
                     "name": "MorningPVThresholdW",
-                    "caption": "PV-Schwelle für Morgenende",
+                    "caption": "PV-Schwelle für PV-Eigenverbrauchsberechnung",
                     "digits": 0,
                     "minimum": 0,
                     "maximum": 10000,

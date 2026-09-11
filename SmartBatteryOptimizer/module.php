@@ -55,6 +55,11 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('ConsumptionForecastSafetyPct', 10.0);
         $this->RegisterPropertyFloat('BatteryTargetSOC', 100.0);
         $this->RegisterPropertyInteger('MinimumValidNights', 3);
+        $this->RegisterPropertyBoolean('AutomaticDayNight', false);
+        $this->RegisterPropertyInteger('SunriseVariable', 0);
+        $this->RegisterPropertyInteger('SunsetVariable', 0);
+        $this->RegisterPropertyInteger('NightBeforeSunsetMinutes', 60);
+        $this->RegisterPropertyInteger('NightAfterSunriseMinutes', 60);
         $this->RegisterPropertyInteger('NightStartHour', 18);
         $this->RegisterPropertyInteger('FallbackMorningHour', 8);
         $this->RegisterPropertyInteger('MorningPVThresholdW', 300);
@@ -136,6 +141,42 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
         $this->RegisterTimer('DeferredDebugRebuildTimer', 0, 'SBO_DeferredDebugRebuild($_IPS[\'TARGET\']);');
+    }
+
+    public function GetConfigurationForm()
+    {
+        $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
+        if (!is_array($form)) {
+            return file_get_contents(__DIR__ . '/form.json');
+        }
+
+        $automatic = $this->ReadPropertyBoolean('AutomaticDayNight');
+        $automaticFields = [
+            'SunriseVariable',
+            'SunsetVariable',
+            'NightBeforeSunsetMinutes',
+            'NightAfterSunriseMinutes',
+            'AutomaticDayNightInfo'
+        ];
+        $manualFields = ['NightStartHour', 'FallbackMorningHour'];
+
+        $setVisibility = function (&$node) use (&$setVisibility, $automatic, $automaticFields, $manualFields) {
+            if (!is_array($node)) return;
+            if (isset($node['name'])) {
+                if (in_array($node['name'], $automaticFields, true)) {
+                    $node['visible'] = $automatic;
+                } elseif (in_array($node['name'], $manualFields, true)) {
+                    $node['visible'] = !$automatic;
+                }
+            }
+            foreach ($node as &$value) {
+                if (is_array($value)) $setVisibility($value);
+            }
+            unset($value);
+        };
+
+        $setVisibility($form);
+        return json_encode($form, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 
     public function ApplyChanges()
@@ -227,6 +268,17 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $this->DebugLog('RequestAction', $Ident . ' = ' . json_encode($Value));
         switch ($Ident) {
+            case 'NightModeVisibility':
+                $automatic = (bool)$Value;
+                $this->UpdateFormField('SunriseVariable', 'visible', $automatic);
+                $this->UpdateFormField('SunsetVariable', 'visible', $automatic);
+                $this->UpdateFormField('NightBeforeSunsetMinutes', 'visible', $automatic);
+                $this->UpdateFormField('NightAfterSunriseMinutes', 'visible', $automatic);
+                $this->UpdateFormField('AutomaticDayNightInfo', 'visible', $automatic);
+                $this->UpdateFormField('NightStartHour', 'visible', !$automatic);
+                $this->UpdateFormField('FallbackMorningHour', 'visible', !$automatic);
+                break;
+
             case 'AutomaticEnabled':
                 $enabled = (bool)$Value;
                 SetValue($this->GetIDForIdent('AutomaticEnabled'), $enabled);
@@ -300,6 +352,8 @@ class SmartBatteryOptimizer extends IPSModule
     private function RecalculateInternal(bool $refreshPVForecast)
     {
         $this->DebugLog('Recalculate', 'Start | PV-Prognose neu abrufen=' . ($refreshPVForecast ? 'ja' : 'nein'));
+        $dayNight = $this->GetCurrentDayNightStatus();
+        $this->DebugLog('DayNight', ($dayNight['isNight'] ? 'NACHT' : 'TAG') . ' | Fenster ' . date('Y-m-d H:i', (int)$dayNight['start']) . ' -> ' . date('Y-m-d H:i', (int)$dayNight['end']) . ' | Modus=' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell'));
         try {
             $night = $this->LearnNightConsumptionInternal();
             $this->DebugLog('Nachtverbrauch', 'Ergebnis ' . round($night, 3) . ' kWh | ' . $this->ReadAttributeString('NightLearningSource'));
@@ -667,13 +721,8 @@ class SmartBatteryOptimizer extends IPSModule
             $surfaceTotals[$name] = $ws > 0 ? $v / $ws : 0.0;
         }
 
-        $morningThresholdKW = max(0.1, $this->ReadPropertyInteger('MorningPVThresholdW') / 1000.0);
-        $morningTs = strtotime('tomorrow ' . str_pad((string)$this->ReadPropertyInteger('FallbackMorningHour'), 2, '0', STR_PAD_LEFT) . ':00');
-        foreach ($hours as $ts => $h) {
-            if ((int)$ts >= strtotime('tomorrow 00:00') && (int)$ts < strtotime('tomorrow 12:00') && $h['totalKW'] >= $morningThresholdKW) {
-                $morningTs = (int)$ts; break;
-            }
-        }
+        $morningTs = $this->DetermineMorningEnd(0, strtotime('tomorrow 00:00'));
+        $this->DebugLog('DayNight', 'Nachtende morgen=' . date('Y-m-d H:i', $morningTs) . ' | ' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell'));
 
         return [
             'todayKWh' => $today, 'tomorrowKWh' => $tomorrow, 'morningTs' => $morningTs,
@@ -1751,9 +1800,10 @@ class SmartBatteryOptimizer extends IPSModule
         $samples = [];
         for ($d = 1; $d <= $days; $d++) {
             $day = strtotime('-' . $d . ' days 00:00');
-            $start = strtotime(date('Y-m-d', $day) . ' ' . str_pad((string)$this->ReadPropertyInteger('NightStartHour'), 2, '0', STR_PAD_LEFT) . ':00');
+            $start = $this->DetermineNightStart($archiveID, $day);
             $end = $this->DetermineMorningEnd($archiveID, $day + 86400);
             if ($end <= $start) continue;
+            $this->DebugLog('NightWindow', date('Y-m-d H:i', $start) . ' -> ' . date('Y-m-d H:i', $end) . ' | ' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell'));
             $kwh = $this->IntegratePowerVariable($archiveID, $varID, $start, $end);
             if ($kwh > 0.05 && is_finite($kwh)) {
                 // Reihenfolge beibehalten: zuerst die neuesten Nächte.
@@ -1819,22 +1869,113 @@ class SmartBatteryOptimizer extends IPSModule
         return $fallback;
     }
 
+    private function DetermineNightStart(int $archiveID, int $dayTs): int
+    {
+        $manual = strtotime(date('Y-m-d', $dayTs) . ' ' . str_pad((string)$this->ReadPropertyInteger('NightStartHour'), 2, '0', STR_PAD_LEFT) . ':00');
+        if (!$this->ReadPropertyBoolean('AutomaticDayNight')) return $manual;
+
+        $sunset = $this->GetSolarEventForDate($this->ReadPropertyInteger('SunsetVariable'), $dayTs, $archiveID);
+        if ($sunset === null) {
+            $this->DebugLog('DayNight', 'Sonnenuntergang nicht lesbar -> manueller Nachtbeginn ' . date('H:i', $manual));
+            return $manual;
+        }
+
+        $offset = max(0, min(360, $this->ReadPropertyInteger('NightBeforeSunsetMinutes')));
+        return $sunset - $offset * 60;
+    }
+
     private function DetermineMorningEnd(int $archiveID, int $morningDayTs): int
     {
-        $pvID = $this->ReadPropertyInteger('PVActualPowerVariable');
-        $fallback = strtotime(date('Y-m-d', $morningDayTs) . ' ' . str_pad((string)$this->ReadPropertyInteger('FallbackMorningHour'), 2, '0', STR_PAD_LEFT) . ':00');
-        if ($pvID <= 0) return $fallback;
+        $manual = strtotime(date('Y-m-d', $morningDayTs) . ' ' . str_pad((string)$this->ReadPropertyInteger('FallbackMorningHour'), 2, '0', STR_PAD_LEFT) . ':00');
+        if (!$this->ReadPropertyBoolean('AutomaticDayNight')) return $manual;
 
-        $start = strtotime(date('Y-m-d', $morningDayTs) . ' 04:00');
-        $end = strtotime(date('Y-m-d', $morningDayTs) . ' 12:00');
-        $values = @AC_GetLoggedValues($archiveID, $pvID, $start, $end, 0);
-        if (!is_array($values) || count($values) === 0) return $fallback;
-        $values = array_reverse($values);
-        $threshold = $this->ReadPropertyInteger('MorningPVThresholdW');
-        foreach ($values as $v) {
-            if ((float)$v['Value'] >= $threshold) return (int)$v['TimeStamp'];
+        $sunrise = $this->GetSolarEventForDate($this->ReadPropertyInteger('SunriseVariable'), $morningDayTs, $archiveID);
+        if ($sunrise === null) {
+            $this->DebugLog('DayNight', 'Sonnenaufgang nicht lesbar -> manuelles Nachtende ' . date('H:i', $manual));
+            return $manual;
         }
-        return $fallback;
+
+        $offset = max(0, min(360, $this->ReadPropertyInteger('NightAfterSunriseMinutes')));
+        return $sunrise + $offset * 60;
+    }
+
+    private function GetSolarEventForDate(int $variableID, int $dayTs, int $archiveID = 0): ?int
+    {
+        if ($variableID <= 0 || !@IPS_VariableExists($variableID)) return null;
+
+        if ($archiveID > 0) {
+            $start = strtotime(date('Y-m-d', $dayTs) . ' 00:00:00');
+            $end = $start + 86399;
+            $values = @AC_GetLoggedValues($archiveID, $variableID, $start, $end, 0);
+            if (is_array($values)) {
+                foreach ($values as $row) {
+                    if (!array_key_exists('Value', $row)) continue;
+                    $parsed = $this->ParseSolarEventValueForDate($row['Value'], $dayTs);
+                    if ($parsed !== null) return $parsed;
+                }
+            }
+        }
+
+        return $this->ParseSolarEventValueForDate(@GetValue($variableID), $dayTs);
+    }
+
+    private function ParseSolarEventValueForDate($value, int $dayTs): ?int
+    {
+        $date = date('Y-m-d', $dayTs);
+
+        if (is_int($value) || is_float($value) || (is_string($value) && is_numeric(trim($value)))) {
+            $n = (float)$value;
+            if ($n > 100000000) {
+                $ts = (int)round($n);
+                return strtotime($date . ' ' . date('H:i:s', $ts));
+            }
+            if ($n >= 0 && $n < 86400) {
+                return strtotime($date . ' 00:00:00') + (int)round($n);
+            }
+        }
+
+        if (is_string($value)) {
+            $v = trim($value);
+            if ($v === '') return null;
+
+            if (preg_match('/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/', $v, $m)) {
+                $h = max(0, min(23, (int)$m[1]));
+                $min = max(0, min(59, (int)$m[2]));
+                $sec = isset($m[3]) ? max(0, min(59, (int)$m[3])) : 0;
+                return strtotime(sprintf('%s %02d:%02d:%02d', $date, $h, $min, $sec));
+            }
+
+            $ts = strtotime($v);
+            if ($ts !== false) return strtotime($date . ' ' . date('H:i:s', $ts));
+        }
+
+        return null;
+    }
+
+    private function GetCurrentDayNightStatus(): array
+    {
+        $now = time();
+        $today = strtotime('today 00:00:00');
+        $morningEnd = $this->DetermineMorningEnd(0, $today);
+        $nightStart = $this->DetermineNightStart(0, $today);
+
+        if ($now < $morningEnd) {
+            return [
+                'isNight' => true,
+                'start' => $this->DetermineNightStart(0, strtotime('yesterday 00:00:00')),
+                'end' => $morningEnd
+            ];
+        }
+
+        if ($now >= $nightStart) {
+            return [
+                'isNight' => true,
+                'start' => $nightStart,
+                'end' => $this->DetermineMorningEnd(0, strtotime('tomorrow 00:00:00'))
+            ];
+        }
+
+        return ['isNight' => false, 'start' => $morningEnd, 'end' => $nightStart];
     }
 
     private function IntegratePowerVariable(int $archiveID, int $varID, int $start, int $end): float
