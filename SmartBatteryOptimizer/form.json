@@ -698,6 +698,15 @@
                     "caption": "PV-Istwerte / PV-Grafik aktualisieren (Minuten)",
                     "minimum": 1,
                     "maximum": 1440
+                },
+                {
+                    "type": "CheckBox",
+                    "name": "DebugMode",
+                    "caption": "Debug-Ausgaben aktivieren"
+                },
+                {
+                    "type": "Label",
+                    "caption": "Debug protokolliert Berechnung, Prognosequellen, Quellengewichtung, Lernfunktionen, Preise, Einspeiseplanung und Batteriesteuerung. In der PV-Grafik können bei aktivem Debug die einzelnen Anbieterprognosen über die Legende eingeblendet werden; die aktuelle gelernte Gewichtung steht beim Anbieternamen."
                 }
             ]
         }

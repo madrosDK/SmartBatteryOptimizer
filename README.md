@@ -185,3 +185,9 @@ Ab Version 1.5.6 kann zusätzlich pvnode V2 verwendet werden. In pvnode wird die
 Sind Open-Meteo, Forecast.Solar und/oder pvnode gemeinsam aktiv, nimmt pvnode an derselben lernenden Quellengewichtung teil. Auch für pvnode werden bereits vergangene Stundenprognosen eingefroren und später mit der tatsächlichen PV-Erzeugung verglichen.
 
 Schutz vor falschen Zugangsdaten: Nur echte API-Ablehnungen wegen Authentifizierung oder ungültiger Site-Konfiguration zählen als Fehlversuch. Nach drei aufeinanderfolgenden Ablehnungen wird `pvnode verwenden` automatisch ausgeschaltet und der Konfigurationshaken entfernt. Erst wenn der Benutzer pvnode erneut anhakt und die Konfiguration übernimmt, werden weitere pvnode-Abfragen zugelassen. Netzwerkfehler, Serverfehler und Rate-Limits lösen diese Sperre nicht aus.
+
+
+## Debug-Modus (ab 1.5.7)
+Über `Debug-Ausgaben aktivieren` kann eine ausführliche Diagnose zugeschaltet werden. Protokolliert werden unter anderem Aktualisierungsläufe, Prognosequellen und empfangene Datenmengen, PV-Quellengewichtung inklusive Anzahl historischer Vergleichswerte und MAE, PV-/Verbrauchslernen, Preisabruf, Einspeiseplanung, Steuerentscheidung und AlphaESS-Befehle. Zugangsschlüssel werden nicht ins Debug geschrieben.
+
+Bei aktivem Debug enthält das PV-Prognosediagramm zusätzlich je aktive Quelle eine separat über die Legende einblendbare Prognoseserie. Die Anbieterreihen sind standardmäßig ausgeblendet, damit die bisherige kombinierte Prognose übersichtlich bleibt. Beim Namen jeder Anbieterreihe wird die aktuell gelernte Gewichtung in Prozent angezeigt. Vergangene Stundenwerte stammen weiterhin aus den eingefrorenen Quellprognosen und werden nicht nachträglich geändert.
