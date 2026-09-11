@@ -268,17 +268,6 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $this->DebugLog('RequestAction', $Ident . ' = ' . json_encode($Value));
         switch ($Ident) {
-            case 'NightModeVisibility':
-                $automatic = (bool)$Value;
-                $this->UpdateFormField('SunriseVariable', 'visible', $automatic);
-                $this->UpdateFormField('SunsetVariable', 'visible', $automatic);
-                $this->UpdateFormField('NightBeforeSunsetMinutes', 'visible', $automatic);
-                $this->UpdateFormField('NightAfterSunriseMinutes', 'visible', $automatic);
-                $this->UpdateFormField('AutomaticDayNightInfo', 'visible', $automatic);
-                $this->UpdateFormField('NightStartHour', 'visible', !$automatic);
-                $this->UpdateFormField('FallbackMorningHour', 'visible', !$automatic);
-                break;
-
             case 'AutomaticEnabled':
                 $enabled = (bool)$Value;
                 SetValue($this->GetIDForIdent('AutomaticEnabled'), $enabled);

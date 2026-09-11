@@ -206,3 +206,6 @@ Ab Version 1.6.0 kann die Nachtzeit automatisch aus IP-Symcon-Variablen für Son
 Ist der Automatikmodus aktiviert, zeigt die Konfiguration nur Sonnenaufgang, Sonnenuntergang und die beiden Zeitversätze. Die manuellen Felder für Nachtbeginn und Nachtende werden ausgeblendet. Bei deaktivierter Automatik ist es genau umgekehrt.
 
 Die Sonnenvariablen können Unix-Zeitstempel, Sekunden seit Mitternacht oder Uhrzeiten als Text enthalten. Beim Lernen historischer Nächte werden nach Möglichkeit archivierte Werte der Sonnenvariablen verwendet. Fehlt ein verwertbarer Wert, fällt das Modul auf die manuell gespeicherten Nachtzeiten zurück.
+
+### Korrektur Tag/Nacht-Konfigurationsformular 1.6.1
+Die dynamische Sichtbarkeit der Tag-/Nacht-Felder wird direkt über die Formularbedingung `AutomaticDayNight` gesteuert. Dadurch wird beim Umschalten kein `RequestAction` mit einer nicht definierten Formularvariable mehr ausgeführt. Die Automatikfelder erscheinen unmittelbar beim Einschalten; die manuellen Felder werden gleichzeitig ausgeblendet und umgekehrt.

@@ -480,14 +480,13 @@
                 {
                     "type": "CheckBox",
                     "name": "AutomaticDayNight",
-                    "caption": "Tag/Nacht automatisch bestimmen",
-                    "onChange": "IPS_RequestAction($id, 'NightModeVisibility', $value);"
+                    "caption": "Tag/Nacht automatisch bestimmen"
                 },
                 {
                     "type": "SelectVariable",
                     "name": "SunsetVariable",
                     "caption": "Variable Sonnenuntergang",
-                    "visible": false
+                    "visible": "AutomaticDayNight"
                 },
                 {
                     "type": "NumberSpinner",
@@ -497,13 +496,13 @@
                     "minimum": 0,
                     "maximum": 360,
                     "suffix": " min",
-                    "visible": false
+                    "visible": "AutomaticDayNight"
                 },
                 {
                     "type": "SelectVariable",
                     "name": "SunriseVariable",
                     "caption": "Variable Sonnenaufgang",
-                    "visible": false
+                    "visible": "AutomaticDayNight"
                 },
                 {
                     "type": "NumberSpinner",
@@ -513,13 +512,13 @@
                     "minimum": 0,
                     "maximum": 360,
                     "suffix": " min",
-                    "visible": false
+                    "visible": "AutomaticDayNight"
                 },
                 {
                     "type": "Label",
                     "name": "AutomaticDayNightInfo",
                     "caption": "Automatik: Nachtbeginn = Sonnenuntergang minus Vorlauf; Nachtende = Sonnenaufgang plus Nachlauf. Standard jeweils 60 Minuten.",
-                    "visible": false
+                    "visible": "AutomaticDayNight"
                 },
                 {
                     "type": "NumberSpinner",
@@ -529,7 +528,7 @@
                     "minimum": 0,
                     "maximum": 23,
                     "suffix": " Uhr",
-                    "visible": true
+                    "visible": "!AutomaticDayNight"
                 },
                 {
                     "type": "NumberSpinner",
@@ -539,7 +538,7 @@
                     "minimum": 0,
                     "maximum": 12,
                     "suffix": " Uhr",
-                    "visible": true
+                    "visible": "!AutomaticDayNight"
                 },
                 {
                     "type": "NumberSpinner",
