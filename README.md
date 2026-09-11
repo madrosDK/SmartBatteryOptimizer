@@ -194,3 +194,8 @@ Bei aktivem Debug enthält das PV-Prognosediagramm zusätzlich je aktive Quelle 
 
 ### Debug-Modus anwenden
 Ab Version 1.5.8 wird ein Wechsel des Debug-Modus beim Klick auf **Übernehmen** sofort erkannt. Das Modul führt dann eine vollständige Neuberechnung durch und baut die HTML-Ausgaben und Diagramme unmittelbar neu auf. Dadurch werden die zusätzlichen Einzelprognosen der Anbieter beim Aktivieren sofort eingeblendet bzw. beim Deaktivieren sofort wieder entfernt; ein Warten auf den nächsten Aktualisierungstimer ist nicht erforderlich.
+
+### Debug-Umschaltung ohne Wartezeit
+Ab Version 1.5.9 führt `ApplyChanges()` beim Ein- oder Ausschalten des Debug-Modus keine externen API-Abfragen mehr synchron aus. Stattdessen wird ein kurzer One-Shot-Timer gestartet. Der Übernehmen-Dialog kann dadurch sofort beendet werden; die HTMLBoxen werden danach im Timer-Kontext neu aufgebaut und anschließend werden die Prognosequellen vollständig aktualisiert.
+
+Im Debug-PV-Diagramm werden alle in der Konfiguration aktivierten Prognoseanbieter als einzeln schaltbare Serien angeboten. Forecast.Solar, Open-Meteo oder pvnode verschwinden nicht mehr aus der Legende, nur weil ein einzelner API-Abruf temporär fehlschlägt. Die Legende zeigt die zuletzt gelernte Gewichtung.

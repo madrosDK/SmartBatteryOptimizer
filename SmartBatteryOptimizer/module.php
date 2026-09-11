@@ -113,6 +113,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('ForecastJSON', '{}');
         $this->RegisterAttributeString('PVForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('PVSourceForecastHistoryJSON', '{}');
+        $this->RegisterAttributeString('PVSourceWeightsJSON', '{}');
         $this->RegisterAttributeInteger('PVNodeConsecutiveRejects', 0);
         $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
         $this->RegisterAttributeString('PVNodeLastError', '');
@@ -134,6 +135,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('DeferredDebugRebuildTimer', 0, 'SBO_DeferredDebugRebuild($_IPS[\'TARGET\']);');
     }
 
     public function ApplyChanges()
@@ -175,15 +177,49 @@ class SmartBatteryOptimizer extends IPSModule
             $this->StopFeedIn();
         }
 
-        // Beim Ein-/Ausschalten des Debug-Modus müssen die HTMLBoxen sofort neu
-        // aufgebaut werden. Besonders die zusätzlichen Anbieter-Serien in der
-        // PV-Prognose sollen direkt erscheinen bzw. verschwinden und nicht erst
-        // beim nächsten Timer-Lauf.
+        // Externe API-Abfragen dürfen ApplyChanges nicht blockieren.
+        // Beim Umschalten des Debug-Modus wird nur ein kurzer One-Shot-Timer
+        // gestartet. Der Neuaufbau erfolgt direkt danach außerhalb von ApplyChanges.
         if ($debugModeChanged) {
             if ($debugMode) {
-                $this->DebugLog('ApplyChanges', 'Debug-Modus geändert -> vollständige Neuberechnung und Neuaufbau aller Grafiken.');
+                $this->DebugLog('ApplyChanges', 'Debug-Modus geändert -> asynchroner Neuaufbau wird gestartet.');
             }
-            $this->Recalculate(true);
+            $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
+        }
+    }
+
+    public function DeferredDebugRebuild()
+    {
+        // One-Shot-Timer sofort stoppen.
+        $this->SetTimerInterval('DeferredDebugRebuildTimer', 0);
+
+        try {
+            $this->DebugLog('Debug-Rebuild', 'Asynchroner Neuaufbau gestartet.');
+
+            // Zuerst mit bereits gespeicherten Daten neu rendern. Damit erscheinen
+            // bzw. verschwinden Debug-Serien ohne auf externe APIs warten zu müssen.
+            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+            $prices = json_decode($this->ReadAttributeString('PricesJSON'), true);
+            $plan = json_decode($this->ReadAttributeString('PlanJSON'), true);
+
+            if (is_array($forecast) && !empty($forecast)) {
+                SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+                SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
+
+                if (is_array($prices) && is_array($plan) && !empty($plan)) {
+                    $nightId = $this->GetIDForIdent('NightConsumptionForecast');
+                    $night = $nightId > 0 ? (float)GetValue($nightId) : 0.0;
+                    SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
+                    SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
+                    SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
+                }
+            }
+
+            // Vollständige Aktualisierung inklusive Anbieterabfragen läuft danach
+            // im Timer-Kontext und blockiert den Übernehmen-Dialog nicht.
+            $this->RecalculateInternal(true);
+        } catch (Throwable $e) {
+            $this->DebugLog('Debug-Rebuild', $e->getMessage(), 0);
         }
     }
 
@@ -577,7 +613,16 @@ class SmartBatteryOptimizer extends IPSModule
         if (count($availableSources) === 0) throw new Exception('Keine PV-Prognosequelle lieferte verwertbare Daten.');
 
         $this->StorePVSourceForecastHistory($sourceHours, $availableSources);
-        $weights = $this->CalculatePVSourceWeights($availableSources);
+
+        $enabledSources = [];
+        if ($useOpenMeteo) $enabledSources[] = 'openmeteo';
+        if ($useForecastSolar) $enabledSources[] = 'forecastsolar';
+        if ($usePVNode) $enabledSources[] = 'pvnode';
+
+        // Die gelernte Gewichtung gehört zur konfigurierten Quelle und bleibt
+        // erhalten, auch wenn ein Anbieter bei einem einzelnen Abruf ausfällt.
+        $weights = $this->CalculatePVSourceWeights($enabledSources);
+        $this->WriteAttributeString('PVSourceWeightsJSON', json_encode($weights));
         $this->DebugLog('PV-Gewichtung', array_map(fn($v) => round((float)$v * 100, 2), $weights));
 
         $allTs = [];
@@ -2161,9 +2206,20 @@ class SmartBatteryOptimizer extends IPSModule
         $sourceHistory = json_decode($this->ReadAttributeString('PVSourceForecastHistoryJSON'), true);
         if (!is_array($sourceHistory)) $sourceHistory = [];
         $sourceWeights = is_array($forecast['forecastSourceWeights'] ?? null) ? $forecast['forecastSourceWeights'] : [];
+        $storedSourceWeights = json_decode($this->ReadAttributeString('PVSourceWeightsJSON'), true);
+        if (!is_array($storedSourceWeights)) $storedSourceWeights = [];
+
+        $debugSources = [];
+        if ($this->ReadPropertyBoolean('UseOpenMeteoForecast')) $debugSources[] = 'openmeteo';
+        if ($this->ReadPropertyBoolean('UseForecastSolarForecast')) $debugSources[] = 'forecastsolar';
+        if ($this->ReadPropertyBoolean('UsePVNodeForecast')) $debugSources[] = 'pvnode';
+
         $sourceLabels = [];
-        foreach ($sourceWeights as $src => $weight) {
-            $sourceLabels[$src] = $this->SourceDisplayName((string)$src) . ' (' . number_format((float)$weight * 100.0, 1, ',', '.') . ' %)';
+        foreach ($debugSources as $src) {
+            $weight = array_key_exists($src, $sourceWeights)
+                ? (float)$sourceWeights[$src]
+                : (float)($storedSourceWeights[$src] ?? 0.0);
+            $sourceLabels[$src] = $this->SourceDisplayName((string)$src) . ' (' . number_format($weight * 100.0, 1, ',', '.') . ' %)';
         }
         if (!is_array($history)) {
             $history = [];
