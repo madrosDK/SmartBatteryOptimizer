@@ -116,6 +116,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('PVNodeConsecutiveRejects', 0);
         $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
         $this->RegisterAttributeString('PVNodeLastError', '');
+        $this->RegisterAttributeBoolean('LastAppliedDebugMode', false);
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
@@ -138,6 +139,13 @@ class SmartBatteryOptimizer extends IPSModule
     public function ApplyChanges()
     {
         parent::ApplyChanges();
+
+        $debugMode = $this->ReadPropertyBoolean('DebugMode');
+        $lastAppliedDebugMode = $this->ReadAttributeBoolean('LastAppliedDebugMode');
+        $debugModeChanged = ($debugMode !== $lastAppliedDebugMode);
+        if ($debugModeChanged) {
+            $this->WriteAttributeBoolean('LastAppliedDebugMode', $debugMode);
+        }
 
         // Wurde pvnode nach einer automatischen Sperre vom Benutzer wieder angehakt,
         // beginnt die Prüfung der Zugangsdaten bewusst wieder bei null.
@@ -165,6 +173,17 @@ class SmartBatteryOptimizer extends IPSModule
 
         if (!$this->IsAutomaticEnabled()) {
             $this->StopFeedIn();
+        }
+
+        // Beim Ein-/Ausschalten des Debug-Modus müssen die HTMLBoxen sofort neu
+        // aufgebaut werden. Besonders die zusätzlichen Anbieter-Serien in der
+        // PV-Prognose sollen direkt erscheinen bzw. verschwinden und nicht erst
+        // beim nächsten Timer-Lauf.
+        if ($debugModeChanged) {
+            if ($debugMode) {
+                $this->DebugLog('ApplyChanges', 'Debug-Modus geändert -> vollständige Neuberechnung und Neuaufbau aller Grafiken.');
+            }
+            $this->Recalculate(true);
         }
     }
 
