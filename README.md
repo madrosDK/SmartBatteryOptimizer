@@ -235,3 +235,8 @@ Die Sichtbarkeit der Debug-Quellen wird beim Klick auf einen Legendeneintrag sof
 Die HTML-Übersicht wurde als kompakte Tabelle mit den Bereichen Batterie, Verbrauch morgen, PV-Prognose und Optimierung neu aufgebaut. Doppelte Nachtverbrauchsangaben wurden entfernt.
 
 Unter Verbrauch morgen wird zusätzlich das tatsächlich verwendete Nachtfenster angezeigt. Im Automatikmodus ist dies `Sonnenuntergang − Vorlauf` bis `Sonnenaufgang + Nachlauf`; im manuellen Modus werden die festen Uhrzeiten angezeigt.
+
+### Übersicht 1.6.6
+Das Nachtfenster wird nun zusätzlich als konkrete Uhrzeit der nächsten Nacht angezeigt, z. B. `18:42 – 07:11 Uhr`. Bei automatischer Tag-/Nachtbestimmung steht die verwendete Regel klein dahinter.
+
+Die interne Anzeige `Profil: Archiv gelernt – X Tage, Stundenprofil` wurde verständlicher benannt. Angezeigt wird nun z. B. `Tagesprofil: aus Archiv · 6 gültige Tage · stündliches Profil`. Damit ist klar, dass aus den archivierten Hausverbrauchswerten ein 24-Stunden-Verbrauchsmuster gelernt wurde.

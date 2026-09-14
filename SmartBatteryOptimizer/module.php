@@ -2370,18 +2370,10 @@ class SmartBatteryOptimizer extends IPSModule
         $pvPart = (float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0);
         $otherPart = (float)($forecast['otherDayConsumptionTomorrowKWh'] ?? 0.0);
 
-        $nightMode = $this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell';
-        $nightWindowText = '';
-        if ($this->ReadPropertyBoolean('AutomaticDayNight')) {
-            $nightWindowText =
-                'Sonnenuntergang − ' . $this->ReadPropertyInteger('NightBeforeSunsetMinutes') . ' min'
-                . ' bis Sonnenaufgang + ' . $this->ReadPropertyInteger('NightAfterSunriseMinutes') . ' min';
-        } else {
-            $nightWindowText =
-                sprintf('%02d:00', $this->ReadPropertyInteger('NightStartHour'))
-                . ' bis '
-                . sprintf('%02d:00', $this->ReadPropertyInteger('FallbackMorningHour'));
-        }
+        // Konkretes Zeitfenster der nächsten Nacht anzeigen.
+        $nightStartTs = $this->DetermineNightStart(0, strtotime('today 00:00:00'));
+        $nightEndTs = $this->DetermineMorningEnd(0, strtotime('tomorrow 00:00:00'));
+        $nightWindowClock = date('H:i', $nightStartTs) . ' – ' . date('H:i', $nightEndTs) . ' Uhr';
 
         $cellLabel = 'padding:4px 8px 4px 0;color:#b9c0c8;white-space:nowrap;vertical-align:top';
         $cellValue = 'padding:4px 0;color:#fff;font-weight:bold;vertical-align:top';
@@ -2415,10 +2407,10 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '<td style="' . $cellLabel . '">Übriger Tag</td><td style="' . $cellValue . '">' . number_format($otherPart, 2, ',', '.') . ' kWh</td>';
         $html .= '</tr>';
         $html .= '<tr>';
-        $html .= '<td style="' . $cellLabel . '">Nachtfenster</td><td colspan="3" style="padding:4px 0;color:#d8dde3">' . htmlspecialchars($nightWindowText) . ' <span style="color:#8f98a3">(' . $nightMode . ')</span></td>';
+        $html .= '<td style="' . $cellLabel . '">Nachtfenster</td><td colspan="3" style="padding:4px 0;color:#fff"><b>' . htmlspecialchars($nightWindowClock) . '</b></td>';
         $html .= '</tr>';
         $html .= '<tr>';
-        $html .= '<td style="' . $cellLabel . '">Lernbasis</td><td colspan="3" style="padding:4px 0;color:#d8dde3">Nacht: ' . htmlspecialchars($this->ReadAttributeString('NightLearningSource')) . ' &nbsp;|&nbsp; Profil: ' . htmlspecialchars($this->ReadAttributeString('ConsumptionLearningSource')) . '</td>';
+        $html .= '<td style="' . $cellLabel . '">Lernbasis</td><td colspan="3" style="padding:4px 0;color:#d8dde3">Nachtverbrauch: ' . htmlspecialchars($this->HumanizeLearningSource($this->ReadAttributeString('NightLearningSource'), true)) . ' &nbsp;|&nbsp; Tagesprofil: ' . htmlspecialchars($this->HumanizeLearningSource($this->ReadAttributeString('ConsumptionLearningSource'), false)) . '</td>';
         $html .= '</tr>';
 
         $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">PV-Prognose</td></tr>';
@@ -2444,6 +2436,34 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '</table></div>';
         return $html;
     }
+
+    private function HumanizeLearningSource(string $source, bool $night): string
+    {
+        $source = trim($source);
+        if ($source === '') {
+            return 'keine Lernwerte';
+        }
+
+        // Bestehende interne Texte nur für die Anzeige verständlicher formulieren.
+        if (preg_match('/Archiv gelernt\\s*[–-]\\s*(\\d+)\\s+gültige Nächte/ui', $source, $m)) {
+            return 'aus Archiv · ' . (int)$m[1] . ' gültige Nächte';
+        }
+
+        if (preg_match('/Archiv gelernt\\s*[–-]\\s*(\\d+)\\s+Tage,\\s*Stundenprofil/ui', $source, $m)) {
+            return 'aus Archiv · ' . (int)$m[1] . ' gültige Tage · stündliches Profil';
+        }
+
+        if (preg_match('/Archiv gelernt\\s*[–-]\\s*(\\d+)\\s+Tage/ui', $source, $m)) {
+            return 'aus Archiv · ' . (int)$m[1] . ' gültige Tage';
+        }
+
+        if (stripos($source, 'Fallback') !== false) {
+            return $night ? 'Fallback-Nachtverbrauch' : 'Fallback-Tagesprofil';
+        }
+
+        return $source;
+    }
+
 
     private function RenderPVForecastChartHTML(array $forecast): string
     {
