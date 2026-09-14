@@ -736,7 +736,7 @@
                 {
                     "type": "NumberSpinner",
                     "name": "PVSpaceMinimumPriceCt",
-                    "caption": "Mindestpreis bei notwendiger Speicherfreihaltung (Startwert)",
+                    "caption": "Preisuntergrenze für notwendige Speicherfreihaltung (Startwert)",
                     "digits": 2,
                     "minimum": -100,
                     "maximum": 100,

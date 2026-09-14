@@ -83,7 +83,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('MaxBatteryChargePowerW', 5000);
         $this->RegisterPropertyFloat('PVHeadroomTargetSOC', 95.0);
         $this->RegisterPropertyFloat('PVStorageSharePct', 70.0);
-        $this->RegisterPropertyFloat('PVSpaceMinimumPriceCt', -100.0);
+        $this->RegisterPropertyFloat('PVSpaceMinimumPriceCt', 0.0);
 
         $this->RegisterPropertyInteger('RefreshMinutes', 30);
         $this->RegisterPropertyInteger('PVForecastRefreshMinutes', 30);
@@ -1633,6 +1633,12 @@ class SmartBatteryOptimizer extends IPSModule
                 return !isset($usedKeys[$key]) && $p['priceCt'] >= $pvFloor;
             }));
             usort($fallbackSlots, fn($a, $b) => $b['priceCt'] <=> $a['priceCt']);
+            $this->DebugLog(
+                'PV-Speicherfreihaltung',
+                'Zusätzlicher Bedarf=' . round($mandatoryMissing, 3) . ' kWh'
+                . ' | Mindestpreis=' . round($pvFloor, 2) . ' ct/kWh'
+                . ' | verfügbare Zusatz-Slots=' . count($fallbackSlots)
+            );
 
             foreach ($fallbackSlots as $p) {
                 if ($mandatoryMissing <= 0.001 || $remaining <= 0.001) break;
@@ -1651,7 +1657,7 @@ class SmartBatteryOptimizer extends IPSModule
                     'marketCt' => $p['marketCt'],
                     'energyKWh' => $energy,
                     'powerW' => $powerKW * 1000.0,
-                    'reason' => 'pv_space'
+                    'reason' => 'pv_space_required'
                 ];
                 $revenue += $energy * $p['priceCt'] / 100.0;
                 $remaining -= $energy;
@@ -1675,9 +1681,11 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         if ($pvSpaceRequired > 0.05) {
-            $status .= ' | PV-Speicherfreihaltung ' . number_format($pvSpaceRequired, 2, ',', '.') . ' kWh';
+            $pvFloor = $this->GetRuntimeFloat('RuntimePVSpaceMinimumPriceCt', $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
+            $status .= ' | PV-Speicherfreihaltung ' . number_format($pvSpaceRequired, 2, ',', '.') . ' kWh'
+                . ' | Preisuntergrenze ' . number_format($pvFloor, 2, ',', '.') . ' ct/kWh';
             if ($mandatoryMissing > 0.05) {
-                $status .= ' (noch ' . number_format($mandatoryMissing, 2, ',', '.') . ' kWh ungeplant)';
+                $status .= ' (noch ' . number_format($mandatoryMissing, 2, ',', '.') . ' kWh ungeplant – unter Preisgrenze oder keine Slots)';
             }
         }
 

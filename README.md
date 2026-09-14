@@ -276,3 +276,6 @@ Die Instanzkonfiguration liefert beim ersten Anlegen der Variablen nur die Start
 
 ### Frontend-Profile 1.7.2
 Die editierbaren Laufzeitvariablen verwenden nun eigene, typkorrekte IP-Symcon-Profile. Leistungswerte sind Integer mit Einheit W, Prozentwerte und Preise sind Float-Profile. Dadurch wird die WebFront-/Tile-Fehlermeldung `Invalid profile type` vermieden.
+
+### Preislogik für notwendige Speicherfreihaltung 1.7.3
+Die normale Einspeisung nutzt weiterhin den normalen Mindest-Einspeisepreis. Reicht die dadurch geschaffene Speicherkapazität für den PV-/Netzlimit-Schutz nicht aus, wählt der Optimierer zusätzlich die bestbezahlten noch freien Zeitfenster vor dem kritischen PV-Zeitpunkt. Die separate Preisuntergrenze für notwendige Speicherfreihaltung ist dabei eine harte Untergrenze. Standard ist nun 0 ct/kWh; negative Preise werden damit nicht verwendet, sofern der Benutzer die Grenze nicht bewusst negativ einstellt.
