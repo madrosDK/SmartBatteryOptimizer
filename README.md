@@ -240,3 +240,8 @@ Unter Verbrauch morgen wird zusätzlich das tatsächlich verwendete Nachtfenster
 Das Nachtfenster wird nun zusätzlich als konkrete Uhrzeit der nächsten Nacht angezeigt, z. B. `18:42 – 07:11 Uhr`. Bei automatischer Tag-/Nachtbestimmung steht die verwendete Regel klein dahinter.
 
 Die interne Anzeige `Profil: Archiv gelernt – X Tage, Stundenprofil` wurde verständlicher benannt. Angezeigt wird nun z. B. `Tagesprofil: aus Archiv · 6 gültige Tage · stündliches Profil`. Damit ist klar, dass aus den archivierten Hausverbrauchswerten ein 24-Stunden-Verbrauchsmuster gelernt wurde.
+
+### Planung bis zum Abend 1.6.8
+Die Einspeiseplanung berücksichtigt für spätere Einspeisefenster am selben Tag nun auch die noch erwartete PV-Erzeugung bis zum Nachtbeginn sowie den bis dahin prognostizierten Hausverbrauch. Dadurch wird nicht mehr ausschließlich der momentan im Speicher vorhandene Energieinhalt als Grundlage für ein abendliches Einspeisefenster verwendet.
+
+Die Schutzreserve bleibt bewusst erhalten: Nachtverbrauch inklusive Sicherheitsaufschlag plus der benötigte Speicherstand am nächsten PV-Morgen. Die Übersicht zeigt diese beiden Bestandteile getrennt sowie den erwarteten Speicherstand bei Nachtbeginn und die daraus voraussichtlich frei verfügbare Energie.

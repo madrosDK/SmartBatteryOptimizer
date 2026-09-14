@@ -1293,19 +1293,63 @@ class SmartBatteryOptimizer extends IPSModule
             $reserve = $requiredMorningStored + ($nightReserve * (1.0 + $this->ReadPropertyFloat('PoorForecastExtraReservePct') / 100.0));
         }
 
+        // Für spätere Einspeisefenster am heutigen Abend darf nicht nur der
+        // aktuelle Speicherstand betrachtet werden. Bis zum Nachtbeginn kann
+        // die heutige PV-Produktion den Speicher noch deutlich nachladen.
+        $now = time();
+        $todayStart = strtotime('today 00:00:00');
+        $nightStartToday = $this->DetermineNightStart(0, $todayStart);
+        if ($nightStartToday <= $now) {
+            $nightStartToday = $now;
+        }
+
+        $remainingPVToday = 0.0;
+        $remainingLoadToday = 0.0;
+        $hourlyLoad = isset($consumptionProfile['hourlyKWh']) && is_array($consumptionProfile['hourlyKWh'])
+            ? $consumptionProfile['hourlyKWh']
+            : array_fill(0, 24, 0.0);
+
+        if ($nightStartToday > $now) {
+            for ($h = 0; $h < 24; $h++) {
+                $hourStart = $todayStart + $h * 3600;
+                $hourEnd = $hourStart + 3600;
+                $overlap = $this->OverlapSeconds($hourStart, $hourEnd, $now, $nightStartToday);
+                if ($overlap <= 0) continue;
+
+                $fraction = $overlap / 3600.0;
+                $pvHour = isset($forecast['hours'][$hourStart])
+                    ? max(0.0, (float)($forecast['hours'][$hourStart]['totalKW'] ?? 0.0))
+                    : 0.0;
+                $remainingPVToday += $pvHour * $fraction;
+                $remainingLoadToday += max(0.0, (float)($hourlyLoad[$h] ?? 0.0)) * $fraction;
+            }
+        }
+
+        $projectedStoredAtNightStart = min(
+            $capacity,
+            max($minEnergy, $stored + max(0.0, $remainingPVToday - $remainingLoadToday))
+        );
+
         $status = 'Optimierung aktiv';
         if ($this->ReadPropertyBoolean('DisableFeedInOnVeryPoorForecast') && $tomorrowPV < $this->ReadPropertyFloat('VeryPoorForecastKWh')) {
+            $availableNow = 0.0;
+            $availableAtNightStart = 0.0;
             $available = 0.0;
             $status = 'Einspeisung gesperrt: PV-Prognose sehr schlecht';
         } else {
-            $available = max(0.0, $stored - $reserve);
+            $availableNow = max(0.0, $stored - $reserve);
+            $availableAtNightStart = max(0.0, $projectedStoredAtNightStart - $reserve);
+            // Für die Plananzeige ist die maximal im Planungshorizont erwartete
+            // Einspeiseenergie relevant. Vor Nachtbeginn darf davon jedoch nur
+            // $availableNow verwendet werden.
+            $available = max($availableNow, $availableAtNightStart);
         }
 
         // Speicherplatz für den erwarteten PV-Überschuss freihalten. Der lernende
         // Verbrauch wird vorab von der PV-Prognose abgezogen.
         $pvSpaceRequired = 0.0;
         $pvTargetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->ReadPropertyFloat('PVHeadroomTargetSOC')));
-        $expectedMorningStored = max($minEnergy, $stored - max(0.0, $nightReserve));
+        $expectedMorningStored = max($minEnergy, $projectedStoredAtNightStart - max(0.0, $nightReserve));
         $targetMaxEnergy = $capacity * $pvTargetSOC / 100.0;
         $expectedPVToBattery = $pvSurplusTomorrow * max(0.0, min(100.0, $this->ReadPropertyFloat('PVStorageSharePct'))) / 100.0;
         $morningHeadroom = max(0.0, $targetMaxEnergy - $expectedMorningStored);
@@ -1335,7 +1379,10 @@ class SmartBatteryOptimizer extends IPSModule
             $slotStart = max($p['start'], time());
             $durationH = max(0.0, ($p['end'] - $slotStart) / 3600.0);
             if ($durationH <= 0) continue;
-            $energy = min($remaining, $maxKW * $durationH);
+            $slotAvailability = ($slotStart >= $nightStartToday) ? $availableAtNightStart : $availableNow;
+            $slotRemaining = max(0.0, $slotAvailability - $scheduledEnergy);
+            if ($slotRemaining <= 0.001) continue;
+            $energy = min($remaining, $slotRemaining, $maxKW * $durationH);
             $powerKW = min($maxKW, $energy / $durationH);
             $key = $p['start'] . ':' . $p['end'];
             $selected[] = [
@@ -1371,7 +1418,10 @@ class SmartBatteryOptimizer extends IPSModule
                 $slotStart = max($p['start'], time());
                 $durationH = max(0.0, ($p['end'] - $slotStart) / 3600.0);
                 if ($durationH <= 0) continue;
-                $energy = min($remaining, $mandatoryMissing, $maxKW * $durationH);
+                $slotAvailability = ($slotStart >= $nightStartToday) ? $availableAtNightStart : $availableNow;
+                $slotRemaining = max(0.0, $slotAvailability - $scheduledEnergy);
+                if ($slotRemaining <= 0.001) continue;
+                $energy = min($remaining, $mandatoryMissing, $slotRemaining, $maxKW * $durationH);
                 $powerKW = min($maxKW, $energy / $durationH);
                 $selected[] = [
                     'start' => $slotStart,
@@ -1406,14 +1456,37 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
 
-        $this->DebugLog('Plan-Berechnung', 'SoC=' . round($soc,1) . '% | Speicher=' . round($stored,3) . ' kWh | Reserve=' . round($reserve,3) . ' kWh | verfügbar=' . round($available,3) . ' kWh | PV morgen=' . round($tomorrowPV,3) . ' kWh | Überschuss=' . round($pvSurplusTomorrow,3) . ' kWh | Slots=' . count($selected));
+        $this->DebugLog(
+            'Plan-Berechnung',
+            'SoC=' . round($soc,1) . '%'
+            . ' | Speicher jetzt=' . round($stored,3) . ' kWh'
+            . ' | Rest-PV heute=' . round($remainingPVToday,3) . ' kWh'
+            . ' | Rest-Verbrauch bis Nacht=' . round($remainingLoadToday,3) . ' kWh'
+            . ' | Speicher bei Nachtbeginn=' . round($projectedStoredAtNightStart,3) . ' kWh'
+            . ' | Nachtreserve inkl. Sicherheit=' . round($nightReserve,3) . ' kWh'
+            . ' | Morgenreserve=' . round($requiredMorningStored,3) . ' kWh'
+            . ' | Gesamtreserve=' . round($reserve,3) . ' kWh'
+            . ' | verfügbar jetzt=' . round($availableNow,3) . ' kWh'
+            . ' | verfügbar ab Nachtbeginn=' . round($availableAtNightStart,3) . ' kWh'
+            . ' | PV morgen=' . round($tomorrowPV,3) . ' kWh'
+            . ' | Überschuss=' . round($pvSurplusTomorrow,3) . ' kWh'
+            . ' | Slots=' . count($selected)
+        );
 
         return [
             'soc' => $soc,
             'storedKWh' => $stored,
             'reserveKWh' => $reserve,
+            'nightReserveKWh' => $nightReserve,
+            'morningReserveKWh' => $requiredMorningStored,
             'minimumEnergyKWh' => $minEnergy,
             'availableKWh' => $available,
+            'availableNowKWh' => $availableNow,
+            'availableAtNightStartKWh' => $availableAtNightStart,
+            'remainingPVTodayKWh' => $remainingPVToday,
+            'remainingLoadUntilNightKWh' => $remainingLoadToday,
+            'projectedStoredAtNightStartKWh' => $projectedStoredAtNightStart,
+            'nightStartTodayTs' => $nightStartToday,
             'pvSpaceRequiredKWh' => $pvSpaceRequired,
             'pvSpaceUnscheduledKWh' => max(0.0, $mandatoryMissing),
             'expectedMorningStoredKWh' => $expectedMorningStored,
@@ -2389,8 +2462,8 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '<td style="' . $cellLabel . '">Speicherinhalt</td><td style="' . $cellValue . '">' . number_format((float)$plan['storedKWh'], 2, ',', '.') . ' kWh</td>';
         $html .= '</tr>';
         $html .= '<tr>';
-        $html .= '<td style="' . $cellLabel . '">Reserve inkl. Ziel-SoC</td><td style="' . $cellValue . '">' . number_format((float)$plan['reserveKWh'], 2, ',', '.') . ' kWh</td>';
-        $html .= '<td style="' . $cellLabel . '">Ziel-SoC nach PV-Tag</td><td style="' . $cellValue . '">' . number_format((float)($plan['targetSOCPct'] ?? 100), 0, ',', '.') . ' %</td>';
+        $html .= '<td style="' . $cellLabel . '">Reserve bis PV-Morgen</td><td style="' . $cellValue . '">' . number_format((float)$plan['reserveKWh'], 2, ',', '.') . ' kWh</td>';
+        $html .= '<td style="' . $cellLabel . '">davon Nacht / Morgenreserve</td><td style="' . $cellValue . '">' . number_format((float)($plan['nightReserveKWh'] ?? 0), 2, ',', '.') . ' / ' . number_format((float)($plan['morningReserveKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
         $html .= '</tr>';
         $html .= '<tr>';
         $html .= '<td style="' . $cellLabel . '">Bedarf am PV-Morgen</td><td style="' . $cellValue . '">' . number_format((float)($plan['requiredMorningStoredKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
@@ -2427,6 +2500,10 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '<tr>';
         $html .= '<td style="' . $cellLabel . '">Einspeisung verfügbar</td><td style="' . $cellValue . '">' . number_format((float)$plan['availableKWh'], 2, ',', '.') . ' kWh</td>';
         $html .= '<td style="' . $cellLabel . '">Speicher für PV freizugeben</td><td style="' . $cellValue . '">' . number_format((float)$plan['pvSpaceRequiredKWh'], 2, ',', '.') . ' kWh</td>';
+        $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Speicher bei Nachtbeginn erwartet</td><td style="' . $cellValue . '">' . number_format((float)($plan['projectedStoredAtNightStartKWh'] ?? $plan['storedKWh']), 2, ',', '.') . ' kWh</td>';
+        $html .= '<td style="' . $cellLabel . '">davon für Einspeisung frei</td><td style="' . $cellValue . '">' . number_format((float)($plan['availableAtNightStartKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
         $html .= '</tr>';
         $html .= '<tr>';
         $html .= '<td style="' . $cellLabel . '">Erwarteter Erlös</td><td style="' . $cellValue . '">' . number_format((float)$plan['expectedRevenueEUR'], 2, ',', '.') . ' €</td>';
