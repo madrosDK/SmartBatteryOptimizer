@@ -2365,28 +2365,29 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderOverviewHTML(array $forecast, array $plan, float $night): string
     {
-        $html = '<div style="font-family:Tahoma;font-size:12px">';
-        $html .= '<b>Börsenpreis-Speicheroptimierung</b><br><br>';
-        $html .= 'SoC: <b>' . number_format($plan['soc'], 1, ',', '.') . ' %</b><br>';
-        $html .= 'Speicherinhalt: <b>' . number_format($plan['storedKWh'], 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Nachtverbrauch für Batterieplanung: <b>' . number_format($night, 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Quelle Nachtverbrauch: <b>' . htmlspecialchars($this->ReadAttributeString('NightLearningSource')) . '</b><br>';
-        $html .= 'Reserve inkl. Ziel-SoC: <b>' . number_format($plan['reserveKWh'], 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Ziel-SoC nach PV-Tag: <b>' . number_format((float)($plan['targetSOCPct'] ?? 100.0), 0, ',', '.') . ' %</b><br>';
-        $html .= 'Benötigter Speicherstand am PV-Morgen: <b>' . number_format((float)($plan['requiredMorningStoredKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'PV heute: <b>' . number_format((float)($forecast['todayKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'PV morgen: <b>' . number_format($forecast['tomorrowKWh'], 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Gelernter Verbrauch morgen gesamt: <b>' . number_format((float)($forecast['consumptionTomorrowKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Davon Nacht: <b>' . number_format((float)($forecast['nightConsumptionTomorrowKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Davon während PV-Zeit: <b>' . number_format((float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Davon übriger Tag: <b>' . number_format((float)($forecast['otherDayConsumptionTomorrowKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Erwarteter PV-Überschuss nach Eigenverbrauch: <b>' . number_format((float)($forecast['pvSurplusTomorrowKWh'] ?? 0.0), 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Verbrauchsprofil: <b>' . htmlspecialchars($this->ReadAttributeString('ConsumptionLearningSource')) . '</b><br>';
-        $html .= 'PV ausreichend ab ca.: <b>' . date('H:i', $forecast['morningTs']) . '</b><br>';
-        $html .= 'Für Einspeisung verfügbar: <b>' . number_format($plan['availableKWh'], 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Für PV freizugebender Speicher: <b>' . number_format($plan['pvSpaceRequiredKWh'], 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Erwarteter Erlös: <b>' . number_format($plan['expectedRevenueEUR'], 2, ',', '.') . ' €</b><br>';
-        $html .= 'Status: <b>' . htmlspecialchars($plan['status']) . '</b>';
+        $total = (float)($forecast['consumptionTomorrowKWh'] ?? 0.0);
+        $nightPart = (float)($forecast['nightConsumptionTomorrowKWh'] ?? $night);
+        $pvPart = (float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0);
+        $otherPart = (float)($forecast['otherDayConsumptionTomorrowKWh'] ?? 0.0);
+
+        $html = '<div style="font-family:Tahoma;font-size:12px;line-height:1.35">';
+        $html .= '<div style="font-size:14px;font-weight:bold;margin-bottom:8px">Börsenpreis-Speicheroptimierung</div>';
+        $html .= '<div style="font-weight:bold">Batterie</div>';
+        $html .= 'SoC: <b>' . number_format((float)$plan['soc'], 1, ',', '.') . ' %</b> &nbsp;|&nbsp; Speicher: <b>' . number_format((float)$plan['storedKWh'], 2, ',', '.') . ' kWh</b><br>';
+        $html .= 'Reserve: <b>' . number_format((float)$plan['reserveKWh'], 2, ',', '.') . ' kWh</b> &nbsp;|&nbsp; Ziel-SoC nach PV-Tag: <b>' . number_format((float)($plan['targetSOCPct'] ?? 100), 0, ',', '.') . ' %</b> &nbsp;|&nbsp; Bedarf am PV-Morgen: <b>' . number_format((float)($plan['requiredMorningStoredKWh'] ?? 0), 2, ',', '.') . ' kWh</b><br>';
+
+        $html .= '<div style="font-weight:bold;margin-top:7px">Verbrauch morgen</div>';
+        $html .= 'Gesamt: <b>' . number_format($total, 2, ',', '.') . ' kWh</b> &nbsp;=&nbsp; Nacht: <b>' . number_format($nightPart, 2, ',', '.') . '</b> + PV-Zeit: <b>' . number_format($pvPart, 2, ',', '.') . '</b> + übriger Tag: <b>' . number_format($otherPart, 2, ',', '.') . ' kWh</b><br>';
+        $html .= '<span style="font-size:11px">Nacht: ' . htmlspecialchars($this->ReadAttributeString('NightLearningSource')) . ' &nbsp;|&nbsp; Profil: ' . htmlspecialchars($this->ReadAttributeString('ConsumptionLearningSource')) . '</span><br>';
+
+        $html .= '<div style="font-weight:bold;margin-top:7px">PV morgen</div>';
+        $html .= 'Prognose: <b>' . number_format((float)($forecast['tomorrowKWh'] ?? 0), 2, ',', '.') . ' kWh</b> &nbsp;|&nbsp; Überschuss nach Eigenverbrauch: <b>' . number_format((float)($forecast['pvSurplusTomorrowKWh'] ?? 0), 2, ',', '.') . ' kWh</b>';
+        if (!empty($forecast['morningTs'])) $html .= ' &nbsp;|&nbsp; ausreichend ab ca. <b>' . date('H:i',(int)$forecast['morningTs']) . '</b>';
+        $html .= '<br><span style="font-size:11px">PV heute: ' . number_format((float)($forecast['todayKWh'] ?? 0), 2, ',', '.') . ' kWh</span><br>';
+
+        $html .= '<div style="font-weight:bold;margin-top:7px">Optimierung</div>';
+        $html .= 'Einspeisung verfügbar: <b>' . number_format((float)$plan['availableKWh'], 2, ',', '.') . ' kWh</b> &nbsp;|&nbsp; Speicher für PV freizugeben: <b>' . number_format((float)$plan['pvSpaceRequiredKWh'], 2, ',', '.') . ' kWh</b> &nbsp;|&nbsp; Erlös: <b>' . number_format((float)$plan['expectedRevenueEUR'], 2, ',', '.') . ' €</b><br>';
+        $html .= 'Status: <b>' . htmlspecialchars((string)$plan['status']) . '</b>';
         return $html . '</div>';
     }
 
@@ -2512,16 +2513,18 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'function loadVisibility(){try{var v=localStorage.getItem(visibilityKey);return v?JSON.parse(v):{};}catch(e){return {};}}';
             $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}}';
             $html .= 'var debugVisibility=loadVisibility();';
+            $html .= 'var chart=null;';
             $html .= 'var idx=0;var i;for(i=0;i<days.length;i++){if(days[i].date===today){idx=i;break;}}';
             $html .= 'function el(s){return document.getElementById(chartId+s);}';
             $html .= 'function draw(){';
+            $html .= 'if(typeof chart!=="undefined"&&chart){try{chart.series.forEach(function(sr){var k=sr.options.custom&&sr.options.custom.sourceKey;if(k){debugVisibility[k]=sr.visible;}});saveVisibility(debugVisibility);}catch(e){}}debugVisibility=loadVisibility();';
             $html .= 'if(!days.length||typeof Highcharts==="undefined"){return;}';
             $html .= 'var d=days[idx];var categories=[];var forecastData=[];var actualData=[];var sourceData={};';
             $html .= 'for(var src in d.sourceLabels){if(Object.prototype.hasOwnProperty.call(d.sourceLabels,src)){sourceData[src]=[];}}';
             $html .= 'for(var j=0;j<d.rows.length;j++){var r=d.rows[j];categories.push(r.label);forecastData.push({y:r.forecastKWh,custom:r});actualData.push(r.actualKWh===null?null:{y:r.actualKWh,custom:r});for(var src2 in sourceData){var sv=(r.sourceKWh&&Object.prototype.hasOwnProperty.call(r.sourceKWh,src2))?r.sourceKWh[src2]:null;sourceData[src2].push(sv===null?null:{y:sv,custom:r});}}';
             $html .= 'var chartSeries=[{name:"PV-Prognose kombiniert",data:forecastData,zIndex:1,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},{name:"Ist-Produktion",data:actualData,color:"rgba(255,213,79,0.38)",zIndex:3,pointPadding:0.20,dataLabels:{enabled:false}}];';
-            $html .= 'for(var src3 in sourceData){if(Object.prototype.hasOwnProperty.call(sourceData,src3)){var vis=Object.prototype.hasOwnProperty.call(debugVisibility,src3)?!!debugVisibility[src3]:false;chartSeries.push({name:d.sourceLabels[src3],type:"line",data:sourceData[src3],visible:vis,zIndex:5,lineWidth:2,marker:{enabled:true,radius:2},custom:{sourceKey:src3},events:{legendItemClick:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){debugVisibility[key]=!this.visible;saveVisibility(debugVisibility);}}},dataLabels:{enabled:false}});}}';
-            $html .= 'Highcharts.chart(chartId,{';
+            $html .= 'for(var src3 in sourceData){if(Object.prototype.hasOwnProperty.call(sourceData,src3)){var vis=Object.prototype.hasOwnProperty.call(debugVisibility,src3)?!!debugVisibility[src3]:false;chartSeries.push({name:d.sourceLabels[src3],type:"line",data:sourceData[src3],visible:vis,zIndex:5,lineWidth:2,marker:{enabled:true,radius:2},custom:{sourceKey:src3},events:{show:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){debugVisibility[key]=true;saveVisibility(debugVisibility);}},hide:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){debugVisibility[key]=false;saveVisibility(debugVisibility);}}},dataLabels:{enabled:false}});}}';
+            $html .= 'chart=Highcharts.chart(chartId,{';
             $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
             $html .= 'title:{text:null},credits:{enabled:false},';
             $html .= 'legend:{enabled:true,itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff",fontWeight:"normal"},itemHoverStyle:{color:"#ffffff"}},';

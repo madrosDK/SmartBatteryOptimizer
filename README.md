@@ -220,3 +220,8 @@ Die PV-Zeit wird aus der stündlichen PV-Prognose des nächsten Tages bestimmt. 
 
 ### Debug-Serien im PV-Diagramm
 Der Ein-/Ausblendzustand der einzelnen Anbieterlinien wird im Browser gespeichert. Open-Meteo, Forecast.Solar und pvnode bleiben deshalb nach Aktualisierung, Navigation oder Neuaufbau der HTMLBox so sichtbar bzw. unsichtbar, wie sie zuletzt über die Highcharts-Legende eingestellt wurden.
+
+### Übersicht / Debug-Navigation 1.6.3
+Die Übersicht ist kompakter in Batterie, Verbrauch morgen, PV morgen und Optimierung gegliedert. Doppelte Nachtverbrauchsangaben wurden entfernt. Die drei Verbrauchsteile werden in einer Zeile als Summe der Gesamtprognose dargestellt.
+
+Vor jedem Highcharts-Tageswechsel wird der aktuelle Sichtbarkeitszustand der Debug-Quellen gesichert und anschließend wieder geladen. Zusätzlich speichern `show`/`hide` die Auswahl unmittelbar. Damit bleibt die Auswahl beim Vor- und Zurückblättern erhalten.
