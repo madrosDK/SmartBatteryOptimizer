@@ -2370,25 +2370,79 @@ class SmartBatteryOptimizer extends IPSModule
         $pvPart = (float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0);
         $otherPart = (float)($forecast['otherDayConsumptionTomorrowKWh'] ?? 0.0);
 
-        $html = '<div style="font-family:Tahoma;font-size:12px;line-height:1.35">';
-        $html .= '<div style="font-size:14px;font-weight:bold;margin-bottom:8px">Börsenpreis-Speicheroptimierung</div>';
-        $html .= '<div style="font-weight:bold">Batterie</div>';
-        $html .= 'SoC: <b>' . number_format((float)$plan['soc'], 1, ',', '.') . ' %</b> &nbsp;|&nbsp; Speicher: <b>' . number_format((float)$plan['storedKWh'], 2, ',', '.') . ' kWh</b><br>';
-        $html .= 'Reserve: <b>' . number_format((float)$plan['reserveKWh'], 2, ',', '.') . ' kWh</b> &nbsp;|&nbsp; Ziel-SoC nach PV-Tag: <b>' . number_format((float)($plan['targetSOCPct'] ?? 100), 0, ',', '.') . ' %</b> &nbsp;|&nbsp; Bedarf am PV-Morgen: <b>' . number_format((float)($plan['requiredMorningStoredKWh'] ?? 0), 2, ',', '.') . ' kWh</b><br>';
+        $nightMode = $this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell';
+        $nightWindowText = '';
+        if ($this->ReadPropertyBoolean('AutomaticDayNight')) {
+            $nightWindowText =
+                'Sonnenuntergang − ' . $this->ReadPropertyInteger('NightBeforeSunsetMinutes') . ' min'
+                . ' bis Sonnenaufgang + ' . $this->ReadPropertyInteger('NightAfterSunriseMinutes') . ' min';
+        } else {
+            $nightWindowText =
+                sprintf('%02d:00', $this->ReadPropertyInteger('NightStartHour'))
+                . ' bis '
+                . sprintf('%02d:00', $this->ReadPropertyInteger('FallbackMorningHour'));
+        }
 
-        $html .= '<div style="font-weight:bold;margin-top:7px">Verbrauch morgen</div>';
-        $html .= 'Gesamt: <b>' . number_format($total, 2, ',', '.') . ' kWh</b> &nbsp;=&nbsp; Nacht: <b>' . number_format($nightPart, 2, ',', '.') . '</b> + PV-Zeit: <b>' . number_format($pvPart, 2, ',', '.') . '</b> + übriger Tag: <b>' . number_format($otherPart, 2, ',', '.') . ' kWh</b><br>';
-        $html .= '<span style="font-size:11px">Nacht: ' . htmlspecialchars($this->ReadAttributeString('NightLearningSource')) . ' &nbsp;|&nbsp; Profil: ' . htmlspecialchars($this->ReadAttributeString('ConsumptionLearningSource')) . '</span><br>';
+        $cellLabel = 'padding:4px 8px 4px 0;color:#b9c0c8;white-space:nowrap;vertical-align:top';
+        $cellValue = 'padding:4px 0;color:#fff;font-weight:bold;vertical-align:top';
+        $sectionStyle = 'font-size:12px;font-weight:bold;color:#fff;padding:8px 0 3px 0;border-bottom:1px solid rgba(255,255,255,.16)';
 
-        $html .= '<div style="font-weight:bold;margin-top:7px">PV morgen</div>';
-        $html .= 'Prognose: <b>' . number_format((float)($forecast['tomorrowKWh'] ?? 0), 2, ',', '.') . ' kWh</b> &nbsp;|&nbsp; Überschuss nach Eigenverbrauch: <b>' . number_format((float)($forecast['pvSurplusTomorrowKWh'] ?? 0), 2, ',', '.') . ' kWh</b>';
-        if (!empty($forecast['morningTs'])) $html .= ' &nbsp;|&nbsp; ausreichend ab ca. <b>' . date('H:i',(int)$forecast['morningTs']) . '</b>';
-        $html .= '<br><span style="font-size:11px">PV heute: ' . number_format((float)($forecast['todayKWh'] ?? 0), 2, ',', '.') . ' kWh</span><br>';
+        $html = '<div style="font-family:Tahoma;color:#fff;font-size:12px;line-height:1.35">';
+        $html .= '<div style="font-size:15px;font-weight:bold;margin-bottom:6px">Börsenpreis-Speicheroptimierung</div>';
+        $html .= '<table style="border-collapse:collapse;width:100%;max-width:760px;font-family:Tahoma;font-size:12px;color:#fff">';
 
-        $html .= '<div style="font-weight:bold;margin-top:7px">Optimierung</div>';
-        $html .= 'Einspeisung verfügbar: <b>' . number_format((float)$plan['availableKWh'], 2, ',', '.') . ' kWh</b> &nbsp;|&nbsp; Speicher für PV freizugeben: <b>' . number_format((float)$plan['pvSpaceRequiredKWh'], 2, ',', '.') . ' kWh</b> &nbsp;|&nbsp; Erlös: <b>' . number_format((float)$plan['expectedRevenueEUR'], 2, ',', '.') . ' €</b><br>';
-        $html .= 'Status: <b>' . htmlspecialchars((string)$plan['status']) . '</b>';
-        return $html . '</div>';
+        $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">Batterie</td></tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">SoC</td><td style="' . $cellValue . '">' . number_format((float)$plan['soc'], 1, ',', '.') . ' %</td>';
+        $html .= '<td style="' . $cellLabel . '">Speicherinhalt</td><td style="' . $cellValue . '">' . number_format((float)$plan['storedKWh'], 2, ',', '.') . ' kWh</td>';
+        $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Reserve inkl. Ziel-SoC</td><td style="' . $cellValue . '">' . number_format((float)$plan['reserveKWh'], 2, ',', '.') . ' kWh</td>';
+        $html .= '<td style="' . $cellLabel . '">Ziel-SoC nach PV-Tag</td><td style="' . $cellValue . '">' . number_format((float)($plan['targetSOCPct'] ?? 100), 0, ',', '.') . ' %</td>';
+        $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Bedarf am PV-Morgen</td><td style="' . $cellValue . '">' . number_format((float)($plan['requiredMorningStoredKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
+        $html .= '<td></td><td></td>';
+        $html .= '</tr>';
+
+        $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">Verbrauch morgen</td></tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Gesamt</td><td style="' . $cellValue . '">' . number_format($total, 2, ',', '.') . ' kWh</td>';
+        $html .= '<td style="' . $cellLabel . '">Nacht</td><td style="' . $cellValue . '">' . number_format($nightPart, 2, ',', '.') . ' kWh</td>';
+        $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Während PV-Zeit</td><td style="' . $cellValue . '">' . number_format($pvPart, 2, ',', '.') . ' kWh</td>';
+        $html .= '<td style="' . $cellLabel . '">Übriger Tag</td><td style="' . $cellValue . '">' . number_format($otherPart, 2, ',', '.') . ' kWh</td>';
+        $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Nachtfenster</td><td colspan="3" style="padding:4px 0;color:#d8dde3">' . htmlspecialchars($nightWindowText) . ' <span style="color:#8f98a3">(' . $nightMode . ')</span></td>';
+        $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Lernbasis</td><td colspan="3" style="padding:4px 0;color:#d8dde3">Nacht: ' . htmlspecialchars($this->ReadAttributeString('NightLearningSource')) . ' &nbsp;|&nbsp; Profil: ' . htmlspecialchars($this->ReadAttributeString('ConsumptionLearningSource')) . '</td>';
+        $html .= '</tr>';
+
+        $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">PV-Prognose</td></tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Heute</td><td style="' . $cellValue . '">' . number_format((float)($forecast['todayKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
+        $html .= '<td style="' . $cellLabel . '">Morgen</td><td style="' . $cellValue . '">' . number_format((float)($forecast['tomorrowKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
+        $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Überschuss nach Eigenverbrauch</td><td style="' . $cellValue . '">' . number_format((float)($forecast['pvSurplusTomorrowKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
+        $html .= '<td style="' . $cellLabel . '">PV ausreichend ab</td><td style="' . $cellValue . '">' . (!empty($forecast['morningTs']) ? date('H:i', (int)$forecast['morningTs']) : '-') . '</td>';
+        $html .= '</tr>';
+
+        $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">Optimierung</td></tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Einspeisung verfügbar</td><td style="' . $cellValue . '">' . number_format((float)$plan['availableKWh'], 2, ',', '.') . ' kWh</td>';
+        $html .= '<td style="' . $cellLabel . '">Speicher für PV freizugeben</td><td style="' . $cellValue . '">' . number_format((float)$plan['pvSpaceRequiredKWh'], 2, ',', '.') . ' kWh</td>';
+        $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Erwarteter Erlös</td><td style="' . $cellValue . '">' . number_format((float)$plan['expectedRevenueEUR'], 2, ',', '.') . ' €</td>';
+        $html .= '<td style="' . $cellLabel . '">Status</td><td style="' . $cellValue . '">' . htmlspecialchars((string)$plan['status']) . '</td>';
+        $html .= '</tr>';
+
+        $html .= '</table></div>';
+        return $html;
     }
 
     private function RenderPVForecastChartHTML(array $forecast): string

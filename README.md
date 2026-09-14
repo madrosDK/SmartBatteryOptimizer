@@ -230,3 +230,8 @@ Vor jedem Highcharts-Tageswechsel wird der aktuelle Sichtbarkeitszustand der Deb
 Die Sichtbarkeit der Debug-Quellen wird beim Klick auf einen Legendeneintrag sofort in einem JavaScript-Zustandsobjekt aktualisiert. Beim Vor-/Zurückblättern wird genau dieses aktuelle Objekt weiterverwendet. Es wird nicht mehr bei jedem Tageswechsel erneut aus `localStorage` geladen, wodurch ein noch nicht synchronisierter älterer Zustand die Auswahl überschreiben konnte.
 
 `localStorage` wird weiterhin verwendet, um die Auswahl nach einem vollständigen Neuaufbau der HTMLBox wiederherzustellen.
+
+### Übersicht 1.6.5
+Die HTML-Übersicht wurde als kompakte Tabelle mit den Bereichen Batterie, Verbrauch morgen, PV-Prognose und Optimierung neu aufgebaut. Doppelte Nachtverbrauchsangaben wurden entfernt.
+
+Unter Verbrauch morgen wird zusätzlich das tatsächlich verwendete Nachtfenster angezeigt. Im Automatikmodus ist dies `Sonnenuntergang − Vorlauf` bis `Sonnenaufgang + Nachlauf`; im manuellen Modus werden die festen Uhrzeiten angezeigt.
