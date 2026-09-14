@@ -109,6 +109,23 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableFloat('HighestPrice', 'Höchster geplanter Einspeisepreis', '', 50);
         $this->RegisterVariableBoolean('AutomaticEnabled', 'Einspeiseautomatik', '~Switch', 55);
         $this->EnableAction('AutomaticEnabled');
+
+        // Laufzeitwerte für den Netzlimit-Schutz. Diese Werte können direkt im
+        // IP-Symcon Frontend geändert werden, ohne die Instanzkonfiguration zu öffnen.
+        $this->RegisterVariableBoolean('PVCurtailmentProtectionEnabled', 'PV-Abregelung vermeiden', '~Switch', 56);
+        $this->EnableAction('PVCurtailmentProtectionEnabled');
+        $this->RegisterVariableInteger('RuntimeGridFeedInLimitW', 'Maximale Netzeinspeisung', '~Watt', 57);
+        $this->EnableAction('RuntimeGridFeedInLimitW');
+        $this->RegisterVariableInteger('RuntimeGridLimitSafetyW', 'Sicherheitsabstand Einspeisegrenze', '~Watt', 58);
+        $this->EnableAction('RuntimeGridLimitSafetyW');
+        $this->RegisterVariableInteger('RuntimeMaxBatteryChargePowerW', 'Maximale Batterieladeleistung', '~Watt', 59);
+        $this->EnableAction('RuntimeMaxBatteryChargePowerW');
+        $this->RegisterVariableFloat('RuntimePVHeadroomTargetSOC', 'Maximaler Ziel-SoC bei starker PV', '~Intensity.100', 60);
+        $this->EnableAction('RuntimePVHeadroomTargetSOC');
+        $this->RegisterVariableFloat('RuntimePVStorageSharePct', 'PV-Prognose als möglicher Batterieüberschuss', '~Intensity.100', 61);
+        $this->EnableAction('RuntimePVStorageSharePct');
+        $this->RegisterVariableFloat('RuntimePVSpaceMinimumPriceCt', 'Mindestpreis notwendige Speicherfreihaltung', '', 62);
+        $this->EnableAction('RuntimePVSpaceMinimumPriceCt');
         $this->RegisterVariableBoolean('FeedInActive', 'Einspeisung aktiv', '~Switch', 60);
         $this->RegisterVariableFloat('PlannedPower', 'Geplante Einspeiseleistung', '~Watt', 70);
         $this->RegisterVariableString('NextFeedInWindow', 'Nächstes Einspeisefenster', '', 80);
@@ -141,6 +158,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('ConsumptionLearningSource', 'Fallback');
         $this->RegisterAttributeBoolean('AlphaDispatchActive', false);
         $this->RegisterAttributeString('AlphaDispatchCommandKey', '');
+        $this->RegisterAttributeBoolean('RuntimePVSettingsInitialized', false);
 
         $this->RegisterTimer('RefreshTimer', 0, 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
@@ -188,6 +206,17 @@ class SmartBatteryOptimizer extends IPSModule
     public function ApplyChanges()
     {
         parent::ApplyChanges();
+
+        if (!$this->ReadAttributeBoolean('RuntimePVSettingsInitialized')) {
+            SetValue($this->GetIDForIdent('PVCurtailmentProtectionEnabled'), $this->ReadPropertyBoolean('PreventPVCurtailment'));
+            SetValue($this->GetIDForIdent('RuntimeGridFeedInLimitW'), $this->ReadPropertyInteger('GridFeedInLimitW'));
+            SetValue($this->GetIDForIdent('RuntimeGridLimitSafetyW'), $this->ReadPropertyInteger('GridLimitSafetyW'));
+            SetValue($this->GetIDForIdent('RuntimeMaxBatteryChargePowerW'), $this->ReadPropertyInteger('MaxBatteryChargePowerW'));
+            SetValue($this->GetIDForIdent('RuntimePVHeadroomTargetSOC'), $this->ReadPropertyFloat('PVHeadroomTargetSOC'));
+            SetValue($this->GetIDForIdent('RuntimePVStorageSharePct'), $this->ReadPropertyFloat('PVStorageSharePct'));
+            SetValue($this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt'), $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
+            $this->WriteAttributeBoolean('RuntimePVSettingsInitialized', true);
+        }
 
         $debugMode = $this->ReadPropertyBoolean('DebugMode');
         $lastAppliedDebugMode = $this->ReadAttributeBoolean('LastAppliedDebugMode');
@@ -274,6 +303,31 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $this->DebugLog('RequestAction', $Ident . ' = ' . json_encode($Value));
         switch ($Ident) {
+            case 'PVCurtailmentProtectionEnabled':
+                SetValue($this->GetIDForIdent($Ident), (bool)$Value);
+                $this->RecalculateInternal(false);
+                break;
+            case 'RuntimeGridFeedInLimitW':
+                SetValue($this->GetIDForIdent($Ident), max(0, (int)$Value));
+                $this->RecalculateInternal(false);
+                break;
+            case 'RuntimeGridLimitSafetyW':
+                SetValue($this->GetIDForIdent($Ident), max(0, (int)$Value));
+                $this->RecalculateInternal(false);
+                break;
+            case 'RuntimeMaxBatteryChargePowerW':
+                SetValue($this->GetIDForIdent($Ident), max(0, (int)$Value));
+                $this->RecalculateInternal(false);
+                break;
+            case 'RuntimePVHeadroomTargetSOC':
+            case 'RuntimePVStorageSharePct':
+                SetValue($this->GetIDForIdent($Ident), max(0.0, min(100.0, (float)$Value)));
+                $this->RecalculateInternal(false);
+                break;
+            case 'RuntimePVSpaceMinimumPriceCt':
+                SetValue($this->GetIDForIdent($Ident), (float)$Value);
+                $this->RecalculateInternal(false);
+                break;
             case 'AutomaticEnabled':
                 $enabled = (bool)$Value;
                 SetValue($this->GetIDForIdent('AutomaticEnabled'), $enabled);
@@ -291,6 +345,24 @@ class SmartBatteryOptimizer extends IPSModule
             default:
                 throw new Exception('Ungültige Aktion: ' . $Ident);
         }
+    }
+
+    private function GetRuntimeBoolean(string $ident, bool $fallback): bool
+    {
+        $id = @$this->GetIDForIdent($ident);
+        return $id > 0 ? (bool)GetValue($id) : $fallback;
+    }
+
+    private function GetRuntimeInteger(string $ident, int $fallback): int
+    {
+        $id = @$this->GetIDForIdent($ident);
+        return $id > 0 ? (int)GetValue($id) : $fallback;
+    }
+
+    private function GetRuntimeFloat(string $ident, float $fallback): float
+    {
+        $id = @$this->GetIDForIdent($ident);
+        return $id > 0 ? (float)GetValue($id) : $fallback;
     }
 
     private function DebugLog(string $area, $message, int $format = 0): void
@@ -1277,10 +1349,10 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function AnalyzeGridLimitRisk(array $forecast, array $consumptionProfile): array
     {
-        $gridLimitW = max(0, $this->ReadPropertyInteger('GridFeedInLimitW'));
-        $safetyW = max(0, min($gridLimitW, $this->ReadPropertyInteger('GridLimitSafetyW')));
+        $gridLimitW = max(0, $this->GetRuntimeInteger('RuntimeGridFeedInLimitW', $this->ReadPropertyInteger('GridFeedInLimitW')));
+        $safetyW = max(0, min($gridLimitW, $this->GetRuntimeInteger('RuntimeGridLimitSafetyW', $this->ReadPropertyInteger('GridLimitSafetyW'))));
         $effectiveGridLimitW = max(0, $gridLimitW - $safetyW);
-        $maxChargeW = max(0, $this->ReadPropertyInteger('MaxBatteryChargePowerW'));
+        $maxChargeW = max(0, $this->GetRuntimeInteger('RuntimeMaxBatteryChargePowerW', $this->ReadPropertyInteger('MaxBatteryChargePowerW')));
 
         $hourlyLoad = isset($consumptionProfile['hourlyKWh']) && is_array($consumptionProfile['hourlyKWh'])
             ? $consumptionProfile['hourlyKWh']
@@ -1460,16 +1532,16 @@ class SmartBatteryOptimizer extends IPSModule
         // Speicherplatz für den erwarteten PV-Überschuss freihalten. Der lernende
         // Verbrauch wird vorab von der PV-Prognose abgezogen.
         $pvSpaceRequired = 0.0;
-        $pvTargetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->ReadPropertyFloat('PVHeadroomTargetSOC')));
+        $pvTargetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->GetRuntimeFloat('RuntimePVHeadroomTargetSOC', $this->ReadPropertyFloat('PVHeadroomTargetSOC'))));
         $expectedMorningStored = max($minEnergy, $projectedStoredAtNightStart - max(0.0, $nightReserve));
         $targetMaxEnergy = $capacity * $pvTargetSOC / 100.0;
-        $expectedPVToBattery = $pvSurplusTomorrow * max(0.0, min(100.0, $this->ReadPropertyFloat('PVStorageSharePct'))) / 100.0;
+        $expectedPVToBattery = $pvSurplusTomorrow * max(0.0, min(100.0, $this->GetRuntimeFloat('RuntimePVStorageSharePct', $this->ReadPropertyFloat('PVStorageSharePct')))) / 100.0;
         $morningHeadroom = max(0.0, $targetMaxEnergy - $expectedMorningStored);
 
         $normalPVSpaceRequired = max(0.0, $expectedPVToBattery - $morningHeadroom);
         $gridLimitSpaceRequired = max(0.0, (float)($gridRisk['requiredHeadroomKWh'] ?? 0.0));
 
-        if ($this->ReadPropertyBoolean('PreventPVCurtailment') && $available > 0.0) {
+        if ($this->GetRuntimeBoolean('PVCurtailmentProtectionEnabled', $this->ReadPropertyBoolean('PreventPVCurtailment')) && $available > 0.0) {
             // Netzlimit-Schutz ist eine harte Mindestanforderung. Die bisherige
             // allgemeine PV-Speicherfreihaltung bleibt zusätzlich bestehen.
             $pvSpaceRequired = min($available, max($normalPVSpaceRequired, $gridLimitSpaceRequired));
@@ -1530,7 +1602,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Vermeidung von PV-Abregelung Vorrang vor dem momentanen Verkaufspreis hat.
         $mandatoryMissing = max(0.0, $pvSpaceRequired - $scheduledEnergy);
         if ($mandatoryMissing > 0.001 && $remaining > 0.001 && $maxKW > 0) {
-            $pvFloor = $this->ReadPropertyFloat('PVSpaceMinimumPriceCt');
+            $pvFloor = $this->GetRuntimeFloat('RuntimePVSpaceMinimumPriceCt', $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
             $fallbackSlots = array_values(array_filter($allSlots, function ($p) use ($usedKeys, $pvFloor) {
                 $key = $p['start'] . ':' . $p['end'];
                 return !isset($usedKeys[$key]) && $p['priceCt'] >= $pvFloor;

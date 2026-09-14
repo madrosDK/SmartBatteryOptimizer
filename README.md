@@ -268,3 +268,8 @@ Neue Ausgaben:
 - Speicherbedarf Netzlimit-Schutz
 
 Wichtig: Bei Open-Meteo und den zusammengeführten Anbieterwerten handelt es sich um Stundenmittel. Die angezeigte Spitzenleistung ist daher die höchste prognostizierte Stundenleistung, keine garantierte kurzfristige Wechselrichterspitze. Der einstellbare Sicherheitsabstand zur 10-kW-Grenze dient dazu, diese Unsicherheit abzufangen.
+
+### Frontend-Steuerung Netzlimit-Schutz 1.7.1
+Alle für den PV-/Netzlimit-Schutz relevanten Betriebswerte sind als bedienbare IP-Symcon-Variablen verfügbar. Dazu gehören Ein/Aus, maximale Netzeinspeisung, Sicherheitsabstand, maximale Batterieladeleistung, maximaler Ziel-SoC bei starker PV, Anteil der PV-Prognose als möglicher Batterieüberschuss und Mindestpreis für notwendige Speicherfreihaltung.
+
+Die Instanzkonfiguration liefert beim ersten Anlegen der Variablen nur die Startwerte. Danach sind die Frontend-Variablen für die laufende Optimierung maßgeblich. Eine Änderung löst unmittelbar eine neue Planung mit den bereits geladenen Prognose- und Preisdaten aus.

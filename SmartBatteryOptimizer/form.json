@@ -682,12 +682,12 @@
                 {
                     "type": "CheckBox",
                     "name": "PreventPVCurtailment",
-                    "caption": "Speicher vor PV-Überschuss freihalten / PV-Abregelung vermeiden"
+                    "caption": "PV-Abregelung vermeiden (Startwert für Frontend-Variable)"
                 },
                 {
                     "type": "NumberSpinner",
                     "name": "GridFeedInLimitW",
-                    "caption": "Maximale Netzeinspeisung",
+                    "caption": "Maximale Netzeinspeisung (Startwert)",
                     "digits": 0,
                     "minimum": 0,
                     "maximum": 1000000,
@@ -696,7 +696,7 @@
                 {
                     "type": "NumberSpinner",
                     "name": "GridLimitSafetyW",
-                    "caption": "Sicherheitsabstand zur Einspeisegrenze",
+                    "caption": "Sicherheitsabstand zur Einspeisegrenze (Startwert)",
                     "digits": 0,
                     "minimum": 0,
                     "maximum": 100000,
@@ -705,7 +705,7 @@
                 {
                     "type": "NumberSpinner",
                     "name": "MaxBatteryChargePowerW",
-                    "caption": "Maximale Batterieladeleistung",
+                    "caption": "Maximale Batterieladeleistung (Startwert)",
                     "digits": 0,
                     "minimum": 0,
                     "maximum": 1000000,
@@ -718,7 +718,7 @@
                 {
                     "type": "NumberSpinner",
                     "name": "PVHeadroomTargetSOC",
-                    "caption": "Maximaler Ziel-SoC bei erwarteter starker PV",
+                    "caption": "Maximaler Ziel-SoC bei erwarteter starker PV (Startwert)",
                     "digits": 1,
                     "minimum": 20,
                     "maximum": 100,
@@ -727,7 +727,7 @@
                 {
                     "type": "NumberSpinner",
                     "name": "PVStorageSharePct",
-                    "caption": "Anteil der PV-Prognose als möglicher Batterieüberschuss",
+                    "caption": "Anteil der PV-Prognose als möglicher Batterieüberschuss (Startwert)",
                     "digits": 0,
                     "minimum": 0,
                     "maximum": 100,
@@ -736,7 +736,7 @@
                 {
                     "type": "NumberSpinner",
                     "name": "PVSpaceMinimumPriceCt",
-                    "caption": "Mindestpreis bei notwendiger Speicherfreihaltung",
+                    "caption": "Mindestpreis bei notwendiger Speicherfreihaltung (Startwert)",
                     "digits": 2,
                     "minimum": -100,
                     "maximum": 100,
