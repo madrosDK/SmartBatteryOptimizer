@@ -225,3 +225,8 @@ Der Ein-/Ausblendzustand der einzelnen Anbieterlinien wird im Browser gespeicher
 Die Übersicht ist kompakter in Batterie, Verbrauch morgen, PV morgen und Optimierung gegliedert. Doppelte Nachtverbrauchsangaben wurden entfernt. Die drei Verbrauchsteile werden in einer Zeile als Summe der Gesamtprognose dargestellt.
 
 Vor jedem Highcharts-Tageswechsel wird der aktuelle Sichtbarkeitszustand der Debug-Quellen gesichert und anschließend wieder geladen. Zusätzlich speichern `show`/`hide` die Auswahl unmittelbar. Damit bleibt die Auswahl beim Vor- und Zurückblättern erhalten.
+
+### Korrektur Debug-Serien beim Tageswechsel 1.6.4
+Die Sichtbarkeit der Debug-Quellen wird beim Klick auf einen Legendeneintrag sofort in einem JavaScript-Zustandsobjekt aktualisiert. Beim Vor-/Zurückblättern wird genau dieses aktuelle Objekt weiterverwendet. Es wird nicht mehr bei jedem Tageswechsel erneut aus `localStorage` geladen, wodurch ein noch nicht synchronisierter älterer Zustand die Auswahl überschreiben konnte.
+
+`localStorage` wird weiterhin verwendet, um die Auswahl nach einem vollständigen Neuaufbau der HTMLBox wiederherzustellen.
