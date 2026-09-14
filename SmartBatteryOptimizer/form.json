@@ -686,6 +686,37 @@
                 },
                 {
                     "type": "NumberSpinner",
+                    "name": "GridFeedInLimitW",
+                    "caption": "Maximale Netzeinspeisung",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 1000000,
+                    "suffix": " W"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "GridLimitSafetyW",
+                    "caption": "Sicherheitsabstand zur Einspeisegrenze",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 100000,
+                    "suffix": " W"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "MaxBatteryChargePowerW",
+                    "caption": "Maximale Batterieladeleistung",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 1000000,
+                    "suffix": " W"
+                },
+                {
+                    "type": "Label",
+                    "caption": "Netzlimit-Schutz: Aus PV-Leistung minus erwartetem Hausverbrauch wird die mögliche Netzeinspeisung berechnet. Droht die konfigurierte Grenze, wird bereits vorher zusätzlicher Speicherplatz durch Batterieeinspeisung freigeplant. Die Leistungsprüfung erfolgt intern in 15-Minuten-Slots; stündliche Prognosen werden dafür auf vier Viertelstunden verteilt."
+                },
+                {
+                    "type": "NumberSpinner",
                     "name": "PVHeadroomTargetSOC",
                     "caption": "Maximaler Ziel-SoC bei erwarteter starker PV",
                     "digits": 1,

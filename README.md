@@ -252,3 +252,19 @@ Die automatische Nachtzeit wird eindeutig als **Sonnenuntergang des Abends minus
 Für historische Lerntage wird nicht mehr irgendein Änderungswert der archivierten Sonnenzeitvariable innerhalb des Tages verwendet. Stattdessen wird der letzte gültige Archivwert bis 12:00 Uhr des jeweiligen Kalendertages ausgewertet. Damit wird verhindert, dass ein unpassender alter oder bereits weitergeschalteter Sonnenzeitwert das Nachtfenster verfälscht.
 
 Im Debug wird für jede gelernte Nacht nun Start, Ende, Dauer, Verbrauch und mittlere Leistung ausgegeben.
+
+### Netzlimit-Schutz / PV-Leistungsprognose 1.7.0
+Der Optimierer wertet zusätzlich zur PV-Energie nun die prognostizierte PV-Leistung aus. Konfigurierbar sind maximale Netzeinspeisung, Sicherheitsabstand zur Grenze und maximale Batterieladeleistung.
+
+Für morgen wird intern in 15-Minuten-Slots gerechnet. Die vorhandenen stündlichen Prognosewerte werden dabei als mittlere Leistung auf vier Viertelstunden verteilt. Pro Slot gilt sinngemäß:
+
+`mögliche Netzeinspeisung = PV-Leistung - erwarteter Hausverbrauch`
+
+Wenn die mögliche Netzeinspeisung oberhalb von `Netzlimit - Sicherheitsabstand` liegt, berechnet das Modul, wie viel Batterie-Aufnahmeleistung und Speicherplatz nötig sind. Der notwendige Speicherplatz wird als Mindestanforderung in die bestehende PV-Speicherfreihaltung übernommen und muss vor dem ersten kritischen Slot geschaffen sein.
+
+Neue Ausgaben:
+- PV Spitzenleistung morgen Prognose
+- Max. erwartete Netzeinspeisung morgen ohne Batterie
+- Speicherbedarf Netzlimit-Schutz
+
+Wichtig: Bei Open-Meteo und den zusammengeführten Anbieterwerten handelt es sich um Stundenmittel. Die angezeigte Spitzenleistung ist daher die höchste prognostizierte Stundenleistung, keine garantierte kurzfristige Wechselrichterspitze. Der einstellbare Sicherheitsabstand zur 10-kW-Grenze dient dazu, diese Unsicherheit abzufangen.

@@ -78,6 +78,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyBoolean('DisableFeedInOnVeryPoorForecast', false);
         $this->RegisterPropertyFloat('VeryPoorForecastKWh', 2.0);
         $this->RegisterPropertyBoolean('PreventPVCurtailment', true);
+        $this->RegisterPropertyInteger('GridFeedInLimitW', 10000);
+        $this->RegisterPropertyInteger('GridLimitSafetyW', 500);
+        $this->RegisterPropertyInteger('MaxBatteryChargePowerW', 5000);
         $this->RegisterPropertyFloat('PVHeadroomTargetSOC', 95.0);
         $this->RegisterPropertyFloat('PVStorageSharePct', 70.0);
         $this->RegisterPropertyFloat('PVSpaceMinimumPriceCt', -100.0);
@@ -96,7 +99,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableInteger('ValidNightSamples', 'Gültige Nächte', '', 22);
         $this->RegisterVariableFloat('ConsumptionForecastTomorrow', 'Verbrauchsprognose morgen', '~Electricity', 23);
         $this->RegisterVariableFloat('ExpectedPVSurplusTomorrow', 'PV-Überschuss morgen nach Eigenverbrauch', '~Electricity', 24);
-        $this->RegisterVariableString('ConsumptionLearningStatus', 'Verbrauchsprofil Lernen', '', 25);
+        $this->RegisterVariableFloat('PVPeakPowerTomorrow', 'PV Spitzenleistung morgen Prognose', '~Watt', 25);
+        $this->RegisterVariableFloat('PredictedMaxGridExportTomorrow', 'Max. erwartete Netzeinspeisung morgen ohne Batterie', '~Watt', 26);
+        $this->RegisterVariableFloat('GridLimitHeadroomRequired', 'Speicherbedarf Netzlimit-Schutz', '~Electricity', 27);
+        $this->RegisterVariableString('ConsumptionLearningStatus', 'Verbrauchsprofil Lernen', '', 28);
         $this->RegisterVariableFloat('AvailableFeedInEnergy', 'Für Einspeisung verfügbar', '~Electricity', 30);
         $this->RegisterVariableFloat('PVSpaceRequiredEnergy', 'Für PV freizugebender Speicher', '~Electricity', 31);
         $this->RegisterVariableFloat('CurrentPrice', 'Aktueller Einspeisepreis', '', 40);
@@ -381,6 +387,9 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('ValidNightSamples'), $this->ReadAttributeInteger('NightSampleCount'));
             SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)$forecast['consumptionTomorrowKWh'], 3));
             SetValue($this->GetIDForIdent('ExpectedPVSurplusTomorrow'), round((float)$forecast['pvSurplusTomorrowKWh'], 3));
+            SetValue($this->GetIDForIdent('PVPeakPowerTomorrow'), round((float)($plan['pvPeakPowerTomorrowW'] ?? 0.0), 0));
+            SetValue($this->GetIDForIdent('PredictedMaxGridExportTomorrow'), round((float)($plan['predictedMaxGridExportTomorrowW'] ?? 0.0), 0));
+            SetValue($this->GetIDForIdent('GridLimitHeadroomRequired'), round((float)($plan['gridLimitSpaceRequiredKWh'] ?? 0.0), 3));
             SetValue($this->GetIDForIdent('ConsumptionLearningStatus'), $this->ReadAttributeString('ConsumptionLearningSource'));
             SetValue($this->GetIDForIdent('AvailableFeedInEnergy'), round($plan['availableKWh'], 3));
             SetValue($this->GetIDForIdent('PVSpaceRequiredEnergy'), round($plan['pvSpaceRequiredKWh'], 3));
@@ -1266,6 +1275,108 @@ class SmartBatteryOptimizer extends IPSModule
         return $this->ExpandPricesToQuarterHour($prices);
     }
 
+    private function AnalyzeGridLimitRisk(array $forecast, array $consumptionProfile): array
+    {
+        $gridLimitW = max(0, $this->ReadPropertyInteger('GridFeedInLimitW'));
+        $safetyW = max(0, min($gridLimitW, $this->ReadPropertyInteger('GridLimitSafetyW')));
+        $effectiveGridLimitW = max(0, $gridLimitW - $safetyW);
+        $maxChargeW = max(0, $this->ReadPropertyInteger('MaxBatteryChargePowerW'));
+
+        $hourlyLoad = isset($consumptionProfile['hourlyKWh']) && is_array($consumptionProfile['hourlyKWh'])
+            ? $consumptionProfile['hourlyKWh']
+            : array_fill(0, 24, 0.0);
+
+        $tomorrowStart = strtotime('tomorrow 00:00:00');
+        $tomorrowEnd = $tomorrowStart + 86400;
+
+        $peakPVW = 0.0;
+        $peakRawExportW = 0.0;
+        $firstCriticalTs = 0;
+        $lastCriticalTs = 0;
+        $criticalEnergyKWh = 0.0;
+        $unavoidableCurtailmentKWh = 0.0;
+
+        // Headroom required at the start of the PV day if the battery normally
+        // absorbs surplus PV before exporting it. We therefore accumulate all
+        // chargeable surplus up to each critical grid-limit interval and keep
+        // the largest cumulative value reached at such a critical interval.
+        $cumulativeChargeKWh = 0.0;
+        $requiredHeadroomKWh = 0.0;
+
+        $slots = [];
+        for ($ts = $tomorrowStart; $ts < $tomorrowEnd; $ts += 900) {
+            $hourTs = strtotime(date('Y-m-d H:00:00', $ts));
+            $hour = (int)date('G', $ts);
+
+            // Forecast values are kW averages for the hour. Internally the
+            // optimizer repeats this level in four 15-minute planning slots.
+            $pvKW = isset($forecast['hours'][$hourTs])
+                ? max(0.0, (float)($forecast['hours'][$hourTs]['totalKW'] ?? 0.0))
+                : 0.0;
+            $pvW = $pvKW * 1000.0;
+
+            // hourlyKWh is energy for one hour -> numerically equal to average kW.
+            $loadW = max(0.0, (float)($hourlyLoad[$hour] ?? 0.0)) * 1000.0;
+            $rawExportW = max(0.0, $pvW - $loadW);
+
+            $peakPVW = max($peakPVW, $pvW);
+            $peakRawExportW = max($peakRawExportW, $rawExportW);
+
+            // Potential battery charging if PV surplus is present.
+            $chargePotentialW = min($maxChargeW, $rawExportW);
+            $cumulativeChargeKWh += $chargePotentialW * 0.25 / 1000.0;
+
+            $overLimitW = max(0.0, $rawExportW - $effectiveGridLimitW);
+            $absorbableOverLimitW = min($maxChargeW, $overLimitW);
+            $unavoidableW = max(0.0, $overLimitW - $maxChargeW);
+
+            if ($overLimitW > 1.0) {
+                if ($firstCriticalTs === 0) $firstCriticalTs = $ts;
+                $lastCriticalTs = $ts + 900;
+                $criticalEnergyKWh += $absorbableOverLimitW * 0.25 / 1000.0;
+                $unavoidableCurtailmentKWh += $unavoidableW * 0.25 / 1000.0;
+                $requiredHeadroomKWh = max($requiredHeadroomKWh, $cumulativeChargeKWh);
+            }
+
+            $slots[] = [
+                'start' => $ts,
+                'pvW' => $pvW,
+                'loadW' => $loadW,
+                'rawExportW' => $rawExportW,
+                'overLimitW' => $overLimitW
+            ];
+        }
+
+        $this->DebugLog(
+            'Netzlimit-Prognose',
+            'PV Spitze=' . round($peakPVW) . ' W'
+            . ' | max. Roh-Einspeisung=' . round($peakRawExportW) . ' W'
+            . ' | Netzlimit=' . $gridLimitW . ' W'
+            . ' | Sicherheitsabstand=' . $safetyW . ' W'
+            . ' | effektives Limit=' . $effectiveGridLimitW . ' W'
+            . ' | max. Batterieladung=' . $maxChargeW . ' W'
+            . ' | erster kritischer Slot=' . ($firstCriticalTs > 0 ? date('d.m. H:i', $firstCriticalTs) : '-')
+            . ' | Headroom=' . round($requiredHeadroomKWh, 3) . ' kWh'
+            . ' | davon direkt Netzlimit=' . round($criticalEnergyKWh, 3) . ' kWh'
+            . ' | unvermeidbar=' . round($unavoidableCurtailmentKWh, 3) . ' kWh'
+        );
+
+        return [
+            'gridLimitW' => $gridLimitW,
+            'safetyW' => $safetyW,
+            'effectiveGridLimitW' => $effectiveGridLimitW,
+            'maxChargeW' => $maxChargeW,
+            'peakPVW' => $peakPVW,
+            'peakRawExportW' => $peakRawExportW,
+            'firstCriticalTs' => $firstCriticalTs,
+            'lastCriticalTs' => $lastCriticalTs,
+            'requiredHeadroomKWh' => $requiredHeadroomKWh,
+            'criticalEnergyKWh' => $criticalEnergyKWh,
+            'unavoidableCurtailmentKWh' => $unavoidableCurtailmentKWh,
+            'slots' => $slots
+        ];
+    }
+
     private function BuildPlan(array $forecast, array $prices, float $nightKWh, array $consumptionProfile): array
     {
         $socVar = $this->ReadPropertyInteger('SOCVariable');
@@ -1280,6 +1391,7 @@ class SmartBatteryOptimizer extends IPSModule
         $tomorrowConsumption = (float)($forecast['consumptionTomorrowKWh'] ?? 0.0);
         $pvOverlapConsumption = (float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0);
         $pvSurplusTomorrow = max(0.0, (float)($forecast['pvSurplusTomorrowKWh'] ?? ($tomorrowPV - $pvOverlapConsumption)));
+        $gridRisk = $this->AnalyzeGridLimitRisk($forecast, $consumptionProfile);
 
         // Ziel: Der Speicher soll trotz geplanter Einspeisung am nächsten PV-Tag
         // wieder bis zum konfigurierten Ziel-SoC geladen werden können. Dafür wird
@@ -1353,11 +1465,23 @@ class SmartBatteryOptimizer extends IPSModule
         $targetMaxEnergy = $capacity * $pvTargetSOC / 100.0;
         $expectedPVToBattery = $pvSurplusTomorrow * max(0.0, min(100.0, $this->ReadPropertyFloat('PVStorageSharePct'))) / 100.0;
         $morningHeadroom = max(0.0, $targetMaxEnergy - $expectedMorningStored);
+
+        $normalPVSpaceRequired = max(0.0, $expectedPVToBattery - $morningHeadroom);
+        $gridLimitSpaceRequired = max(0.0, (float)($gridRisk['requiredHeadroomKWh'] ?? 0.0));
+
         if ($this->ReadPropertyBoolean('PreventPVCurtailment') && $available > 0.0) {
-            $pvSpaceRequired = min($available, max(0.0, $expectedPVToBattery - $morningHeadroom));
+            // Netzlimit-Schutz ist eine harte Mindestanforderung. Die bisherige
+            // allgemeine PV-Speicherfreihaltung bleibt zusätzlich bestehen.
+            $pvSpaceRequired = min($available, max($normalPVSpaceRequired, $gridLimitSpaceRequired));
         }
 
-        $horizonEnd = max(time() + 3600, (int)$forecast['morningTs']);
+        // Ohne Netzlimit-Risiko reicht die bisherige Planung bis zum PV-Morgen.
+        // Bei drohender Abregelung muss der nötige Speicherplatz spätestens vor
+        // dem ersten kritischen 15-Minuten-Slot geschaffen sein.
+        $criticalDeadline = (int)($gridRisk['firstCriticalTs'] ?? 0);
+        $horizonEnd = $criticalDeadline > time()
+            ? max(time() + 3600, $criticalDeadline)
+            : max(time() + 3600, (int)$forecast['morningTs']);
         $allSlots = [];
         foreach ($prices as $p) {
             if ($p['end'] <= time() || $p['start'] >= $horizonEnd) continue;
@@ -1449,6 +1573,10 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $highest = count($selected) ? max(array_column($selected, 'priceCt')) : 0.0;
 
+        if (($gridRisk['firstCriticalTs'] ?? 0) > 0) {
+            $status .= ' | Netzlimit-Schutz ab ' . date('d.m. H:i', (int)$gridRisk['firstCriticalTs']);
+        }
+
         if ($pvSpaceRequired > 0.05) {
             $status .= ' | PV-Speicherfreihaltung ' . number_format($pvSpaceRequired, 2, ',', '.') . ' kWh';
             if ($mandatoryMissing > 0.05) {
@@ -1470,6 +1598,9 @@ class SmartBatteryOptimizer extends IPSModule
             . ' | verfügbar ab Nachtbeginn=' . round($availableAtNightStart,3) . ' kWh'
             . ' | PV morgen=' . round($tomorrowPV,3) . ' kWh'
             . ' | Überschuss=' . round($pvSurplusTomorrow,3) . ' kWh'
+            . ' | PV Spitze=' . round((float)($gridRisk['peakPVW'] ?? 0)) . ' W'
+            . ' | Roh-Netzeinspeisung max=' . round((float)($gridRisk['peakRawExportW'] ?? 0)) . ' W'
+            . ' | Netzlimit-Headroom=' . round((float)($gridRisk['requiredHeadroomKWh'] ?? 0),3) . ' kWh'
             . ' | Slots=' . count($selected)
         );
 
@@ -1488,6 +1619,16 @@ class SmartBatteryOptimizer extends IPSModule
             'projectedStoredAtNightStartKWh' => $projectedStoredAtNightStart,
             'nightStartTodayTs' => $nightStartToday,
             'pvSpaceRequiredKWh' => $pvSpaceRequired,
+            'normalPVSpaceRequiredKWh' => $normalPVSpaceRequired,
+            'gridLimitSpaceRequiredKWh' => $gridLimitSpaceRequired,
+            'gridLimitFirstCriticalTs' => (int)($gridRisk['firstCriticalTs'] ?? 0),
+            'gridLimitLastCriticalTs' => (int)($gridRisk['lastCriticalTs'] ?? 0),
+            'gridLimitW' => (float)($gridRisk['gridLimitW'] ?? 0),
+            'gridLimitEffectiveW' => (float)($gridRisk['effectiveGridLimitW'] ?? 0),
+            'pvPeakPowerTomorrowW' => (float)($gridRisk['peakPVW'] ?? 0),
+            'predictedMaxGridExportTomorrowW' => (float)($gridRisk['peakRawExportW'] ?? 0),
+            'gridLimitCriticalEnergyKWh' => (float)($gridRisk['criticalEnergyKWh'] ?? 0),
+            'unavoidableCurtailmentKWh' => (float)($gridRisk['unavoidableCurtailmentKWh'] ?? 0),
             'pvSpaceUnscheduledKWh' => max(0.0, $mandatoryMissing),
             'expectedMorningStoredKWh' => $expectedMorningStored,
             'expectedPVToBatteryKWh' => $expectedPVToBattery,
@@ -2535,6 +2676,20 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '<td style="' . $cellLabel . '">Überschuss nach Eigenverbrauch</td><td style="' . $cellValue . '">' . number_format((float)($forecast['pvSurplusTomorrowKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
         $html .= '<td style="' . $cellLabel . '">PV ausreichend ab</td><td style="' . $cellValue . '">' . (!empty($forecast['morningTs']) ? date('H:i', (int)$forecast['morningTs']) : '-') . '</td>';
         $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Max. prognostizierte PV-Leistung</td><td style="' . $cellValue . '">' . number_format((float)($plan['pvPeakPowerTomorrowW'] ?? 0) / 1000.0, 2, ',', '.') . ' kW</td>';
+        $html .= '<td style="' . $cellLabel . '">Max. Einspeisung ohne Batterie</td><td style="' . $cellValue . '">' . number_format((float)($plan['predictedMaxGridExportTomorrowW'] ?? 0) / 1000.0, 2, ',', '.') . ' kW</td>';
+        $html .= '</tr>';
+        $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Netzlimit</td><td style="' . $cellValue . '">' . number_format((float)($plan['gridLimitW'] ?? 0) / 1000.0, 2, ',', '.') . ' kW</td>';
+        $html .= '<td style="' . $cellLabel . '">Speicherbedarf Netzlimit-Schutz</td><td style="' . $cellValue . '">' . number_format((float)($plan['gridLimitSpaceRequiredKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
+        $html .= '</tr>';
+        if (!empty($plan['gridLimitFirstCriticalTs'])) {
+            $html .= '<tr>';
+            $html .= '<td style="' . $cellLabel . '">Kritischer Zeitraum ab</td><td style="' . $cellValue . '">' . date('d.m. H:i', (int)$plan['gridLimitFirstCriticalTs']) . '</td>';
+            $html .= '<td style="' . $cellLabel . '">Unvermeidbare Abregelung</td><td style="' . $cellValue . '">' . number_format((float)($plan['unavoidableCurtailmentKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
+            $html .= '</tr>';
+        }
 
         $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">Optimierung</td></tr>';
         $html .= '<tr>';
