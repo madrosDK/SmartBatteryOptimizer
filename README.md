@@ -245,3 +245,10 @@ Die interne Anzeige `Profil: Archiv gelernt – X Tage, Stundenprofil` wurde ver
 Die Einspeiseplanung berücksichtigt für spätere Einspeisefenster am selben Tag nun auch die noch erwartete PV-Erzeugung bis zum Nachtbeginn sowie den bis dahin prognostizierten Hausverbrauch. Dadurch wird nicht mehr ausschließlich der momentan im Speicher vorhandene Energieinhalt als Grundlage für ein abendliches Einspeisefenster verwendet.
 
 Die Schutzreserve bleibt bewusst erhalten: Nachtverbrauch inklusive Sicherheitsaufschlag plus der benötigte Speicherstand am nächsten PV-Morgen. Die Übersicht zeigt diese beiden Bestandteile getrennt sowie den erwarteten Speicherstand bei Nachtbeginn und die daraus voraussichtlich frei verfügbare Energie.
+
+### Korrektur Nachtfenster 1.6.9
+Die automatische Nachtzeit wird eindeutig als **Sonnenuntergang des Abends minus Vorlauf** bis **Sonnenaufgang des Folgetages plus Nachlauf** berechnet.
+
+Für historische Lerntage wird nicht mehr irgendein Änderungswert der archivierten Sonnenzeitvariable innerhalb des Tages verwendet. Stattdessen wird der letzte gültige Archivwert bis 12:00 Uhr des jeweiligen Kalendertages ausgewertet. Damit wird verhindert, dass ein unpassender alter oder bereits weitergeschalteter Sonnenzeitwert das Nachtfenster verfälscht.
+
+Im Debug wird für jede gelernte Nacht nun Start, Ende, Dauer, Verbrauch und mittlere Leistung ausgegeben.

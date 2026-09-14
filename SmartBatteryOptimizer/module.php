@@ -1931,8 +1931,18 @@ class SmartBatteryOptimizer extends IPSModule
             $start = $this->DetermineNightStart($archiveID, $day);
             $end = $this->DetermineMorningEnd($archiveID, $day + 86400);
             if ($end <= $start) continue;
-            $this->DebugLog('NightWindow', date('Y-m-d H:i', $start) . ' -> ' . date('Y-m-d H:i', $end) . ' | ' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell'));
             $kwh = $this->IntegratePowerVariable($archiveID, $varID, $start, $end);
+            $durationH = max(0.0, ($end - $start) / 3600.0);
+            $avgW = $durationH > 0 ? ($kwh / $durationH) * 1000.0 : 0.0;
+            $this->DebugLog(
+                'NightWindow',
+                date('d.m.Y', $day)
+                . ' | ' . date('H:i', $start) . '–' . date('H:i', $end)
+                . ' | Dauer=' . number_format($durationH, 2, '.', '') . ' h'
+                . ' | Verbrauch=' . number_format($kwh, 2, '.', '') . ' kWh'
+                . ' | Ø=' . number_format($avgW, 0, '.', '') . ' W'
+                . ' | ' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell')
+            );
             if ($kwh > 0.05 && is_finite($kwh)) {
                 // Reihenfolge beibehalten: zuerst die neuesten Nächte.
                 $samples[] = ['age' => $d, 'kWh' => $kwh];
@@ -2008,8 +2018,17 @@ class SmartBatteryOptimizer extends IPSModule
             return $manual;
         }
 
+        // Nacht beginnt exakt: Sonnenuntergang des Tages - konfigurierbarer Vorlauf.
         $offset = max(0, min(360, $this->ReadPropertyInteger('NightBeforeSunsetMinutes')));
-        return $sunset - $offset * 60;
+        $nightStart = $sunset - $offset * 60;
+        $this->DebugLog(
+            'DayNight',
+            date('Y-m-d', $dayTs)
+            . ' Sonnenuntergang=' . date('H:i', $sunset)
+            . ' | Vorlauf=' . $offset . ' min'
+            . ' | Nachtbeginn=' . date('H:i', $nightStart)
+        );
+        return $nightStart;
     }
 
     private function DetermineMorningEnd(int $archiveID, int $morningDayTs): int
@@ -2023,29 +2042,50 @@ class SmartBatteryOptimizer extends IPSModule
             return $manual;
         }
 
+        // Nacht endet exakt: Sonnenaufgang des Folgetages + konfigurierbarer Nachlauf.
         $offset = max(0, min(360, $this->ReadPropertyInteger('NightAfterSunriseMinutes')));
-        return $sunrise + $offset * 60;
+        $nightEnd = $sunrise + $offset * 60;
+        $this->DebugLog(
+            'DayNight',
+            date('Y-m-d', $morningDayTs)
+            . ' Sonnenaufgang=' . date('H:i', $sunrise)
+            . ' | Nachlauf=' . $offset . ' min'
+            . ' | Nachtende=' . date('H:i', $nightEnd)
+        );
+        return $nightEnd;
     }
 
     private function GetSolarEventForDate(int $variableID, int $dayTs, int $archiveID = 0): ?int
     {
-        if ($variableID <= 0 || !@IPS_VariableExists($variableID)) return null;
+        if ($variableID <= 0 || !@IPS_VariableExists($variableID)) {
+            return null;
+        }
+
+        $dayStart = strtotime(date('Y-m-d', $dayTs) . ' 00:00:00');
+        $dayNoon = $dayStart + 12 * 3600;
 
         if ($archiveID > 0) {
-            $start = strtotime(date('Y-m-d', $dayTs) . ' 00:00:00');
-            $end = $start + 86399;
-            $values = @AC_GetLoggedValues($archiveID, $variableID, $start, $end, 0);
-            if (is_array($values)) {
-                foreach ($values as $row) {
-                    if (!array_key_exists('Value', $row)) continue;
-                    $parsed = $this->ParseSolarEventValueForDate($row['Value'], $dayTs);
-                    if ($parsed !== null) return $parsed;
+            // Gesucht ist nicht irgendein Änderungswert innerhalb des Tages,
+            // sondern der Sonnenzeitwert, der an diesem Kalendertag gültig war.
+            // AC_GetLoggedValues liefert bei Limit 1 den letzten bekannten Wert
+            // bis zum angegebenen Zeitpunkt. 12:00 Uhr ist bewusst gewählt:
+            // tägliche Sonnenzeitvariablen sind dann normalerweise bereits
+            // aktualisiert, aber noch nicht auf den Folgetag weitergeschaltet.
+            $valueAtDay = @AC_GetLoggedValues($archiveID, $variableID, 0, $dayNoon, 1);
+            if (is_array($valueAtDay) && count($valueAtDay) > 0 && array_key_exists('Value', $valueAtDay[0])) {
+                $parsed = $this->ParseSolarEventValueForDate($valueAtDay[0]['Value'], $dayTs);
+                if ($parsed !== null) {
+                    return $parsed;
                 }
             }
         }
 
+        // Für heute / morgen bzw. falls kein Archivwert verfügbar ist:
+        // Die Uhrzeit aus dem aktuellen Variablenwert verwenden und auf den
+        // angefragten Kalendertag übertragen.
         return $this->ParseSolarEventValueForDate(@GetValue($variableID), $dayTs);
     }
+
 
     private function ParseSolarEventValueForDate($value, int $dayTs): ?int
     {
