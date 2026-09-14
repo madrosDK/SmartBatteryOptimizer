@@ -209,3 +209,14 @@ Die Sonnenvariablen können Unix-Zeitstempel, Sekunden seit Mitternacht oder Uhr
 
 ### Korrektur Tag/Nacht-Konfigurationsformular 1.6.1
 Die dynamische Sichtbarkeit der Tag-/Nacht-Felder wird direkt über die Formularbedingung `AutomaticDayNight` gesteuert. Dadurch wird beim Umschalten kein `RequestAction` mit einer nicht definierten Formularvariable mehr ausgeführt. Die Automatikfelder erscheinen unmittelbar beim Einschalten; die manuellen Felder werden gleichzeitig ausgeblendet und umgekehrt.
+
+### Verbrauchsaufteilung Tag/Nacht ab 1.6.2
+Die morgige Gesamtverbrauchsprognose ist die feste Obergrenze für alle Teilverbräuche. Der gelernte Nachtverbrauch wird höchstens bis zur Gesamtprognose angesetzt. Der verbleibende Tagesverbrauch wird anhand des gelernten Stundenprofils auf **Verbrauch während prognostizierter PV-Zeit** und **übrigen Tagverbrauch** verteilt.
+
+Damit gilt immer:
+`Nachtverbrauch + Verbrauch während PV-Zeit + übriger Tagverbrauch = Gesamtverbrauch morgen`
+
+Die PV-Zeit wird aus der stündlichen PV-Prognose des nächsten Tages bestimmt. Die automatische bzw. manuelle Tag-/Nachtgrenze wird berücksichtigt, sodass sich Nacht- und Tagesverbrauch nicht überschneiden.
+
+### Debug-Serien im PV-Diagramm
+Der Ein-/Ausblendzustand der einzelnen Anbieterlinien wird im Browser gespeichert. Open-Meteo, Forecast.Solar und pvnode bleiben deshalb nach Aktualisierung, Navigation oder Neuaufbau der HTMLBox so sichtbar bzw. unsichtbar, wie sie zuletzt über die Highcharts-Legende eingestellt wurden.
