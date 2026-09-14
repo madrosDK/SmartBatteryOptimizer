@@ -112,19 +112,20 @@ class SmartBatteryOptimizer extends IPSModule
 
         // Laufzeitwerte für den Netzlimit-Schutz. Diese Werte können direkt im
         // IP-Symcon Frontend geändert werden, ohne die Instanzkonfiguration zu öffnen.
+        $this->EnsureRuntimeProfiles();
         $this->RegisterVariableBoolean('PVCurtailmentProtectionEnabled', 'PV-Abregelung vermeiden', '~Switch', 56);
         $this->EnableAction('PVCurtailmentProtectionEnabled');
-        $this->RegisterVariableInteger('RuntimeGridFeedInLimitW', 'Maximale Netzeinspeisung', '~Watt', 57);
+        $this->RegisterVariableInteger('RuntimeGridFeedInLimitW', 'Maximale Netzeinspeisung', 'SBO.PowerW', 57);
         $this->EnableAction('RuntimeGridFeedInLimitW');
-        $this->RegisterVariableInteger('RuntimeGridLimitSafetyW', 'Sicherheitsabstand Einspeisegrenze', '~Watt', 58);
+        $this->RegisterVariableInteger('RuntimeGridLimitSafetyW', 'Sicherheitsabstand Einspeisegrenze', 'SBO.PowerW', 58);
         $this->EnableAction('RuntimeGridLimitSafetyW');
-        $this->RegisterVariableInteger('RuntimeMaxBatteryChargePowerW', 'Maximale Batterieladeleistung', '~Watt', 59);
+        $this->RegisterVariableInteger('RuntimeMaxBatteryChargePowerW', 'Maximale Batterieladeleistung', 'SBO.PowerW', 59);
         $this->EnableAction('RuntimeMaxBatteryChargePowerW');
-        $this->RegisterVariableFloat('RuntimePVHeadroomTargetSOC', 'Maximaler Ziel-SoC bei starker PV', '~Intensity.100', 60);
+        $this->RegisterVariableFloat('RuntimePVHeadroomTargetSOC', 'Maximaler Ziel-SoC bei starker PV', 'SBO.Percent', 60);
         $this->EnableAction('RuntimePVHeadroomTargetSOC');
-        $this->RegisterVariableFloat('RuntimePVStorageSharePct', 'PV-Prognose als möglicher Batterieüberschuss', '~Intensity.100', 61);
+        $this->RegisterVariableFloat('RuntimePVStorageSharePct', 'PV-Prognose als möglicher Batterieüberschuss', 'SBO.Percent', 61);
         $this->EnableAction('RuntimePVStorageSharePct');
-        $this->RegisterVariableFloat('RuntimePVSpaceMinimumPriceCt', 'Mindestpreis notwendige Speicherfreihaltung', '', 62);
+        $this->RegisterVariableFloat('RuntimePVSpaceMinimumPriceCt', 'Mindestpreis notwendige Speicherfreihaltung', 'SBO.PriceCt', 62);
         $this->EnableAction('RuntimePVSpaceMinimumPriceCt');
         $this->RegisterVariableBoolean('FeedInActive', 'Einspeisung aktiv', '~Switch', 60);
         $this->RegisterVariableFloat('PlannedPower', 'Geplante Einspeiseleistung', '~Watt', 70);
@@ -165,6 +166,30 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
         $this->RegisterTimer('DeferredDebugRebuildTimer', 0, 'SBO_DeferredDebugRebuild($_IPS[\'TARGET\']);');
+    }
+
+    private function EnsureRuntimeProfiles(): void
+    {
+        if (!IPS_VariableProfileExists('SBO.PowerW')) {
+            IPS_CreateVariableProfile('SBO.PowerW', 1);
+        }
+        IPS_SetVariableProfileDigits('SBO.PowerW', 0);
+        IPS_SetVariableProfileText('SBO.PowerW', '', ' W');
+        IPS_SetVariableProfileValues('SBO.PowerW', 0, 100000, 100);
+
+        if (!IPS_VariableProfileExists('SBO.Percent')) {
+            IPS_CreateVariableProfile('SBO.Percent', 2);
+        }
+        IPS_SetVariableProfileDigits('SBO.Percent', 1);
+        IPS_SetVariableProfileText('SBO.Percent', '', ' %');
+        IPS_SetVariableProfileValues('SBO.Percent', 0, 100, 1);
+
+        if (!IPS_VariableProfileExists('SBO.PriceCt')) {
+            IPS_CreateVariableProfile('SBO.PriceCt', 2);
+        }
+        IPS_SetVariableProfileDigits('SBO.PriceCt', 2);
+        IPS_SetVariableProfileText('SBO.PriceCt', '', ' ct/kWh');
+        IPS_SetVariableProfileValues('SBO.PriceCt', -100, 500, 0.1);
     }
 
     public function GetConfigurationForm()

@@ -273,3 +273,6 @@ Wichtig: Bei Open-Meteo und den zusammengeführten Anbieterwerten handelt es sic
 Alle für den PV-/Netzlimit-Schutz relevanten Betriebswerte sind als bedienbare IP-Symcon-Variablen verfügbar. Dazu gehören Ein/Aus, maximale Netzeinspeisung, Sicherheitsabstand, maximale Batterieladeleistung, maximaler Ziel-SoC bei starker PV, Anteil der PV-Prognose als möglicher Batterieüberschuss und Mindestpreis für notwendige Speicherfreihaltung.
 
 Die Instanzkonfiguration liefert beim ersten Anlegen der Variablen nur die Startwerte. Danach sind die Frontend-Variablen für die laufende Optimierung maßgeblich. Eine Änderung löst unmittelbar eine neue Planung mit den bereits geladenen Prognose- und Preisdaten aus.
+
+### Frontend-Profile 1.7.2
+Die editierbaren Laufzeitvariablen verwenden nun eigene, typkorrekte IP-Symcon-Profile. Leistungswerte sind Integer mit Einheit W, Prozentwerte und Preise sind Float-Profile. Dadurch wird die WebFront-/Tile-Fehlermeldung `Invalid profile type` vermieden.
