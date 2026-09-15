@@ -312,3 +312,8 @@ Der über dem Ziel-SoC liegende Energieinhalt wird als unmittelbar freizumachend
 Der Status `Netzlimit-Schutz JETZT` ist nicht mehr nur Planungsinformation. Sobald der aktuelle Batterie-SoC über dem eingestellten PV-Ziel-SoC liegt, erzeugt die minütliche Steuerprüfung unmittelbar einen Entladebefehl. Der Sofortschutz läuft vor Lernfreigabe und normalem Preisplan.
 
 Die Entladeleistung wird aus dem aktuellen SoC-Überschuss berechnet und auf die konfigurierte maximale Entladeleistung begrenzt. Bei AlphaESS wird die bestehende Dispatch-Sequenz verwendet: Active Power, Mode 2, SoC, Time und zuletzt Start. Alle zwei Minuten wird der Dispatch durch die minütliche Steuerprüfung anhand des aktuellen SoC erneuert, solange der Ziel-SoC überschritten ist.
+
+### Netzlimit-Dispatch 1.8.1
+Die in 1.8.0 versehentlich verwendete, nicht vorhandene Eigenschaft `BatterySOCVariable` wurde auf die vorhandene `SOCVariable` korrigiert.
+
+Im AlphaESS-Modus ruft der sofortige Netzlimit-Schutz nun `SetAlphaESSDispatch()` direkt auf. Damit werden beim Entladen zwingend alle Dispatch-Werte in dieser Reihenfolge geschrieben: Active Power = 32000 + Entladeleistung, Mode = 2, Dispatch SoC aus dem konfigurierten Mindest-SoC, Dispatch Time aus der aktuellen Schutzdauer und zuletzt Dispatch Start = 1.

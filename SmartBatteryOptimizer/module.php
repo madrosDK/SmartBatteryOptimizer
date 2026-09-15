@@ -665,7 +665,7 @@ class SmartBatteryOptimizer extends IPSModule
             // nicht auf einen späteren Preis-/Plan-Slot warten. Dieser Schutz
             // hat deshalb Vorrang vor Lernfreigabe und normalem Einspeiseplan.
             if ($this->GetRuntimeBoolean('PVCurtailmentProtectionEnabled', $this->ReadPropertyBoolean('PreventPVCurtailment'))) {
-                $socID = $this->ReadPropertyInteger('BatterySOCVariable');
+                $socID = $this->ReadPropertyInteger('SOCVariable');
                 $socNow = ($socID > 0 && @IPS_VariableExists($socID)) ? (float)GetValue($socID) : 0.0;
                 $targetSOC = max(0.0, min(100.0, $this->GetRuntimeFloat('RuntimePVHeadroomTargetSOC', $this->ReadPropertyFloat('PVHeadroomTargetSOC'))));
 
@@ -686,11 +686,20 @@ class SmartBatteryOptimizer extends IPSModule
                         . ' > Ziel=' . round($targetSOC, 2) . ' %'
                         . ' | Überschuss=' . round($excessKWh, 3) . ' kWh'
                         . ' | Soll=' . round($protectionPowerW) . ' W'
+                        . ' | AlphaRAW=' . (32000 + round($protectionPowerW))
+                        . ' | Mode=2 | Start=1'
                     );
 
-                    // AlphaESS bei konfiguriertem AlphaESS-Modus über die bereits
-                    // getestete Dispatch-Sequenz Power -> Mode 2 -> SOC -> Time -> Start.
-                    $this->SetFeedIn(true, $protectionPowerW, $dispatchUntil);
+                    // Beim Netzlimit-Schutz wird AlphaESS direkt angesteuert.
+                    // Dadurch ist garantiert, dass die vollständige Sequenz
+                    // Active Power -> Mode 2 -> SOC -> Time -> Start=1 ausgeführt wird.
+                    if ($this->ReadPropertyInteger('BatteryControlMode') === 1) {
+                        $this->SetAlphaESSDispatch(true, $protectionPowerW, $dispatchUntil);
+                        SetValue($this->GetIDForIdent('FeedInActive'), true);
+                        SetValue($this->GetIDForIdent('PlannedPower'), (float)$protectionPowerW);
+                    } else {
+                        $this->SetFeedIn(true, $protectionPowerW, $dispatchUntil);
+                    }
                     SetValue(
                         $this->GetIDForIdent('StatusText'),
                         'Netzlimit-Schutz AKTIV: ' . round($protectionPowerW) . ' W'
