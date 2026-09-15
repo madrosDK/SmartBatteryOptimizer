@@ -271,14 +271,13 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteAttributeString('PVNodeLastError', '');
         }
         $refresh = max(5, $this->ReadPropertyInteger('RefreshMinutes'));
+        $pvForecastRefresh = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes'));
         $pvActualRefresh = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes'));
         $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
-        // PV-Prognose und PV-Ist laufen bewusst im selben Takt. Ein separater
-        // Forecast-Timer würde sonst doppelte API-Abrufe erzeugen.
-        $this->SetTimerInterval('PVForecastTimer', 0);
+        $this->SetTimerInterval('PVForecastTimer', $pvForecastRefresh * 60 * 1000);
         $this->SetTimerInterval('PVActualTimer', $pvActualRefresh * 60 * 1000);
         $this->SetTimerInterval('ControlTimer', 60 * 1000);
-        $this->DebugLog('ApplyChanges', 'Debug=' . ($this->ReadPropertyBoolean('DebugMode') ? 'AN' : 'AUS') . ' | Timer Preise=' . $refresh . ' min | PV-Prognose+Ist=' . $pvActualRefresh . ' min | Abregelungs-Steuerprüfung=1 min');
+        $this->DebugLog('ApplyChanges', 'Debug=' . ($this->ReadPropertyBoolean('DebugMode') ? 'AN' : 'AUS') . ' | Timer Preise=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min | Steuerprüfung=1 min');
 
         if ($this->ReadPropertyInteger('SOCVariable') <= 0 || $this->ReadPropertyInteger('HousePowerVariable') <= 0) {
             $this->SetStatus(200);
@@ -511,11 +510,10 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function RefreshPVActual()
     {
-        // Bei jedem PV-Ist-Zyklus wird auch die Prognose neu geholt und der Plan
-        // mit dem aktuellen SoC neu berechnet. Dadurch reagiert der
-        // Abregelungsschutz sofort im eingestellten PV-Ist-Rhythmus.
-        $this->DebugLog('PVActual', 'PV-Ist + PV-Prognose + Abregelungsplanung werden gemeinsam aktualisiert');
-        $this->RecalculateInternal(true);
+        // PV-Ist und Planung aktualisieren, die gespeicherte PV-Prognose verwenden.
+        // Die Prognose besitzt wieder ihr eigenes konfigurierbares Intervall.
+        $this->DebugLog('PVActual', 'PV-Ist + Planung aktualisieren; gespeicherte PV-Prognose verwenden');
+        $this->RecalculateInternal(false);
     }
 
     private function RecalculateInternal(bool $refreshPVForecast)
@@ -665,54 +663,14 @@ class SmartBatteryOptimizer extends IPSModule
                 return;
             }
 
-            // Sofortiger PV-/Netzlimit-Schutz: Sobald der aktuelle SoC den
-            // eingestellten PV-Ziel-SoC überschreitet, darf die Hardwaresteuerung
-            // nicht auf einen späteren Preis-/Plan-Slot warten. Dieser Schutz
-            // hat deshalb Vorrang vor Lernfreigabe und normalem Einspeiseplan.
-            if ($this->GetRuntimeBoolean('PVCurtailmentProtectionEnabled', $this->ReadPropertyBoolean('PreventPVCurtailment'))) {
-                $socID = $this->ReadPropertyInteger('SOCVariable');
-                $socNow = ($socID > 0 && @IPS_VariableExists($socID)) ? (float)GetValue($socID) : 0.0;
-                $targetSOC = max(0.0, min(100.0, $this->GetRuntimeFloat('RuntimePVHeadroomTargetSOC', $this->ReadPropertyFloat('PVHeadroomTargetSOC'))));
-
-                if ($socID > 0 && $socNow > $targetSOC + 0.01) {
-                    $capacity = max(0.1, $this->ReadPropertyFloat('BatteryCapacityKWh'));
-                    $excessKWh = max(0.0, ($socNow - $targetSOC) / 100.0 * $capacity);
-                    $maxPowerW = max(1, $this->ReadPropertyInteger('MaxDischargePowerW'));
-
-                    // Jede Minute neu bestimmen. Leistung so wählen, dass der
-                    // aktuelle Überschuss innerhalb höchstens 15 Minuten
-                    // abgebaut wird; begrenzt durch die konfigurierte Maximalleistung.
-                    $protectionPowerW = min($maxPowerW, max(100.0, $excessKWh * 4.0 * 1000.0));
-                    $dispatchUntil = $now + 120;
-
-                    $this->DebugLog(
-                        'PV-Abregelung',
-                        'SOFORT-Dispatch: SoC=' . round($socNow, 2) . ' %'
-                        . ' > Ziel=' . round($targetSOC, 2) . ' %'
-                        . ' | Überschuss=' . round($excessKWh, 3) . ' kWh'
-                        . ' | Soll=' . round($protectionPowerW) . ' W'
-                        . ' | AlphaRAW=' . (32000 + round($protectionPowerW))
-                        . ' | Mode=2 | Start=1'
-                    );
-
-                    // Beim Netzlimit-Schutz wird AlphaESS direkt angesteuert.
-                    // Dadurch ist garantiert, dass die vollständige Sequenz
-                    // Active Power -> Mode 2 -> SOC -> Time -> Start=1 ausgeführt wird.
-                    if ($this->ReadPropertyInteger('BatteryControlMode') === 1) {
-                        $this->SetAlphaESSDispatch(true, $protectionPowerW, $dispatchUntil);
-                        SetValue($this->GetIDForIdent('FeedInActive'), true);
-                        SetValue($this->GetIDForIdent('PlannedPower'), (float)$protectionPowerW);
-                    } else {
-                        $this->SetFeedIn(true, $protectionPowerW, $dispatchUntil);
-                    }
-                    SetValue(
-                        $this->GetIDForIdent('StatusText'),
-                        'Netzlimit-Schutz AKTIV: ' . round($protectionPowerW) . ' W'
-                        . ' | SoC ' . number_format($socNow, 1, ',', '.') . ' %'
-                        . ' > Ziel ' . number_format($targetSOC, 1, ',', '.') . ' %'
-                    );
-                    return;
-                }
+            // Speicherentladung ist ausschließlich im Nachtfenster erlaubt.
+            // Tagsüber wird kein Dispatch zum Freimachen von PV-Speicher gestartet.
+            $dayNightControl = $this->GetCurrentDayNightStatus();
+            if (!$dayNightControl['isNight']) {
+                $this->DebugLog('Control', 'Keine Speicherentladung: Tagbetrieb');
+                $this->StopFeedIn();
+                SetValue($this->GetIDForIdent('StatusText'), 'Tagbetrieb: Speicherentladung gesperrt');
+                return;
             }
 
             $gate = $this->GetAutomaticLearningGateStatus();
@@ -1763,9 +1721,17 @@ class SmartBatteryOptimizer extends IPSModule
             : ($criticalDeadline > time()
                 ? max(time() + 3600, $criticalDeadline)
                 : max(time() + 3600, (int)$forecast['morningTs']));
+        // Einspeiseslots ausschließlich innerhalb der kommenden/aktuellen Nacht.
+        // Der Speicher wird tagsüber nicht für PV-Headroom entladen.
+        $nightWindowStart = $this->DetermineNightStart(0, $todayStart);
+        $nightWindowEnd = $this->DetermineMorningEnd(1, $todayStart + 86400);
+        if ($now >= $nightWindowEnd) {
+            $nightWindowStart = $this->DetermineNightStart(1, $todayStart + 86400);
+            $nightWindowEnd = $this->DetermineMorningEnd(2, $todayStart + 2 * 86400);
+        }
         $allSlots = [];
         foreach ($prices as $p) {
-            if ($p['end'] <= time() || $p['start'] >= $horizonEnd) continue;
+            if ($p['end'] <= max(time(), $nightWindowStart) || $p['start'] >= $nightWindowEnd) continue;
             $allSlots[] = $p;
         }
 
@@ -2641,7 +2607,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeInteger('AlphaTestStage', 1);
         $this->WriteAttributeInteger('AlphaTestNextTs', time());
         $this->WriteAttributeString('AlphaTestTrace', '');
-        $this->AppendAlphaTestTrace('Start Diagnosetest ' . $powerW . ' W');
+        $this->AppendAlphaTestTrace('Start Mode-2-Test ' . $powerW . ' W | nur ActivePower, Mode=2 und SOC');
         $this->RunAlphaESSDiagnosticTest();
     }
 
@@ -2653,16 +2619,14 @@ class SmartBatteryOptimizer extends IPSModule
         $ids = $this->GetAlphaDispatchIDs();
         $powerW = max(0, min($this->ReadAttributeInteger('ManualTestPowerW'), $this->ReadPropertyInteger('MaxDischargePowerW')));
         $socRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
-        $until = $this->ReadAttributeInteger('ManualTestUntil');
-        $duration = max(60, min(86400, $until > time() ? $until - time() : 60));
 
+        // AlphaESS Mode 2 (SoC control):
+        // Active Power + Mode 2 + target SOC.
+        // Dispatch Time and Dispatch Start are deliberately not written by this test.
         $steps = [
-            1 => ['Start/Reset', $ids['start'], 0],
-            2 => ['ActivePower', $ids['power'], 32000 + $powerW],
-            3 => ['Mode', $ids['mode'], 2],
-            4 => ['SOC', $ids['soc'], $socRaw],
-            5 => ['Time', $ids['time'], $duration],
-            6 => ['Start', $ids['start'], 1]
+            1 => ['ActivePower', $ids['power'], 32000 + $powerW],
+            2 => ['Mode', $ids['mode'], 2],
+            3 => ['SOC', $ids['soc'], $socRaw]
         ];
 
         if (isset($steps[$stage])) {
@@ -2671,14 +2635,20 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteAlphaDispatchValue($name, $id, $value);
             usleep(250000);
             $after = @GetValue($id);
-            $this->AppendAlphaTestTrace('Stufe ' . $stage . ' ' . $name . ': vorher=' . $before . ' | Soll=' . $value . ' | danach=' . $after);
+            $this->AppendAlphaTestTrace(
+                'Stufe ' . $stage . ' ' . $name
+                . ': vorher=' . $before
+                . ' | Soll=' . $value
+                . ' | danach=' . $after
+            );
             $this->WriteAttributeInteger('AlphaTestStage', $stage + 1);
             $this->WriteAttributeInteger('AlphaTestNextTs', time() + 3);
             return;
         }
 
+        // Nur beobachten, keine weiteren Dispatch-Schreibbefehle.
         $this->AppendAlphaTestTrace(
-            'Beobachtung: Power=' . @GetValue($ids['power'])
+            'Beobachtung Mode 2: Power=' . @GetValue($ids['power'])
             . ' | Mode=' . @GetValue($ids['mode'])
             . ' | SOC=' . @GetValue($ids['soc'])
             . ' | Time=' . @GetValue($ids['time'])

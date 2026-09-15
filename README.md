@@ -333,3 +333,11 @@ Direkte Wertänderungen der read-only Modbusvariablen wurden aus dem Dispatch en
 
 ### Gestufter AlphaESS-Diagnosetest 1.8.5
 Der manuelle Einspeisetest schreibt die sechs Schritte mit jeweils etwa drei Sekunden Abstand: Start=0, Active Power, Mode=2, SOC, Time und zuletzt Start=1. Vor und direkt nach jedem Schritt werden die sichtbaren Werte protokolliert. Nach Start=1 werden keine Dispatchwerte mehr geschrieben; der Test beobachtet nur noch alle drei Sekunden Power, Mode, SOC, Time und Start. Der Verlauf erscheint in `Test Entladung Status`.
+
+### AlphaESS Mode-2-Test 1.8.6
+Der manuelle Einspeisetest wurde auf die Mode-2-Parameter reduziert. Er schreibt mit etwa drei Sekunden Abstand ausschließlich `Active Power = 32000 + Entladeleistung`, `Mode = 2` und den Ziel-SOC mit 0,4 % pro Bit. `Dispatch Time` und `Dispatch Start` werden während dieses Tests nicht verändert. Anschließend werden Power, Mode, SOC, Time und Start nur beobachtet und im Teststatus protokolliert.
+
+### Nachtentladung und Intervalle 1.8.7
+Die automatische Speicherentladung ist wieder strikt auf das Nachtfenster begrenzt. Tagsüber wird kein Dispatch zum vorsorglichen Freimachen des Speichers gestartet. Die für die Nacht verfügbare Einspeiseenergie wird aus aktuellem Speicherinhalt, Mindest-SOC, gelerntem Nachtverbrauch und der PV-/Verbrauchsprognose für den Folgetag bestimmt. Preisoptimierte Einspeiseslots werden ausschließlich innerhalb des Nachtfensters ausgewählt.
+
+Das Intervall `PV-Prognose aktualisieren (Minuten)` ist wieder separat einstellbar. PV-Prognose und PV-Istwerte besitzen wieder getrennte Timer; ein PV-Ist-Update verwendet die zuletzt gespeicherte Prognose und löst keinen zusätzlichen Prognoseabruf aus.
