@@ -322,3 +322,8 @@ Im AlphaESS-Modus ruft der sofortige Netzlimit-Schutz nun `SetAlphaESSDispatch()
 Die AlphaESS-Schreibsequenz wird bei jedem aktiven Steuerzyklus vollständig neu gesendet. Ein intern als aktiv gespeicherter identischer Befehl darf die Registerschreibvorgänge nicht mehr überspringen.
 
 Die Reihenfolge bleibt: Active Power = 32000 + Entladeleistung, Mode = 2, Dispatch SoC, Dispatch Time und zuletzt Dispatch Start = 1. Nach jedem Schreibversuch wird der lokale IP-Symcon-Wert im Debug als Readback protokolliert. Dadurch ist für jedes der fünf Register einzeln sichtbar, welcher Sollwert geschrieben wurde und welcher Wert unmittelbar danach in IP-Symcon anliegt.
+
+### Zentraler AlphaESS-Dispatchblock 1.8.3
+Die AlphaESS-Ansteuerung wurde auf einen einzigen zentralen Dispatchblock reduziert. Einspeisetest, Netzlimit-Schutz und normale Einspeiseautomatik verwenden denselben Block.
+
+Bei Entladung wird zuerst Dispatch Start auf 0 gesetzt. Danach werden Active Power = 32000 + Watt, Mode = 2, Dispatch SoC und Dispatch Time geschrieben. Dispatch Start = 1 wird immer zuletzt gesendet. Für jeden Dispatchwert wird der Sollwert lokal gesetzt und anschließend die Aktion der konfigurierten IP-Symcon-Schreibvariable ausgelöst. Fehler werden nicht unterdrückt.

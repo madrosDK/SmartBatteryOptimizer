@@ -368,7 +368,7 @@ class SmartBatteryOptimizer extends IPSModule
                         $testSocRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
                         SetValue(
                             $this->GetIDForIdent('TestDischargeStatus'),
-                            'Direkttest VOLLE SEQUENZ: Power=' . (32000 + $testPower)
+                            'AlphaESS Einspeisetest: Power=' . (32000 + $testPower)
                             . ' | Mode=2'
                             . ' | SOC=' . $testSocRaw
                             . ' | Time=120'
@@ -2634,103 +2634,83 @@ class SmartBatteryOptimizer extends IPSModule
     private function SetAlphaESSDispatch(bool $enable, float $powerW, int $slotEnd): void
     {
         $ids = $this->GetAlphaDispatchIDs();
-        $startID = $ids['start'];
-        $powerID = $ids['power'];
-        $modeID = $ids['mode'];
-        $socID = $ids['soc'];
-        $timeID = $ids['time'];
-
-        $this->DebugLog(
-            'AlphaESS',
-            'Dispatch-Aufruf enable=' . ($enable ? '1' : '0')
-            . ' | Soll=' . round($powerW) . ' W'
-            . ' | IDs Start=' . $startID
-            . ', Power=' . $powerID
-            . ', Mode=' . $modeID
-            . ', SOC=' . $socID
-            . ', Time=' . $timeID
-        );
-
-        if ($startID <= 0) {
-            throw new Exception('AlphaESS: Dispatch-Start-Variable (Register 2176) fehlt.');
+        foreach ($ids as $name => $id) {
+            if ($id <= 0 || !@IPS_VariableExists($id)) {
+                throw new Exception('AlphaESS Dispatch: Variable ' . $name . ' ungültig (ID ' . $id . ').');
+            }
         }
 
         if (!$enable) {
-            // Start immer explizit auf 0 schreiben. So funktioniert Stop auch dann,
-            // wenn der interne Active-Status nach Neustart/Fehler nicht mehr passt.
-            $this->WriteVariableSmart($startID, 0);
+            $this->WriteAlphaDispatchValue('Start', $ids['start'], 0);
             $this->WriteAttributeBoolean('AlphaDispatchActive', false);
             $this->WriteAttributeString('AlphaDispatchCommandKey', '');
-            $this->DebugLog('AlphaESS', 'Dispatch gestoppt: Start=0', 0);
             return;
         }
 
-        if ($powerID <= 0 || $modeID <= 0 || $socID <= 0 || $timeID <= 0) {
-            throw new Exception('AlphaESS: Dispatch-Variablen 2177, 2181, 2182 und 2183 müssen konfiguriert sein.');
-        }
-
         $powerW = max(0.0, min((float)$this->ReadPropertyInteger('MaxDischargePowerW'), abs($powerW)));
-        $duration = $slotEnd > time() ? $slotEnd - time() : 60;
-        $duration = max(60, min(86400, $duration));
-        $socTargetRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
-        $activePowerRaw = (int)round(32000 + $powerW); // >32000 = Entladen
-        $key = $activePowerRaw . ':' . $socTargetRaw . ':' . $slotEnd;
-
-        // AlphaESS-Befehle nie nur aufgrund eines internen Cache-Status
-        // überspringen. Der lokale Status beweist nicht, dass alle Register
-        // am Gerät angekommen sind. Bei jedem aktiven Steuerzyklus wird die
-        // vollständige Dispatch-Sequenz erneut geschrieben.
-        if ($this->ReadAttributeBoolean('AlphaDispatchActive')) {
-            $this->WriteVariableSmart($startID, 0);
+        if ($powerW < 1.0) {
+            throw new Exception('AlphaESS Dispatch: Entladeleistung ist 0 W.');
         }
 
-        // AlphaESS Dispatch: Mode 2 wird für die Entladeansteuerung verwendet.
-        // Active Power > 32000 bedeutet Entladung: 32000 + gewünschte Watt.
-        // SOC und Zeit werden zusätzlich als Sicherheitsgrenzen geschrieben.
+        $activePowerRaw = (int)round(32000 + $powerW);
         $dispatchMode = 2;
+        $socTargetRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
+        $duration = $slotEnd > time() ? ($slotEnd - time()) : 120;
+        $duration = max(60, min(86400, (int)$duration));
+
         $this->DebugLog(
-            'AlphaESS',
-            'RAW schreiben: ActivePower=' . $activePowerRaw
-            . ' | Mode=' . $dispatchMode
-            . ' | SOC=' . $socTargetRaw . ' (= ' . round($socTargetRaw * 0.4, 1) . ' %)'
-            . ' | Time=' . $duration . ' s'
-            . ' | Start=1'
+            'AlphaESS Dispatch',
+            'VOLLE SEQUENZ | Power=' . $activePowerRaw
+            . ' | Mode=2 | SOC=' . $socTargetRaw
+            . ' | Time=' . $duration . ' | Start=1'
         );
 
-        // Reihenfolge ist absichtlich fest: Parameter zuerst, Start zuletzt.
-        $this->WriteVariableSmart($powerID, $activePowerRaw);
-        $this->DebugAlphaReadback('ActivePower', $powerID, $activePowerRaw);
-
-        $this->WriteVariableSmart($modeID, $dispatchMode);
-        $this->DebugAlphaReadback('Mode', $modeID, $dispatchMode);
-
-        $this->WriteVariableSmart($socID, $socTargetRaw);
-        $this->DebugAlphaReadback('SOC', $socID, $socTargetRaw);
-
-        $this->WriteVariableSmart($timeID, $duration);
-        $this->DebugAlphaReadback('Time', $timeID, $duration);
-
-        $this->WriteVariableSmart($startID, 1);
-        $this->DebugAlphaReadback('Start', $startID, 1);
+        // Vor einer neuen Sequenz sicher stoppen. Danach ALLE Parameter setzen
+        // und Start zwingend als letzten Befehl senden.
+        $this->WriteAlphaDispatchValue('Start/Reset', $ids['start'], 0);
+        $this->WriteAlphaDispatchValue('ActivePower', $ids['power'], $activePowerRaw);
+        $this->WriteAlphaDispatchValue('Mode', $ids['mode'], $dispatchMode);
+        $this->WriteAlphaDispatchValue('SOC', $ids['soc'], $socTargetRaw);
+        $this->WriteAlphaDispatchValue('Time', $ids['time'], $duration);
+        $this->WriteAlphaDispatchValue('Start', $ids['start'], 1);
 
         $this->WriteAttributeBoolean('AlphaDispatchActive', true);
-        $this->WriteAttributeString('AlphaDispatchCommandKey', $key);
-        $this->DebugLog('AlphaESS', 'Dispatch Entladen: ' . round($powerW) . ' W, Ziel-SoC ' . round($socTargetRaw * 0.4, 1) . ' %, ' . $duration . ' s', 0);
+        $this->WriteAttributeString(
+            'AlphaDispatchCommandKey',
+            $activePowerRaw . ':' . $dispatchMode . ':' . $socTargetRaw . ':' . $duration
+        );
     }
 
-    private function DebugAlphaReadback(string $name, int $variableID, $expected): void
+    private function WriteAlphaDispatchValue(string $name, int $variableID, $value): void
     {
-        try {
-            $actual = GetValue($variableID);
-            $this->DebugLog(
-                'AlphaESS Readback',
-                $name . ' ID=' . $variableID
-                . ' | Soll=' . $expected
-                . ' | lokaler Istwert direkt danach=' . $actual
-            );
-        } catch (Throwable $e) {
-            $this->DebugLog('AlphaESS Readback', $name . ' ID=' . $variableID . ' | Lesen fehlgeschlagen: ' . $e->getMessage());
+        if ($variableID <= 0 || !@IPS_VariableExists($variableID)) {
+            throw new Exception('AlphaESS ' . $name . ': ungültige Variable ID ' . $variableID);
         }
+
+        // Den Sollwert auch lokal sichtbar setzen. Die eigentliche Geräte-
+        // schreibaktion erfolgt anschließend über RequestAction der Modbusvariable.
+        SetValue($variableID, $value);
+
+        try {
+            RequestAction($variableID, $value);
+        } catch (Throwable $e) {
+            $this->DebugLog(
+                'AlphaESS Dispatch',
+                $name . ' ID=' . $variableID . ' Soll=' . $value
+                . ' | RequestAction FEHLER: ' . $e->getMessage()
+            );
+            throw new Exception(
+                'AlphaESS ' . $name . ' konnte nicht geschrieben werden: ' . $e->getMessage()
+            );
+        }
+
+        $actual = GetValue($variableID);
+        $this->DebugLog(
+            'AlphaESS Dispatch',
+            $name . ' ID=' . $variableID
+            . ' | Soll=' . $value
+            . ' | IPS=' . $actual
+        );
     }
 
     private function WriteVariableSmart(int $variableID, $value)
@@ -2743,8 +2723,6 @@ class SmartBatteryOptimizer extends IPSModule
             RequestAction($variableID, $value);
             $this->DebugLog('WriteVariable', 'RequestAction ID=' . $variableID . ' Wert=' . $value . ' erfolgreich');
         } catch (Throwable $e) {
-            // Bei Modbus-Schreibvariablen niemals SetValue als Fallback verwenden:
-            // SetValue würde nur den lokalen IPS-Wert ändern, nicht das Gerät.
             $this->DebugLog('WriteVariable', 'RequestAction ID=' . $variableID . ' Wert=' . $value . ' FEHLER: ' . $e->getMessage());
             throw new Exception('Schreiben auf Variable ' . $variableID . ' fehlgeschlagen: ' . $e->getMessage());
         }
