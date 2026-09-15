@@ -341,3 +341,6 @@ Der manuelle Einspeisetest wurde auf die Mode-2-Parameter reduziert. Er schreibt
 Die automatische Speicherentladung ist wieder strikt auf das Nachtfenster begrenzt. Tagsüber wird kein Dispatch zum vorsorglichen Freimachen des Speichers gestartet. Die für die Nacht verfügbare Einspeiseenergie wird aus aktuellem Speicherinhalt, Mindest-SOC, gelerntem Nachtverbrauch und der PV-/Verbrauchsprognose für den Folgetag bestimmt. Preisoptimierte Einspeiseslots werden ausschließlich innerhalb des Nachtfensters ausgewählt.
 
 Das Intervall `PV-Prognose aktualisieren (Minuten)` ist wieder separat einstellbar. PV-Prognose und PV-Istwerte besitzen wieder getrennte Timer; ein PV-Ist-Update verwendet die zuletzt gespeicherte Prognose und löst keinen zusätzlichen Prognoseabruf aus.
+
+### AlphaESS Dispatch-Reihenfolge 1.8.8
+Für dieses AlphaESS-System wird `Dispatch Start = 1` vor allen weiteren Dispatchparametern geschrieben. Erst danach folgen Active Power, Mode 2, SOC und beim normalen zentralen Dispatchblock die Dispatch Time. Ein vorheriges Zurücksetzen von Start auf 0 entfällt. Der manuelle Mode-2-Test verwendet zur Diagnose ausschließlich die Reihenfolge Start=1, Active Power, Mode=2 und SOC; Time bleibt dabei unangetastet.

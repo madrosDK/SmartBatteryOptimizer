@@ -2607,7 +2607,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeInteger('AlphaTestStage', 1);
         $this->WriteAttributeInteger('AlphaTestNextTs', time());
         $this->WriteAttributeString('AlphaTestTrace', '');
-        $this->AppendAlphaTestTrace('Start Mode-2-Test ' . $powerW . ' W | nur ActivePower, Mode=2 und SOC');
+        $this->AppendAlphaTestTrace('Start Mode-2-Test ' . $powerW . ' W | Reihenfolge: Start=1, ActivePower, Mode=2, SOC');
         $this->RunAlphaESSDiagnosticTest();
     }
 
@@ -2620,13 +2620,14 @@ class SmartBatteryOptimizer extends IPSModule
         $powerW = max(0, min($this->ReadAttributeInteger('ManualTestPowerW'), $this->ReadPropertyInteger('MaxDischargePowerW')));
         $socRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
 
-        // AlphaESS Mode 2 (SoC control):
-        // Active Power + Mode 2 + target SOC.
-        // Dispatch Time and Dispatch Start are deliberately not written by this test.
+        // AlphaESS Mode 2: Dispatch zuerst aktivieren. Bei diesem System
+        // müssen die nachfolgenden Dispatchwerte bei Start=1 geschrieben werden,
+        // damit sie vom Wechselrichter übernommen und gespeichert bleiben.
         $steps = [
-            1 => ['ActivePower', $ids['power'], 32000 + $powerW],
-            2 => ['Mode', $ids['mode'], 2],
-            3 => ['SOC', $ids['soc'], $socRaw]
+            1 => ['Start', $ids['start'], 1],
+            2 => ['ActivePower', $ids['power'], 32000 + $powerW],
+            3 => ['Mode', $ids['mode'], 2],
+            4 => ['SOC', $ids['soc'], $socRaw]
         ];
 
         if (isset($steps[$stage])) {
@@ -2705,7 +2706,9 @@ class SmartBatteryOptimizer extends IPSModule
 
         // Vor einer neuen Sequenz sicher stoppen. Danach ALLE Parameter setzen
         // und Start zwingend als letzten Befehl senden.
-        $this->WriteAlphaDispatchValue('Start/Reset', $ids['start'], 0);
+        // AlphaESS übernimmt die Dispatchparameter zuverlässig, wenn Dispatch
+        // bereits aktiv ist. Start=1 deshalb zwingend als erster Schreibbefehl.
+        $this->WriteAlphaDispatchValue('Start', $ids['start'], 1);
         usleep(100000);
         $this->WriteAlphaDispatchValue('ActivePower', $ids['power'], $activePowerRaw);
         usleep(100000);
@@ -2714,8 +2717,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAlphaDispatchValue('SOC', $ids['soc'], $socTargetRaw);
         usleep(100000);
         $this->WriteAlphaDispatchValue('Time', $ids['time'], $duration);
-        usleep(100000);
-        $this->WriteAlphaDispatchValue('Start', $ids['start'], 1);
 
         $this->WriteAttributeBoolean('AlphaDispatchActive', true);
         $this->WriteAttributeString(
