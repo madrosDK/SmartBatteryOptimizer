@@ -367,3 +367,8 @@ Eigenes Highcharts-Diagramm für das gelernte 24-Stunden-Lastprofil mit Ist-Verb
 
 ### 1.9.5 – Mindest-SoC als Laufzeitvariable
 Der zusätzliche 30-%-Rest-SoC aus 1.9.4 wurde wieder entfernt. Für die Einspeiseplanung gilt ausschließlich der konfigurierte Mindest-SoC als absolute Untergrenze. Der Mindest-SoC steht zusätzlich als beschreibbare IP-Symcon-Variable `Mindest-SoC` zur Verfügung und kann damit direkt im Frontend bzw. per Skript geändert werden. Die Laufzeitvariable wird in Planung, Steuerung, Testentladung und AlphaESS-Dispatch verwendet.
+
+### 1.9.6 – Stundenfaktor-Fallback und Forecast.Solar Public
+Fehlt für eine Prognosestunde ein eigener PV-Korrekturfaktor, z. B. weil das Lernen wegen der Einspeisebegrenzung gesperrt war, verwendet die Prognose nun den Mittelwert der übrigen gültigen Stundenfaktoren. Nur wenn noch keine Stundenfaktoren vorhanden sind, wird auf den langfristigen Gesamtfaktor zurückgegriffen. Die Faktor-Minimum-/Maximumgrenzen gelten auch für den Fallback. Ersatzwerte werden nicht in die Lerndaten zurückgeschrieben.
+
+Forecast.Solar Public wird pro aktiver PV-Fläche separat über `estimate/{lat}/{lon}/{Neigung}/{Azimut}/{kWp}` abgefragt. Die stündlichen Ergebnisse der Flächen werden danach zur Forecast.Solar-Gesamtprognose summiert. pvnode V2 bleibt unverändert.

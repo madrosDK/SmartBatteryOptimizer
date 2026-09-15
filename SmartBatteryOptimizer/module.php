@@ -852,13 +852,11 @@ class SmartBatteryOptimizer extends IPSModule
                     $ts = strtotime($timeStr);
                     $gti = max(0.0, (float)$data['hourly']['global_tilted_irradiance'][$i]);
                     $basePowerKW = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
-                    $hourFactor = $autoFactor;
-                    $forecastHour = (string)((int)date('G', $ts));
-                    if ($autoEnabled && isset($calibration[$key]['hourlyFactors'][$forecastHour]['factor'])) {
-                        $hourFactor = (float)$calibration[$key]['hourlyFactors'][$forecastHour]['factor'];
-                        $hourFactor = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $hourFactor));
-                    }
-                    $powerKW = $basePowerKW * ($autoEnabled ? $hourFactor : 1.0);
+                    $forecastHour = (int)date('G', $ts);
+                    $hourFactor = $autoEnabled
+                        ? $this->GetPVForecastHourFactor($calibration, $key, $forecastHour, $autoFactor)
+                        : 1.0;
+                    $powerKW = $basePowerKW * $hourFactor;
                     if (!isset($sourceHours['openmeteo'][$ts])) $sourceHours['openmeteo'][$ts] = 0.0;
                     $sourceHours['openmeteo'][$ts] += $powerKW;
                     if ($ts === $nowHour) $currentExpectedBaseW = $basePowerKW * 1000.0;
@@ -904,7 +902,7 @@ class SmartBatteryOptimizer extends IPSModule
                 'effectiveFactor' => $manualFactor * ($autoEnabled ? $autoFactor : 1.0),
                 'expectedBaseW' => $currentExpectedBaseW,
                 'expectedCorrectedW' => $currentExpectedBaseW * ($autoEnabled
-                    ? (float)($calibration[$key]['hourlyFactors'][(string)((int)date('G'))]['factor'] ?? $autoFactor)
+                    ? $this->GetPVForecastHourFactor($calibration, $key, (int)date('G'), $autoFactor)
                     : 1.0),
                 'actualW' => $actualW,
                 'currentRatio' => ($actualW !== null && $currentExpectedBaseW > 0.0) ? ($actualW / $currentExpectedBaseW) : null,
@@ -1267,6 +1265,38 @@ class SmartBatteryOptimizer extends IPSModule
             'thresholdW' => $thresholdW,
             'text' => $text
         ];
+    }
+
+    private function GetPVForecastHourFactor(array $calibration, string $key, int $hour, float $overallFactor): float
+    {
+        $minFactor = $this->ReadPropertyFloat('PVCalibrationMinFactor');
+        $maxFactor = $this->ReadPropertyFloat('PVCalibrationMaxFactor');
+        $hourKey = (string)max(0, min(23, $hour));
+        $hourly = isset($calibration[$key]['hourlyFactors']) && is_array($calibration[$key]['hourlyFactors'])
+            ? $calibration[$key]['hourlyFactors'] : [];
+
+        // 1. Bevorzugt den echten, für diese Stunde gelernten Faktor verwenden.
+        if (isset($hourly[$hourKey]['factor'])) {
+            return max($minFactor, min($maxFactor, (float)$hourly[$hourKey]['factor']));
+        }
+
+        // 2. Fehlt die Stunde (typisch wegen PV-Abregelung / Lernsperre), den
+        // Mittelwert der übrigen gültigen Stundenfaktoren verwenden. Die Ersatzwerte
+        // werden nur für die Prognose benutzt und nicht als Lernwerte gespeichert.
+        $validFactors = [];
+        foreach ($hourly as $entry) {
+            if (!is_array($entry) || !isset($entry['factor'])) continue;
+            $factor = (float)$entry['factor'];
+            if (!is_finite($factor)) continue;
+            $validFactors[] = max($minFactor, min($maxFactor, $factor));
+        }
+        if (count($validFactors) > 0) {
+            return max($minFactor, min($maxFactor, array_sum($validFactors) / count($validFactors)));
+        }
+
+        // 3. Solange noch keine Stundenfaktoren vorhanden sind, bleibt der
+        // langfristige Gesamtfaktor die letzte Rückfallebene.
+        return max($minFactor, min($maxFactor, $overallFactor));
     }
 
     private function AddPVCalibrationEnergySample(array $calibration, string $key, float $expectedW, float $actualW): array
