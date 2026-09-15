@@ -284,3 +284,8 @@ Die normale Einspeisung nutzt weiterhin den normalen Mindest-Einspeisepreis. Rei
 Für die Diagnose der Batterieansteuerung gibt es zwei neue bedienbare Frontend-Variablen: `Test Entladeleistung` und `Test Entladung / Einspeisung`. Der Test umgeht bewusst Einspeiseplan, Preisprüfung und Lernfreigabe, respektiert aber Mindest-SoC und maximale Entladeleistung. Er läuft maximal 120 Sekunden und wird anschließend automatisch beendet.
 
 Während des Tests hat die manuelle Ansteuerung Vorrang vor dem minütlichen Control-Timer. Zusätzlich protokolliert der Debug-Modus nun jeden Schreibversuch auf die Batterievariablen und Steuerfehler werden im Optimierungsstatus sichtbar.
+
+### Direkter AlphaESS-Dispatch-Test 1.7.5
+Der manuelle Entladetest umgeht nun vollständig `BatteryControlMode` und die normale Einspeiserouting-Logik. Er ruft AlphaESS Dispatch direkt auf. Im Teststatus und Debug werden die fünf konfigurierten IP-Symcon-Variablen-IDs für Start, Active Power, Mode, SoC und Time sowie die RAW-Schreibwerte ausgegeben.
+
+Bei 1000 W Testleistung wird Active Power als 33000 geschrieben. Danach folgen Mode 2, SoC-Ziel, Testdauer und zuletzt Start 1. Der Test läuft maximal 120 Sekunden. Stop schreibt Dispatch Start unabhängig vom internen Active-Status explizit auf 0.

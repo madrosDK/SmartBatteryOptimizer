@@ -363,7 +363,27 @@ class SmartBatteryOptimizer extends IPSModule
                     SetValue($this->GetIDForIdent('TestDischarge'), true);
                     SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test aktiv: ' . $testPower . ' W bis ' . date('H:i:s', $until));
                     try {
-                        $this->SetFeedIn(true, $testPower, $until);
+                        $ids = $this->GetAlphaDispatchIDs();
+                        SetValue(
+                            $this->GetIDForIdent('TestDischargeStatus'),
+                            'Direkttest AlphaESS: Start=' . $ids['start']
+                            . ' | Power=' . $ids['power']
+                            . ' | Mode=' . $ids['mode']
+                            . ' | SOC=' . $ids['soc']
+                            . ' | Time=' . $ids['time']
+                            . ' | Soll=' . $testPower . ' W'
+                        );
+                        $this->DebugLog(
+                            'TestEntladung',
+                            'Direkter AlphaESS-Test (BatteryControlMode wird umgangen)'
+                            . ' | Start=' . $ids['start']
+                            . ' | Power=' . $ids['power']
+                            . ' | Mode=' . $ids['mode']
+                            . ' | SOC=' . $ids['soc']
+                            . ' | Time=' . $ids['time']
+                            . ' | Soll=' . $testPower . ' W'
+                        );
+                        $this->SetAlphaESSDispatch(true, $testPower, $until);
                     } catch (Throwable $e) {
                         $this->WriteAttributeInteger('ManualTestUntil', 0);
                         SetValue($this->GetIDForIdent('TestDischarge'), false);
@@ -374,8 +394,14 @@ class SmartBatteryOptimizer extends IPSModule
                     $this->WriteAttributeInteger('ManualTestUntil', 0);
                     $this->WriteAttributeInteger('ManualTestPowerW', 0);
                     SetValue($this->GetIDForIdent('TestDischarge'), false);
-                    try { $this->StopFeedIn(); } catch (Throwable $e) { $this->DebugLog('TestEntladung', 'Stop-Fehler: ' . $e->getMessage()); }
-                    SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test gestoppt.');
+                    try {
+                        $this->SetAlphaESSDispatch(false, 0, 0);
+                        SetValue($this->GetIDForIdent('FeedInActive'), false);
+                        SetValue($this->GetIDForIdent('PlannedPower'), 0.0);
+                    } catch (Throwable $e) {
+                        $this->DebugLog('TestEntladung', 'Stop-Fehler: ' . $e->getMessage());
+                    }
+                    SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Direkter AlphaESS-Test gestoppt.');
                 }
                 break;
             case 'PVCurtailmentProtectionEnabled':
@@ -616,7 +642,9 @@ class SmartBatteryOptimizer extends IPSModule
             if ($testUntil > $now) {
                 $testPower = max(0, min($this->ReadAttributeInteger('ManualTestPowerW'), $this->ReadPropertyInteger('MaxDischargePowerW')));
                 $this->DebugLog('Control', 'Manueller Entladetest aktiv | ' . $testPower . ' W | bis ' . date('H:i:s', $testUntil));
-                $this->SetFeedIn(true, $testPower, $testUntil);
+                $this->SetAlphaESSDispatch(true, $testPower, $testUntil);
+                SetValue($this->GetIDForIdent('FeedInActive'), true);
+                SetValue($this->GetIDForIdent('PlannedPower'), (float)$testPower);
                 SetValue($this->GetIDForIdent('TestDischarge'), true);
                 SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test aktiv: ' . $testPower . ' W bis ' . date('H:i:s', $testUntil));
                 return;
@@ -2509,25 +2537,48 @@ class SmartBatteryOptimizer extends IPSModule
         SetValue($this->GetIDForIdent('PlannedPower'), $enable ? abs($powerW) : 0.0);
     }
 
+    private function GetAlphaDispatchIDs(): array
+    {
+        return [
+            'start' => $this->ReadPropertyInteger('AlphaDispatchStartVariable'),
+            'power' => $this->ReadPropertyInteger('AlphaDispatchPowerVariable'),
+            'mode'  => $this->ReadPropertyInteger('AlphaDispatchModeVariable'),
+            'soc'   => $this->ReadPropertyInteger('AlphaDispatchSOCVariable'),
+            'time'  => $this->ReadPropertyInteger('AlphaDispatchTimeVariable')
+        ];
+    }
+
     private function SetAlphaESSDispatch(bool $enable, float $powerW, int $slotEnd): void
     {
-        $startID = $this->ReadPropertyInteger('AlphaDispatchStartVariable');
-        $powerID = $this->ReadPropertyInteger('AlphaDispatchPowerVariable');
-        $modeID = $this->ReadPropertyInteger('AlphaDispatchModeVariable');
-        $socID = $this->ReadPropertyInteger('AlphaDispatchSOCVariable');
-        $timeID = $this->ReadPropertyInteger('AlphaDispatchTimeVariable');
+        $ids = $this->GetAlphaDispatchIDs();
+        $startID = $ids['start'];
+        $powerID = $ids['power'];
+        $modeID = $ids['mode'];
+        $socID = $ids['soc'];
+        $timeID = $ids['time'];
+
+        $this->DebugLog(
+            'AlphaESS',
+            'Dispatch-Aufruf enable=' . ($enable ? '1' : '0')
+            . ' | Soll=' . round($powerW) . ' W'
+            . ' | IDs Start=' . $startID
+            . ', Power=' . $powerID
+            . ', Mode=' . $modeID
+            . ', SOC=' . $socID
+            . ', Time=' . $timeID
+        );
 
         if ($startID <= 0) {
             throw new Exception('AlphaESS: Dispatch-Start-Variable (Register 2176) fehlt.');
         }
 
         if (!$enable) {
-            if ($this->ReadAttributeBoolean('AlphaDispatchActive')) {
-                $this->WriteVariableSmart($startID, 0);
-                $this->WriteAttributeBoolean('AlphaDispatchActive', false);
-                $this->WriteAttributeString('AlphaDispatchCommandKey', '');
-                $this->DebugLog('AlphaESS', 'Dispatch gestoppt', 0);
-            }
+            // Start immer explizit auf 0 schreiben. So funktioniert Stop auch dann,
+            // wenn der interne Active-Status nach Neustart/Fehler nicht mehr passt.
+            $this->WriteVariableSmart($startID, 0);
+            $this->WriteAttributeBoolean('AlphaDispatchActive', false);
+            $this->WriteAttributeString('AlphaDispatchCommandKey', '');
+            $this->DebugLog('AlphaESS', 'Dispatch gestoppt: Start=0', 0);
             return;
         }
 
@@ -2543,6 +2594,7 @@ class SmartBatteryOptimizer extends IPSModule
         $key = $activePowerRaw . ':' . $socTargetRaw . ':' . $slotEnd;
 
         if ($this->ReadAttributeBoolean('AlphaDispatchActive') && $this->ReadAttributeString('AlphaDispatchCommandKey') === $key) {
+            $this->DebugLog('AlphaESS', 'Dispatch bereits identisch aktiv – keine erneute Schreibsequenz.');
             return;
         }
 
@@ -2552,6 +2604,14 @@ class SmartBatteryOptimizer extends IPSModule
 
         // AlphaESS Dispatch Mode 2 = SoC-Steuerung. Die Batterie entlädt mit dem
         // gesetzten Active-Power-Wert (>32000) bis Mindest-SoC oder Zeitablauf.
+        $this->DebugLog(
+            'AlphaESS',
+            'RAW schreiben: ActivePower=' . $activePowerRaw
+            . ' | Mode=2'
+            . ' | SOC=' . $socTargetRaw
+            . ' | Time=' . $duration
+            . ' | Start=1'
+        );
         $this->WriteVariableSmart($powerID, $activePowerRaw);
         $this->WriteVariableSmart($modeID, 2);
         $this->WriteVariableSmart($socID, $socTargetRaw);
