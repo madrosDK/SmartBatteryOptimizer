@@ -839,7 +839,13 @@ class SmartBatteryOptimizer extends IPSModule
                     $ts = strtotime($timeStr);
                     $gti = max(0.0, (float)$data['hourly']['global_tilted_irradiance'][$i]);
                     $basePowerKW = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
-                    $powerKW = $basePowerKW * ($autoEnabled ? $autoFactor : 1.0);
+                    $hourFactor = $autoFactor;
+                    $forecastHour = (string)((int)date('G', $ts));
+                    if ($autoEnabled && isset($calibration[$key]['hourlyFactors'][$forecastHour]['factor'])) {
+                        $hourFactor = (float)$calibration[$key]['hourlyFactors'][$forecastHour]['factor'];
+                        $hourFactor = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $hourFactor));
+                    }
+                    $powerKW = $basePowerKW * ($autoEnabled ? $hourFactor : 1.0);
                     if (!isset($sourceHours['openmeteo'][$ts])) $sourceHours['openmeteo'][$ts] = 0.0;
                     $sourceHours['openmeteo'][$ts] += $powerKW;
                     if ($ts === $nowHour) $currentExpectedBaseW = $basePowerKW * 1000.0;
@@ -884,7 +890,9 @@ class SmartBatteryOptimizer extends IPSModule
                 'autoEnabled' => $autoEnabled, 'autoFactor' => $autoFactor,
                 'effectiveFactor' => $manualFactor * ($autoEnabled ? $autoFactor : 1.0),
                 'expectedBaseW' => $currentExpectedBaseW,
-                'expectedCorrectedW' => $currentExpectedBaseW * ($autoEnabled ? $autoFactor : 1.0),
+                'expectedCorrectedW' => $currentExpectedBaseW * ($autoEnabled
+                    ? (float)($calibration[$key]['hourlyFactors'][(string)((int)date('G'))]['factor'] ?? $autoFactor)
+                    : 1.0),
                 'actualW' => $actualW,
                 'currentRatio' => ($actualW !== null && $currentExpectedBaseW > 0.0) ? ($actualW / $currentExpectedBaseW) : null,
                 'sampleCount' => $diag['sampleCount'], 'sumExpectedKWh' => $diag['sumExpectedKWh'],
@@ -1275,7 +1283,8 @@ class SmartBatteryOptimizer extends IPSModule
                         'ts' => $lastTs,
                         'endTs' => $now,
                         'expectedKWh' => $expectedKWh,
-                        'actualKWh' => $actualKWh
+                        'actualKWh' => $actualKWh,
+                        'hour' => (int)date('G', $lastTs)
                     ];
                 }
             }
@@ -1318,6 +1327,33 @@ class SmartBatteryOptimizer extends IPSModule
             $calibration[$key]['factor'] = 1.0;
         }
         $calibration[$key]['factorSampleCount'] = $count;
+
+        // Zusätzlich für jede Tagesstunde einen eigenen Korrekturfaktor lernen.
+        // Dadurch können z.B. systematische Morgen-/Abendabweichungen separat
+        // von der Mittagsprognose korrigiert werden.
+        $hourlyFactors = [];
+        for ($hour = 0; $hour < 24; $hour++) {
+            $hourExpected = 0.0;
+            $hourActual = 0.0;
+            $hourCount = 0;
+            foreach ($samples as $sample) {
+                if ((int)$sample['ts'] < $factorCutoff) continue;
+                $sampleHour = isset($sample['hour']) ? (int)$sample['hour'] : (int)date('G', (int)$sample['ts']);
+                if ($sampleHour !== $hour) continue;
+                $hourExpected += (float)$sample['expectedKWh'];
+                $hourActual += (float)$sample['actualKWh'];
+                $hourCount++;
+            }
+            if ($hourExpected > 0.0) {
+                $hourFactor = $hourActual / $hourExpected;
+                $hourFactor = max(
+                    $this->ReadPropertyFloat('PVCalibrationMinFactor'),
+                    min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $hourFactor)
+                );
+                $hourlyFactors[(string)$hour] = ['factor' => $hourFactor, 'samples' => $hourCount];
+            }
+        }
+        $calibration[$key]['hourlyFactors'] = $hourlyFactors;
         $calibration[$key]['updated'] = $now;
         return $calibration;
     }

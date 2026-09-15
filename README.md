@@ -356,3 +356,8 @@ Die geplante Einspeisemenge wird jetzt mit der konfigurierten maximalen Entladel
 
 ### PV-Faktor: Abregelung erkennen 1.9.2
 Für die PV-Faktorberechnung kann zusätzlich die IP-Symcon-Variable der Batterieleistung ausgewählt werden. Dabei gilt: Laden ist negativ, Entladen positiv. Ein PV-Lernwert wird nur dann wegen möglicher Einspeiseabregelung verworfen, wenn die Netzeinspeisung innerhalb der eingestellten Toleranz an der Einspeisegrenze liegt und die Batterie gleichzeitig nicht mehr lädt (Batterieleistung >= 0 W). Bei 10.000 W Grenze und 500 W Toleranz beginnt die Prüfung ab 9.500 W. Lädt die Batterie noch (Batterieleistung < 0 W), bleibt der Messwert für die Faktorberechnung gültig.
+
+### Stündliche PV-Korrekturfaktoren 1.9.3
+Die PV-Autokalibrierung lernt zusätzlich zum Gesamtfaktor für jede Tagesstunde einen eigenen Faktor. Messwerte der jeweiligen Stunde werden über den eingestellten Kalibrierzeitraum energetisch zusammengefasst. Ist für eine Stunde noch kein eigener Lernwert vorhanden, wird automatisch der bisherige Gesamtfaktor verwendet. Die Open-Meteo-Prognose wird bereits vor der Weiterverarbeitung mit dem jeweiligen Stundenfaktor korrigiert; damit zeigen auch die Prognosebalken im PV-Highcharts-Diagramm die korrigierte Prognose. Die bestehende Abregelungssperre gilt auch für diese stündlichen Lernwerte.
+
+Azimut-Konvention in der Konfiguration: Süd 0°, Ost −90°, West +90°, Nord −180° bzw. +180°.

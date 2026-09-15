@@ -226,7 +226,7 @@
                             "add": true
                         },
                         {
-                            "caption": "Azimut",
+                            "caption": "Azimut (Süd 0°, Ost −90°, West +90°, Nord ±180°)",
                             "name": "Azimuth",
                             "width": "100px",
                             "edit": {
