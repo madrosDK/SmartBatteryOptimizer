@@ -2604,58 +2604,54 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function StartAlphaESSDiagnosticTest(int $powerW): void
     {
-        $this->WriteAttributeInteger('AlphaTestStage', 1);
-        $this->WriteAttributeInteger('AlphaTestNextTs', time());
+        $this->WriteAttributeInteger('AlphaTestStage', 0);
+        $this->WriteAttributeInteger('AlphaTestNextTs', 0);
         $this->WriteAttributeString('AlphaTestTrace', '');
-        $this->AppendAlphaTestTrace('Start Mode-2-Test ' . $powerW . ' W | Reihenfolge: Start=1, ActivePower, Mode=2, SOC');
-        $this->RunAlphaESSDiagnosticTest();
-    }
-
-    private function RunAlphaESSDiagnosticTest(): void
-    {
-        $stage = $this->ReadAttributeInteger('AlphaTestStage');
-        if ($stage <= 0 || time() < $this->ReadAttributeInteger('AlphaTestNextTs')) return;
 
         $ids = $this->GetAlphaDispatchIDs();
-        $powerW = max(0, min($this->ReadAttributeInteger('ManualTestPowerW'), $this->ReadPropertyInteger('MaxDischargePowerW')));
+        $powerW = max(0, min($powerW, $this->ReadPropertyInteger('MaxDischargePowerW')));
         $socRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
 
-        // AlphaESS Mode 2: Dispatch zuerst aktivieren. Bei diesem System
-        // müssen die nachfolgenden Dispatchwerte bei Start=1 geschrieben werden,
-        // damit sie vom Wechselrichter übernommen und gespeichert bleiben.
+        $this->AppendAlphaTestTrace('Start Mode-2-Test ' . $powerW . ' W | Start=1 -> Power -> Mode=2 -> SOC');
+
         $steps = [
-            1 => ['Start', $ids['start'], 1],
-            2 => ['ActivePower', $ids['power'], 32000 + $powerW],
-            3 => ['Mode', $ids['mode'], 2],
-            4 => ['SOC', $ids['soc'], $socRaw]
+            ['Start', $ids['start'], 1],
+            ['ActivePower', $ids['power'], 32000 + $powerW],
+            ['Mode', $ids['mode'], 2],
+            ['SOC', $ids['soc'], $socRaw]
         ];
 
-        if (isset($steps[$stage])) {
-            [$name, $id, $value] = $steps[$stage];
+        foreach ($steps as $index => $step) {
+            [$name, $id, $value] = $step;
             $before = @GetValue($id);
             $this->WriteAlphaDispatchValue($name, $id, $value);
             usleep(250000);
             $after = @GetValue($id);
             $this->AppendAlphaTestTrace(
-                'Stufe ' . $stage . ' ' . $name
+                ($index + 1) . '/4 ' . $name
                 . ': vorher=' . $before
                 . ' | Soll=' . $value
                 . ' | danach=' . $after
             );
-            $this->WriteAttributeInteger('AlphaTestStage', $stage + 1);
-            $this->WriteAttributeInteger('AlphaTestNextTs', time() + 3);
-            return;
+
+            if ($index < count($steps) - 1) {
+                sleep(3);
+            }
         }
 
-        // Nur beobachten, keine weiteren Dispatch-Schreibbefehle.
         $this->AppendAlphaTestTrace(
-            'Beobachtung Mode 2: Power=' . @GetValue($ids['power'])
+            'Sequenz fertig: Power=' . @GetValue($ids['power'])
             . ' | Mode=' . @GetValue($ids['mode'])
             . ' | SOC=' . @GetValue($ids['soc'])
             . ' | Time=' . @GetValue($ids['time'])
             . ' | Start=' . @GetValue($ids['start'])
         );
-        $this->WriteAttributeInteger('AlphaTestNextTs', time() + 3);
+    }
+
+    private function RunAlphaESSDiagnosticTest(): void
+    {
+        // Die komplette Testsequenz wird bereits beim Einschalten synchron
+        // ausgeführt. Control darf während des Tests keine Dispatchwerte nachschreiben.
     }
 
     private function AppendAlphaTestTrace(string $line): void

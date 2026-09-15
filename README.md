@@ -344,3 +344,6 @@ Das Intervall `PV-Prognose aktualisieren (Minuten)` ist wieder separat einstellb
 
 ### AlphaESS Dispatch-Reihenfolge 1.8.8
 Für dieses AlphaESS-System wird `Dispatch Start = 1` vor allen weiteren Dispatchparametern geschrieben. Erst danach folgen Active Power, Mode 2, SOC und beim normalen zentralen Dispatchblock die Dispatch Time. Ein vorheriges Zurücksetzen von Start auf 0 entfällt. Der manuelle Mode-2-Test verwendet zur Diagnose ausschließlich die Reihenfolge Start=1, Active Power, Mode=2 und SOC; Time bleibt dabei unangetastet.
+
+### Direkte 3-Sekunden-Testsequenz 1.8.9
+Der manuelle AlphaESS-Test wird nun vollständig innerhalb eines einzigen Aufrufs ausgeführt. Zwischen Start=1, Active Power, Mode=2 und SOC liegen tatsächlich jeweils drei Sekunden. Der 60-Sekunden-Control-Timer schaltet die Teststufen nicht mehr weiter und schreibt während des laufenden Tests keine Dispatchparameter nach.
