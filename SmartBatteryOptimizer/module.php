@@ -364,14 +364,15 @@ class SmartBatteryOptimizer extends IPSModule
                     SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test aktiv: ' . $testPower . ' W bis ' . date('H:i:s', $until));
                     try {
                         $ids = $this->GetAlphaDispatchIDs();
+                        $testSocRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
                         SetValue(
                             $this->GetIDForIdent('TestDischargeStatus'),
-                            'Direkttest AlphaESS: Start=' . $ids['start']
-                            . ' | Power=' . $ids['power']
-                            . ' | Mode=' . $ids['mode']
-                            . ' | SOC=' . $ids['soc']
-                            . ' | Time=' . $ids['time']
-                            . ' | Soll=' . $testPower . ' W'
+                            'Direkttest: Power=' . (32000 + $testPower)
+                            . ' | Mode=1'
+                            . ' | SOC=' . $testSocRaw
+                            . ' | Time=120'
+                            . ' | Start=1'
+                            . ' | IDs ' . $ids['power'] . '/' . $ids['mode'] . '/' . $ids['soc'] . '/' . $ids['time'] . '/' . $ids['start']
                         );
                         $this->DebugLog(
                             'TestEntladung',
@@ -2602,18 +2603,22 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteVariableSmart($startID, 0);
         }
 
-        // AlphaESS Dispatch Mode 2 = SoC-Steuerung. Die Batterie entlädt mit dem
-        // gesetzten Active-Power-Wert (>32000) bis Mindest-SoC oder Zeitablauf.
+        // AlphaESS Dispatch: Mode 1 = Active-Power-Vorgabe.
+        // Active Power > 32000 bedeutet Entladung: 32000 + gewünschte Watt.
+        // SOC und Zeit werden zusätzlich als Sicherheitsgrenzen geschrieben.
+        $dispatchMode = 1;
         $this->DebugLog(
             'AlphaESS',
             'RAW schreiben: ActivePower=' . $activePowerRaw
-            . ' | Mode=2'
-            . ' | SOC=' . $socTargetRaw
-            . ' | Time=' . $duration
+            . ' | Mode=' . $dispatchMode
+            . ' | SOC=' . $socTargetRaw . ' (= ' . round($socTargetRaw * 0.4, 1) . ' %)'
+            . ' | Time=' . $duration . ' s'
             . ' | Start=1'
         );
+
+        // Reihenfolge ist absichtlich fest: Parameter zuerst, Start zuletzt.
         $this->WriteVariableSmart($powerID, $activePowerRaw);
-        $this->WriteVariableSmart($modeID, 2);
+        $this->WriteVariableSmart($modeID, $dispatchMode);
         $this->WriteVariableSmart($socID, $socTargetRaw);
         $this->WriteVariableSmart($timeID, $duration);
         $this->WriteVariableSmart($startID, 1);
@@ -2633,8 +2638,10 @@ class SmartBatteryOptimizer extends IPSModule
             RequestAction($variableID, $value);
             $this->DebugLog('WriteVariable', 'RequestAction ID=' . $variableID . ' Wert=' . $value . ' erfolgreich');
         } catch (Throwable $e) {
-            $this->DebugLog('WriteVariable', 'RequestAction ID=' . $variableID . ' fehlgeschlagen: ' . $e->getMessage() . ' | Fallback SetValue');
-            SetValue($variableID, $value);
+            // Bei Modbus-Schreibvariablen niemals SetValue als Fallback verwenden:
+            // SetValue würde nur den lokalen IPS-Wert ändern, nicht das Gerät.
+            $this->DebugLog('WriteVariable', 'RequestAction ID=' . $variableID . ' Wert=' . $value . ' FEHLER: ' . $e->getMessage());
+            throw new Exception('Schreiben auf Variable ' . $variableID . ' fehlgeschlagen: ' . $e->getMessage());
         }
     }
 

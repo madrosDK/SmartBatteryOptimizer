@@ -289,3 +289,8 @@ Während des Tests hat die manuelle Ansteuerung Vorrang vor dem minütlichen Con
 Der manuelle Entladetest umgeht nun vollständig `BatteryControlMode` und die normale Einspeiserouting-Logik. Er ruft AlphaESS Dispatch direkt auf. Im Teststatus und Debug werden die fünf konfigurierten IP-Symcon-Variablen-IDs für Start, Active Power, Mode, SoC und Time sowie die RAW-Schreibwerte ausgegeben.
 
 Bei 1000 W Testleistung wird Active Power als 33000 geschrieben. Danach folgen Mode 2, SoC-Ziel, Testdauer und zuletzt Start 1. Der Test läuft maximal 120 Sekunden. Stop schreibt Dispatch Start unabhängig vom internen Active-Status explizit auf 0.
+
+### AlphaESS Dispatch-Schreibfolge 1.7.6
+Die Dispatch-Ansteuerung schreibt die Parameter nun strikt in der Reihenfolge Active Power, Mode, SoC, Time und zuletzt Start. Für 1000 W Entladung wird Active Power 33000 geschrieben. Dispatch Mode ist 1 (Active-Power-Vorgabe). SoC wird mit 0,4 % pro Bit aus dem konfigurierten Mindest-SoC berechnet; die Zeit enthält die verbleibende Dispatch-/Testdauer.
+
+Ein fehlgeschlagenes `RequestAction` wird nicht mehr durch `SetValue` kaschiert. `SetValue` würde bei einer Modbus-Schreibvariable lediglich den lokalen IP-Symcon-Wert verändern. Schreibfehler werden deshalb jetzt abgebrochen und im Test-/Debugstatus sichtbar.
