@@ -347,3 +347,6 @@ Für dieses AlphaESS-System wird `Dispatch Start = 1` vor allen weiteren Dispatc
 
 ### Direkte 3-Sekunden-Testsequenz 1.8.9
 Der manuelle AlphaESS-Test wird nun vollständig innerhalb eines einzigen Aufrufs ausgeführt. Zwischen Start=1, Active Power, Mode=2 und SOC liegen tatsächlich jeweils drei Sekunden. Der 60-Sekunden-Control-Timer schaltet die Teststufen nicht mehr weiter und schreibt während des laufenden Tests keine Dispatchparameter nach.
+
+### Getrennte Steuerfunktionen 1.9.0
+Die preisoptimierte Einspeiseautomatik und „PV-Abregelung vermeiden“ sind jetzt logisch getrennt. Die Einspeiseautomatik plant Batterieentladung ausschließlich im Nachtfenster nach den wirtschaftlich besten verfügbaren Preisen und der Energie-/PV-Prognose. „PV-Abregelung vermeiden“ arbeitet unabhängig davon ausschließlich tagsüber: Überschreitet der Batterie-SoC den eingestellten PV-Headroom-Ziel-SoC, darf die Batterie tagsüber ins Netz entladen werden, um wieder Speicherplatz für PV-Leistung zu schaffen. Diese Tagesfunktion funktioniert auch dann, wenn die preisoptimierte Einspeiseautomatik deaktiviert ist. Die bestätigte AlphaESS-Reihenfolge Start=1 → Active Power → Mode 2 → SOC bleibt erhalten.

@@ -656,20 +656,67 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->StopFeedIn();
             }
 
-            $this->DebugLog('Control', 'Steuerprüfung gestartet | Automatik=' . ($this->IsAutomaticEnabled() ? 'AN' : 'AUS'));
-            if (!$this->IsAutomaticEnabled()) {
-                $this->DebugLog('Control', 'Keine Einspeisung: Automatik deaktiviert');
+            $automaticEnabled = $this->IsAutomaticEnabled();
+            $pvProtectionEnabled = $this->GetRuntimeBoolean(
+                'PVCurtailmentProtectionEnabled',
+                $this->ReadPropertyBoolean('PreventPVCurtailment')
+            );
+            $dayNightControl = $this->GetCurrentDayNightStatus();
+
+            $this->DebugLog(
+                'Control',
+                'Steuerprüfung gestartet | Einspeiseautomatik=' . ($automaticEnabled ? 'AN' : 'AUS')
+                . ' | PV-Abregelung vermeiden=' . ($pvProtectionEnabled ? 'AN' : 'AUS')
+                . ' | ' . ($dayNightControl['isNight'] ? 'Nacht' : 'Tag')
+            );
+
+            // PV-Abregelung vermeiden ist eine eigenständige Tagesfunktion und darf
+            // nicht von der preisoptimierten Einspeiseautomatik blockiert werden.
+            // Wird tagsüber der konfigurierte PV-Ziel-SoC überschritten, wird
+            // unmittelbar Speicherplatz geschaffen. Nachts greift diese Funktion
+            // nicht ein; dort arbeitet ausschließlich die Preis-/Nachtplanung.
+            if (!$dayNightControl['isNight']) {
+                if ($pvProtectionEnabled) {
+                    $socVariableID = $this->ReadPropertyInteger('SOCVariable');
+                    $soc = $socVariableID > 0 ? (float)GetValue($socVariableID) : 0.0;
+                    $targetSOC = max(
+                        $this->ReadPropertyFloat('MinimumSOC'),
+                        min(100.0, $this->GetRuntimeFloat(
+                            'RuntimePVHeadroomTargetSOC',
+                            $this->ReadPropertyFloat('PVHeadroomTargetSOC')
+                        ))
+                    );
+
+                    if ($soc > $targetSOC + 0.01) {
+                        $powerW = max(0, $this->ReadPropertyInteger('MaxDischargePowerW'));
+                        $this->DebugLog(
+                            'PV-Abregelung',
+                            'Tagesentladung aktiv | SoC=' . round($soc, 1) . ' %'
+                            . ' | Ziel=' . round($targetSOC, 1) . ' %'
+                            . ' | Leistung=' . $powerW . ' W'
+                        );
+                        $this->SetFeedIn(true, (float)$powerW, $now + 120);
+                        SetValue($this->GetIDForIdent('StatusText'),
+                            'PV-Abregelung vermeiden: ' . round($powerW) . ' W | SoC '
+                            . round($soc, 1) . ' % > Ziel ' . round($targetSOC, 1) . ' %');
+                        return;
+                    }
+                }
+
                 $this->StopFeedIn();
+                SetValue(
+                    $this->GetIDForIdent('StatusText'),
+                    $pvProtectionEnabled
+                        ? 'Tagbetrieb: kein PV-Headroom erforderlich'
+                        : 'Tagbetrieb: PV-Abregelungsschutz deaktiviert'
+                );
                 return;
             }
 
-            // Speicherentladung ist ausschließlich im Nachtfenster erlaubt.
-            // Tagsüber wird kein Dispatch zum Freimachen von PV-Speicher gestartet.
-            $dayNightControl = $this->GetCurrentDayNightStatus();
-            if (!$dayNightControl['isNight']) {
-                $this->DebugLog('Control', 'Keine Speicherentladung: Tagbetrieb');
+            // Die preisoptimierte Einspeiseautomatik ist eine getrennte Nachtfunktion.
+            if (!$automaticEnabled) {
+                $this->DebugLog('Control', 'Keine Nacht-Einspeisung: Einspeiseautomatik deaktiviert');
                 $this->StopFeedIn();
-                SetValue($this->GetIDForIdent('StatusText'), 'Tagbetrieb: Speicherentladung gesperrt');
                 return;
             }
 
@@ -1775,7 +1822,10 @@ class SmartBatteryOptimizer extends IPSModule
         // zusätzlich die bestbezahlten noch freien Intervalle gewählt. Der separate
         // Mindestpreis kann auf einen sehr niedrigen Wert gestellt werden, wenn die
         // Vermeidung von PV-Abregelung Vorrang vor dem momentanen Verkaufspreis hat.
-        $mandatoryMissing = max(0.0, $pvSpaceRequired - $scheduledEnergy);
+        // PV-Abregelungsschutz ist von der preisoptimierten Nachtplanung getrennt.
+        // Tagsüber wird erforderlicher Headroom direkt durch Control() geschaffen;
+        // deshalb erzwingt pvSpaceRequired keine zusätzlichen Nacht-Preisfenster.
+        $mandatoryMissing = 0.0;
         if ($mandatoryMissing > 0.001 && $remaining > 0.001 && $maxKW > 0) {
             $pvFloor = $this->GetRuntimeFloat('RuntimePVSpaceMinimumPriceCt', $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
             $fallbackSlots = array_values(array_filter($allSlots, function ($p) use ($usedKeys, $pvFloor) {
