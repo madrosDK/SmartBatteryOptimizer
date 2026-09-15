@@ -268,13 +268,14 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteAttributeString('PVNodeLastError', '');
         }
         $refresh = max(5, $this->ReadPropertyInteger('RefreshMinutes'));
-        $pvForecastRefresh = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes'));
         $pvActualRefresh = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes'));
         $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
-        $this->SetTimerInterval('PVForecastTimer', $pvForecastRefresh * 60 * 1000);
+        // PV-Prognose und PV-Ist laufen bewusst im selben Takt. Ein separater
+        // Forecast-Timer würde sonst doppelte API-Abrufe erzeugen.
+        $this->SetTimerInterval('PVForecastTimer', 0);
         $this->SetTimerInterval('PVActualTimer', $pvActualRefresh * 60 * 1000);
         $this->SetTimerInterval('ControlTimer', 60 * 1000);
-        $this->DebugLog('ApplyChanges', 'Debug=' . ($this->ReadPropertyBoolean('DebugMode') ? 'AN' : 'AUS') . ' | Timer Preise=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min');
+        $this->DebugLog('ApplyChanges', 'Debug=' . ($this->ReadPropertyBoolean('DebugMode') ? 'AN' : 'AUS') . ' | Timer Preise=' . $refresh . ' min | PV-Prognose+Ist=' . $pvActualRefresh . ' min | Abregelungs-Steuerprüfung=1 min');
 
         if ($this->ReadPropertyInteger('SOCVariable') <= 0 || $this->ReadPropertyInteger('HousePowerVariable') <= 0) {
             $this->SetStatus(200);
@@ -505,17 +506,11 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function RefreshPVActual()
     {
-        $this->DebugLog('PVActual', 'Aktualisierung der Istwerte/Grafik gestartet');
-        try {
-            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
-            if (!is_array($forecast) || empty($forecast)) {
-                $this->RecalculateInternal(true);
-                return;
-            }
-            SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
-        } catch (Throwable $e) {
-            $this->DebugLog('RefreshPVActual', $e->getMessage(), 0);
-        }
+        // Bei jedem PV-Ist-Zyklus wird auch die Prognose neu geholt und der Plan
+        // mit dem aktuellen SoC neu berechnet. Dadurch reagiert der
+        // Abregelungsschutz sofort im eingestellten PV-Ist-Rhythmus.
+        $this->DebugLog('PVActual', 'PV-Ist + PV-Prognose + Abregelungsplanung werden gemeinsam aktualisiert');
+        $this->RecalculateInternal(true);
     }
 
     private function RecalculateInternal(bool $refreshPVForecast)
@@ -1672,10 +1667,28 @@ class SmartBatteryOptimizer extends IPSModule
         $normalPVSpaceRequired = max(0.0, $expectedPVToBattery - $morningHeadroom);
         $gridLimitSpaceRequired = max(0.0, (float)($gridRisk['requiredHeadroomKWh'] ?? 0.0));
 
+        // Dynamische Nachregelung: Wird der eingestellte maximale PV-Ziel-SoC
+        // früher als prognostiziert erreicht/überschritten, muss dieser reale
+        // Überschuss zusätzlich wieder als Speicherplatz freigemacht werden.
+        // Beispiel: Ziel 80 %, Ist 86 % -> 6 % der Batteriekapazität werden als
+        // zusätzlicher Headroom eingeplant (begrenzt durch Mindest-SoC/Reserve).
+        $currentTargetExcessKWh = max(0.0, $stored - $targetMaxEnergy);
+
         if ($this->GetRuntimeBoolean('PVCurtailmentProtectionEnabled', $this->ReadPropertyBoolean('PreventPVCurtailment')) && $available > 0.0) {
-            // Netzlimit-Schutz ist eine harte Mindestanforderung. Die bisherige
-            // allgemeine PV-Speicherfreihaltung bleibt zusätzlich bestehen.
-            $pvSpaceRequired = min($available, max($normalPVSpaceRequired, $gridLimitSpaceRequired));
+            // Der jeweils größere Bedarf gilt: normale PV-Aufnahme, Netzlimit-Risiko
+            // oder bereits real zu früh erreichter Ziel-SoC.
+            $pvSpaceRequired = min(
+                $available,
+                max($normalPVSpaceRequired, $gridLimitSpaceRequired, $currentTargetExcessKWh)
+            );
+            if ($currentTargetExcessKWh > 0.001) {
+                $this->DebugLog(
+                    'PV-Abregelung',
+                    'Ziel-SoC früher erreicht: Ist=' . round($soc, 1) . ' %'
+                    . ' | Ziel=' . round($pvTargetSOC, 1) . ' %'
+                    . ' | zusätzlicher Headroom=' . round($currentTargetExcessKWh, 3) . ' kWh'
+                );
+            }
         }
 
         // Ohne Netzlimit-Risiko reicht die bisherige Planung bis zum PV-Morgen.
@@ -1832,6 +1845,7 @@ class SmartBatteryOptimizer extends IPSModule
             'pvSpaceRequiredKWh' => $pvSpaceRequired,
             'normalPVSpaceRequiredKWh' => $normalPVSpaceRequired,
             'gridLimitSpaceRequiredKWh' => $gridLimitSpaceRequired,
+            'currentTargetExcessKWh' => $currentTargetExcessKWh,
             'gridLimitFirstCriticalTs' => (int)($gridRisk['firstCriticalTs'] ?? 0),
             'gridLimitLastCriticalTs' => (int)($gridRisk['lastCriticalTs'] ?? 0),
             'gridLimitW' => (float)($gridRisk['gridLimitW'] ?? 0),

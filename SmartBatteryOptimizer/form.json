@@ -764,9 +764,10 @@
                 {
                     "type": "NumberSpinner",
                     "name": "PVForecastRefreshMinutes",
-                    "caption": "PV-Prognose aktualisieren (Minuten)",
+                    "caption": "PV-Prognose-Intervall (wird automatisch an PV-Ist angeglichen)",
                     "minimum": 5,
-                    "maximum": 1440
+                    "maximum": 1440,
+                    "enabled": false
                 },
                 {
                     "type": "NumberSpinner",

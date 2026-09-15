@@ -297,3 +297,8 @@ Ein fehlgeschlagenes `RequestAction` wird nicht mehr durch `SetValue` kaschiert.
 
 ### Dispatch Mode 1.7.7
 Für die AlphaESS-Entladeansteuerung wird wieder Dispatch Mode 2 verwendet. Die Schreibreihenfolge bleibt Active Power, Mode, SoC, Time und zuletzt Start. Alle Diagnose- und Fehlerbehandlungen aus 1.7.6 bleiben unverändert.
+
+### Dynamische PV-Abregelungsvermeidung 1.7.8
+PV-Istwerte und PV-Prognose werden jetzt im gleichen Intervall aktualisiert. Maßgeblich ist `PVActualRefreshMinutes`; der separate Prognose-Timer ist deaktiviert, damit keine doppelten Prognoseabrufe entstehen.
+
+Bei jedem dieser Zyklen werden Prognose, aktueller Batterie-SoC und Einspeiseplan neu berechnet. Wird der eingestellte maximale PV-Ziel-SoC früher als prognostiziert erreicht oder überschritten, wird die reale Überschreitung sofort als zusätzlicher benötigter Speicherplatz berücksichtigt. Die eigentliche Steuerprüfung läuft weiterhin jede Minute.
