@@ -2668,10 +2668,15 @@ class SmartBatteryOptimizer extends IPSModule
         // Vor einer neuen Sequenz sicher stoppen. Danach ALLE Parameter setzen
         // und Start zwingend als letzten Befehl senden.
         $this->WriteAlphaDispatchValue('Start/Reset', $ids['start'], 0);
+        usleep(100000);
         $this->WriteAlphaDispatchValue('ActivePower', $ids['power'], $activePowerRaw);
+        usleep(100000);
         $this->WriteAlphaDispatchValue('Mode', $ids['mode'], $dispatchMode);
+        usleep(100000);
         $this->WriteAlphaDispatchValue('SOC', $ids['soc'], $socTargetRaw);
+        usleep(100000);
         $this->WriteAlphaDispatchValue('Time', $ids['time'], $duration);
+        usleep(100000);
         $this->WriteAlphaDispatchValue('Start', $ids['start'], 1);
 
         $this->WriteAttributeBoolean('AlphaDispatchActive', true);
@@ -2687,10 +2692,8 @@ class SmartBatteryOptimizer extends IPSModule
             throw new Exception('AlphaESS ' . $name . ': ungültige Variable ID ' . $variableID);
         }
 
-        // Den Sollwert auch lokal sichtbar setzen. Die eigentliche Geräte-
-        // schreibaktion erfolgt anschließend über RequestAction der Modbusvariable.
-        SetValue($variableID, $value);
-
+        // Modbusvariablen sind für direkte Wertänderungen read-only.
+        // Der Geräte-Schreibbefehl läuft ausschließlich über deren Aktion.
         try {
             RequestAction($variableID, $value);
         } catch (Throwable $e) {
@@ -2699,17 +2702,12 @@ class SmartBatteryOptimizer extends IPSModule
                 $name . ' ID=' . $variableID . ' Soll=' . $value
                 . ' | RequestAction FEHLER: ' . $e->getMessage()
             );
-            throw new Exception(
-                'AlphaESS ' . $name . ' konnte nicht geschrieben werden: ' . $e->getMessage()
-            );
+            throw new Exception('AlphaESS ' . $name . ' konnte nicht geschrieben werden: ' . $e->getMessage());
         }
 
-        $actual = GetValue($variableID);
         $this->DebugLog(
             'AlphaESS Dispatch',
-            $name . ' ID=' . $variableID
-            . ' | Soll=' . $value
-            . ' | IPS=' . $actual
+            $name . ' ID=' . $variableID . ' | Schreibbefehl=' . $value . ' | RequestAction OK'
         );
     }
 

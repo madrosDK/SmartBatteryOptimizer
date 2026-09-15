@@ -327,3 +327,6 @@ Die Reihenfolge bleibt: Active Power = 32000 + Entladeleistung, Mode = 2, Dispat
 Die AlphaESS-Ansteuerung wurde auf einen einzigen zentralen Dispatchblock reduziert. Einspeisetest, Netzlimit-Schutz und normale Einspeiseautomatik verwenden denselben Block.
 
 Bei Entladung wird zuerst Dispatch Start auf 0 gesetzt. Danach werden Active Power = 32000 + Watt, Mode = 2, Dispatch SoC und Dispatch Time geschrieben. Dispatch Start = 1 wird immer zuletzt gesendet. Für jeden Dispatchwert wird der Sollwert lokal gesetzt und anschließend die Aktion der konfigurierten IP-Symcon-Schreibvariable ausgelöst. Fehler werden nicht unterdrückt.
+
+### AlphaESS Dispatch 1.8.4
+Direkte Wertänderungen der read-only Modbusvariablen wurden aus dem Dispatch entfernt. Geschrieben wird ausschließlich über die jeweilige IP-Symcon-Aktion. Die zentrale Sequenz lautet Start 0, Active Power = 32000 + Entladeleistung, Mode 2, Dispatch SoC, Dispatch Time und zuletzt Start 1. Zwischen den Befehlen wird kurz serialisiert.
