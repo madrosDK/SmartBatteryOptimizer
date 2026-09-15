@@ -368,7 +368,7 @@ class SmartBatteryOptimizer extends IPSModule
                         SetValue(
                             $this->GetIDForIdent('TestDischargeStatus'),
                             'Direkttest: Power=' . (32000 + $testPower)
-                            . ' | Mode=1'
+                            . ' | Mode=2'
                             . ' | SOC=' . $testSocRaw
                             . ' | Time=120'
                             . ' | Start=1'
@@ -2603,10 +2603,10 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteVariableSmart($startID, 0);
         }
 
-        // AlphaESS Dispatch: Mode 1 = Active-Power-Vorgabe.
+        // AlphaESS Dispatch: Mode 2 wird für die Entladeansteuerung verwendet.
         // Active Power > 32000 bedeutet Entladung: 32000 + gewünschte Watt.
         // SOC und Zeit werden zusätzlich als Sicherheitsgrenzen geschrieben.
-        $dispatchMode = 1;
+        $dispatchMode = 2;
         $this->DebugLog(
             'AlphaESS',
             'RAW schreiben: ActivePower=' . $activePowerRaw

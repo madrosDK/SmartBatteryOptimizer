@@ -291,6 +291,9 @@ Der manuelle Entladetest umgeht nun vollständig `BatteryControlMode` und die no
 Bei 1000 W Testleistung wird Active Power als 33000 geschrieben. Danach folgen Mode 2, SoC-Ziel, Testdauer und zuletzt Start 1. Der Test läuft maximal 120 Sekunden. Stop schreibt Dispatch Start unabhängig vom internen Active-Status explizit auf 0.
 
 ### AlphaESS Dispatch-Schreibfolge 1.7.6
-Die Dispatch-Ansteuerung schreibt die Parameter nun strikt in der Reihenfolge Active Power, Mode, SoC, Time und zuletzt Start. Für 1000 W Entladung wird Active Power 33000 geschrieben. Dispatch Mode ist 1 (Active-Power-Vorgabe). SoC wird mit 0,4 % pro Bit aus dem konfigurierten Mindest-SoC berechnet; die Zeit enthält die verbleibende Dispatch-/Testdauer.
+Die Dispatch-Ansteuerung schreibt die Parameter nun strikt in der Reihenfolge Active Power, Mode, SoC, Time und zuletzt Start. Für 1000 W Entladung wird Active Power 33000 geschrieben. Dispatch Mode ist 2. SoC wird mit 0,4 % pro Bit aus dem konfigurierten Mindest-SoC berechnet; die Zeit enthält die verbleibende Dispatch-/Testdauer.
 
 Ein fehlgeschlagenes `RequestAction` wird nicht mehr durch `SetValue` kaschiert. `SetValue` würde bei einer Modbus-Schreibvariable lediglich den lokalen IP-Symcon-Wert verändern. Schreibfehler werden deshalb jetzt abgebrochen und im Test-/Debugstatus sichtbar.
+
+### Dispatch Mode 1.7.7
+Für die AlphaESS-Entladeansteuerung wird wieder Dispatch Mode 2 verwendet. Die Schreibreihenfolge bleibt Active Power, Mode, SoC, Time und zuletzt Start. Alle Diagnose- und Fehlerbehandlungen aus 1.7.6 bleiben unverändert.
