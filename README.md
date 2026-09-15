@@ -361,3 +361,6 @@ Für die PV-Faktorberechnung kann zusätzlich die IP-Symcon-Variable der Batteri
 Die PV-Autokalibrierung lernt zusätzlich zum Gesamtfaktor für jede Tagesstunde einen eigenen Faktor. Messwerte der jeweiligen Stunde werden über den eingestellten Kalibrierzeitraum energetisch zusammengefasst. Ist für eine Stunde noch kein eigener Lernwert vorhanden, wird automatisch der bisherige Gesamtfaktor verwendet. Die Open-Meteo-Prognose wird bereits vor der Weiterverarbeitung mit dem jeweiligen Stundenfaktor korrigiert; damit zeigen auch die Prognosebalken im PV-Highcharts-Diagramm die korrigierte Prognose. Die bestehende Abregelungssperre gilt auch für diese stündlichen Lernwerte.
 
 Azimut-Konvention in der Konfiguration: Süd 0°, Ost −90°, West +90°, Nord −180° bzw. +180°.
+
+### 1.9.4 – Lastprofil und Rest-SoC
+Eigenes Highcharts-Diagramm für das gelernte 24-Stunden-Lastprofil mit Ist-Verbrauch und Navigation über die letzten sieben Tage. Zusätzlich kann ein gewünschter Rest-SoC nach der Nacht-Einspeisung eingestellt werden (Standard 30 %). Kann die korrigierte PV-Prognose den erwarteten Tagesverbrauch decken, darf bis zu diesem Ziel entladen werden; bei zu wenig PV wird automatisch mehr Energie reserviert. Der Minimum-SoC bleibt absolute Untergrenze.

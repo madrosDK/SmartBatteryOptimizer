@@ -466,6 +466,15 @@
                 },
                 {
                     "type": "NumberSpinner",
+                    "name": "GoodPVFeedInTargetSOC",
+                    "caption": "Rest-SoC nach Nacht-Einspeisung bei ausreichender PV",
+                    "digits": 0,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "suffix": " %"
+                },
+                {
+                    "type": "NumberSpinner",
                     "name": "MinimumValidNights",
                     "caption": "Mindestens gültige Nächte zum Lernen",
                     "digits": 0,

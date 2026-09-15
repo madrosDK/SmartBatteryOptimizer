@@ -55,6 +55,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('FallbackDailyConsumptionKWh', 12.0);
         $this->RegisterPropertyFloat('ConsumptionForecastSafetyPct', 10.0);
         $this->RegisterPropertyFloat('BatteryTargetSOC', 100.0);
+        $this->RegisterPropertyFloat('GoodPVFeedInTargetSOC', 30.0);
         $this->RegisterPropertyInteger('MinimumValidNights', 3);
         $this->RegisterPropertyBoolean('AutomaticDayNight', false);
         $this->RegisterPropertyInteger('SunriseVariable', 0);
@@ -143,6 +144,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('StatusText', 'Optimierungsstatus', '', 110);
         $this->RegisterVariableString('OverviewHTML', 'Übersicht', '~HTMLBox', 120);
         $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 121);
+        $this->RegisterVariableString('ConsumptionProfileChartHTML', 'Verbrauch Lastprofil Diagramm', '~HTMLBox', 124);
         $this->RegisterVariableString('PVCalibrationDiagnosisHTML', 'PV-Kalibrierung Diagnose', '~HTMLBox', 122);
         $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 123);
         $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 123);
@@ -573,6 +575,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('LastUpdate'), date('d.m.Y H:i:s'));
             SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
             SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+            SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($consumptionProfile));
             SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
             SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
             SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
@@ -1731,7 +1734,11 @@ class SmartBatteryOptimizer extends IPSModule
         // zuerst der gelernte Eigenverbrauch während der PV-Stunden abgezogen.
         $targetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->ReadPropertyFloat('BatteryTargetSOC')));
         $targetEnergy = $capacity * $targetSOC / 100.0;
-        $requiredMorningStored = max($minEnergy, $targetEnergy - $pvSurplusTomorrow);
+        $goodPVTargetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->ReadPropertyFloat('GoodPVFeedInTargetSOC')));
+        $goodPVTargetEnergy = $capacity * $goodPVTargetSOC / 100.0;
+        $pvCoversConsumption = $tomorrowPV >= $tomorrowConsumption && $tomorrowPV > 0.0;
+        $dynamicMorningStored = max($minEnergy, $targetEnergy - $pvSurplusTomorrow);
+        $requiredMorningStored = $pvCoversConsumption ? max($minEnergy, $goodPVTargetEnergy) : max($goodPVTargetEnergy, $dynamicMorningStored);
         $reserve = $nightReserve + $requiredMorningStored;
 
         if ($tomorrowPV < $this->ReadPropertyFloat('MinimumTomorrowPVKWh')) {
@@ -2018,6 +2025,10 @@ class SmartBatteryOptimizer extends IPSModule
             'morningReserveKWh' => $requiredMorningStored,
             'minimumEnergyKWh' => $minEnergy,
             'availableKWh' => $available,
+            'goodPVTargetSOC' => $goodPVTargetSOC,
+            'pvCoversConsumption' => $pvCoversConsumption,
+            'requiredMorningStoredKWh' => $requiredMorningStored,
+            'nightReserveKWh' => $nightReserve,
             'availableNowKWh' => $availableNow,
             'availableAtNightStartKWh' => $availableAtNightStart,
             'remainingPVTodayKWh' => $remainingPVToday,
@@ -3251,6 +3262,26 @@ class SmartBatteryOptimizer extends IPSModule
         return $source;
     }
 
+
+    private function RenderConsumptionProfileChartHTML(array $profile): string
+    {
+        $highchartsJS = $this->GetHighchartsJavaScript();
+        $chartId = 'sbo_consumption_profile_' . $this->InstanceID;
+        $learned = isset($profile['hourlyKWh']) && is_array($profile['hourlyKWh']) ? array_values($profile['hourlyKWh']) : array_fill(0, 24, 0.0);
+        $days = []; $archiveID = $this->FindArchive(); $varID = $this->ReadPropertyInteger('HousePowerVariable');
+        for ($age = 6; $age >= 0; $age--) {
+            $dayStart = strtotime('-' . $age . ' days 00:00:00');
+            $actual = ($archiveID > 0 && $varID > 0 && @IPS_VariableExists($varID)) ? $this->GetHourlyConsumptionForDay($archiveID, $varID, $dayStart) : null;
+            $rows = [];
+            for ($h=0;$h<24;$h++) $rows[]=['label'=>str_pad((string)$h,2,'0',STR_PAD_LEFT).':00','forecastKWh'=>round(max(0.0,(float)($learned[$h]??0)),3),'actualKWh'=>is_array($actual)?round(max(0.0,(float)($actual[$h]??0)),3):null];
+            $days[]=['date'=>date('Y-m-d',$dayStart),'label'=>date('d.m.Y',$dayStart),'forecastTotalKWh'=>round(array_sum($learned),3),'actualTotalKWh'=>is_array($actual)?round(array_sum($actual),3):null,'rows'=>$rows];
+        }
+        $html='<div style="font-family:Tahoma;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
+        if($highchartsJS==='') return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
+        $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
+        $html.='var days='.json_encode($days).',id='.json_encode($chartId).',idx=Math.max(0,days.length-1),chart=null;function e(s){return document.getElementById(id+s)}function draw(){if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
+        return $html;
+    }
 
     private function RenderPVForecastChartHTML(array $forecast): string
     {
