@@ -25,6 +25,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('PVCalibrationMinFactor', 0.50);
         $this->RegisterPropertyFloat('PVCalibrationMaxFactor', 1.50);
         $this->RegisterPropertyInteger('PVCalibrationFeedInVariable', 0);
+        $this->RegisterPropertyInteger('PVCalibrationBatteryPowerVariable', 0);
         $this->RegisterPropertyInteger('PVCalibrationFeedInLimitW', 10000);
         $this->RegisterPropertyInteger('PVCalibrationFeedInToleranceW', 500);
         $this->RegisterPropertyBoolean('PVCalibrationFeedInInvert', false);
@@ -1183,30 +1184,68 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function GetPVCalibrationFeedInGate(): array
     {
-        $variableID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
-        if ($variableID <= 0 || !@IPS_VariableExists($variableID)) {
-            return ['blocked' => false, 'configured' => false, 'feedInW' => null, 'thresholdW' => null, 'text' => ''];
+        $feedInVariableID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
+        $batteryPowerVariableID = $this->ReadPropertyInteger('PVCalibrationBatteryPowerVariable');
+
+        if ($feedInVariableID <= 0 || !@IPS_VariableExists($feedInVariableID)) {
+            return ['blocked' => false, 'configured' => false, 'feedInW' => null, 'batteryPowerW' => null, 'thresholdW' => null, 'text' => ''];
         }
 
         try {
-            $feedInW = (float)GetValue($variableID);
+            $feedInW = (float)GetValue($feedInVariableID);
             if ($this->ReadPropertyBoolean('PVCalibrationFeedInInvert')) {
                 $feedInW *= -1.0;
             }
         } catch (Throwable $e) {
             $this->DebugLog('PVCalibration', 'Netzeinspeisung konnte nicht gelesen werden: ' . $e->getMessage(), 0);
-            return ['blocked' => false, 'configured' => true, 'feedInW' => null, 'thresholdW' => null, 'text' => 'Netzeinspeisung nicht lesbar'];
+            return ['blocked' => false, 'configured' => true, 'feedInW' => null, 'batteryPowerW' => null, 'thresholdW' => null, 'text' => 'Netzeinspeisung nicht lesbar'];
+        }
+
+        // Vorzeichen laut Anlagenmessung:
+        // Batterie lädt = negativ, Batterie entlädt = positiv.
+        // Nur wenn die Batterie NICHT mehr lädt (>= 0 W) und gleichzeitig die
+        // Netzeinspeisung nahe am Limit liegt, ist der PV-Istwert für die
+        // Faktorberechnung wahrscheinlich durch Abregelung verfälscht.
+        $batteryConfigured = $batteryPowerVariableID > 0 && @IPS_VariableExists($batteryPowerVariableID);
+        $batteryPowerW = null;
+        if ($batteryConfigured) {
+            try {
+                $batteryPowerW = (float)GetValue($batteryPowerVariableID);
+            } catch (Throwable $e) {
+                $this->DebugLog('PVCalibration', 'Batterieleistung konnte nicht gelesen werden: ' . $e->getMessage(), 0);
+            }
         }
 
         $limitW = max(0.0, (float)$this->ReadPropertyInteger('PVCalibrationFeedInLimitW'));
         $toleranceW = max(0.0, (float)$this->ReadPropertyInteger('PVCalibrationFeedInToleranceW'));
         $thresholdW = max(0.0, $limitW - $toleranceW);
-        $blocked = $limitW > 0.0 && $feedInW >= $thresholdW;
-        $text = $blocked
-            ? 'Lernen pausiert – Einspeisebegrenzung aktiv (' . number_format($feedInW, 0, ',', '.') . ' W / Grenze ' . number_format($limitW, 0, ',', '.') . ' W, Sperre ab ' . number_format($thresholdW, 0, ',', '.') . ' W)'
-            : '';
+        $nearFeedInLimit = $limitW > 0.0 && $feedInW >= $thresholdW;
+        $batteryNotCharging = $batteryPowerW !== null && $batteryPowerW >= 0.0;
+        $blocked = $nearFeedInLimit && $batteryNotCharging;
 
-        return ['blocked' => $blocked, 'configured' => true, 'feedInW' => $feedInW, 'thresholdW' => $thresholdW, 'text' => $text];
+        $text = '';
+        if ($blocked) {
+            $text = 'Lernen pausiert – PV-Abregelung wahrscheinlich'
+                . ' | Netz ' . number_format($feedInW, 0, ',', '.') . ' W'
+                . ' | Batterie ' . number_format((float)$batteryPowerW, 0, ',', '.') . ' W'
+                . ' | Sperre ab ' . number_format($thresholdW, 0, ',', '.') . ' W';
+            $this->DebugLog('PVCalibration', $text);
+        } elseif ($nearFeedInLimit && $batteryPowerW !== null && $batteryPowerW < 0.0) {
+            $this->DebugLog(
+                'PVCalibration',
+                'Lernwert erlaubt trotz hoher Einspeisung: Batterie lädt noch mit '
+                . number_format(abs($batteryPowerW), 0, ',', '.') . ' W'
+            );
+        }
+
+        return [
+            'blocked' => $blocked,
+            'configured' => true,
+            'feedInW' => $feedInW,
+            'batteryPowerW' => $batteryPowerW,
+            'thresholdW' => $thresholdW,
+            'text' => $text
+        ];
     }
 
     private function AddPVCalibrationEnergySample(array $calibration, string $key, float $expectedW, float $actualW): array
@@ -1801,11 +1840,16 @@ class SmartBatteryOptimizer extends IPSModule
             $slotRemaining = max(0.0, $slotAvailability - $scheduledEnergy);
             if ($slotRemaining <= 0.001) continue;
             $energy = min($remaining, $slotRemaining, $maxKW * $durationH);
-            $powerKW = min($maxKW, $energy / $durationH);
+            // Mit maximaler Entladeleistung fahren und nur den letzten benötigten
+            // Slot zeitlich verkürzen. So entsprechen Energie, Leistung und Dauer:
+            // z.B. 16 kWh / 20 kW = 48 Minuten.
+            $powerKW = $maxKW;
+            $requiredSeconds = (int)ceil(($energy / $powerKW) * 3600.0);
+            $actualEnd = min($p['end'], $slotStart + max(1, $requiredSeconds));
             $key = $p['start'] . ':' . $p['end'];
             $selected[] = [
                 'start' => $slotStart,
-                'end' => $p['end'],
+                'end' => $actualEnd,
                 'priceCt' => $p['priceCt'],
                 'marketCt' => $p['marketCt'],
                 'energyKWh' => $energy,
@@ -1868,11 +1912,25 @@ class SmartBatteryOptimizer extends IPSModule
 
         usort($selected, fn($a, $b) => $a['start'] <=> $b['start']);
         $next = '-';
-        foreach ($selected as $s) {
-            if ($s['end'] > time()) {
-                $next = date('d.m. H:i', $s['start']) . '–' . date('H:i', $s['end']);
-                break;
+        $nowForNext = time();
+        foreach ($selected as $idx => $slot) {
+            if ($slot['end'] <= $nowForNext) continue;
+
+            $windowStart = $slot['start'];
+            $windowEnd = $slot['end'];
+
+            // Direkt anschließende 15-Minuten-Slots gehören für die Anzeige zu
+            // einem Einspeisefenster. Intern bleiben sie für die Preissteuerung getrennt.
+            for ($j = $idx + 1; $j < count($selected); $j++) {
+                $candidate = $selected[$j];
+                if ($candidate['start'] > $windowEnd + 1) break;
+                if ($candidate['start'] <= $windowEnd + 1) {
+                    $windowEnd = max($windowEnd, $candidate['end']);
+                }
             }
+
+            $next = date('d.m. H:i', $windowStart) . '–' . date('H:i', $windowEnd);
+            break;
         }
         $highest = count($selected) ? max(array_column($selected, 'priceCt')) : 0.0;
 
