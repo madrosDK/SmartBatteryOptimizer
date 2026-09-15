@@ -127,7 +127,14 @@ class SmartBatteryOptimizer extends IPSModule
         $this->EnableAction('RuntimePVStorageSharePct');
         $this->RegisterVariableFloat('RuntimePVSpaceMinimumPriceCt', 'Mindestpreis notwendige Speicherfreihaltung', 'SBO.PriceCt', 62);
         $this->EnableAction('RuntimePVSpaceMinimumPriceCt');
-        $this->RegisterVariableBoolean('FeedInActive', 'Einspeisung aktiv', '~Switch', 60);
+
+        $this->RegisterVariableInteger('TestDischargePowerW', 'Test Entladeleistung', 'SBO.PowerW', 63);
+        $this->EnableAction('TestDischargePowerW');
+        $this->RegisterVariableBoolean('TestDischarge', 'Test Entladung / Einspeisung', '~Switch', 64);
+        $this->EnableAction('TestDischarge');
+        $this->RegisterVariableString('TestDischargeStatus', 'Test Entladung Status', '', 65);
+
+        $this->RegisterVariableBoolean('FeedInActive', 'Einspeisung aktiv', '~Switch', 66);
         $this->RegisterVariableFloat('PlannedPower', 'Geplante Einspeiseleistung', '~Watt', 70);
         $this->RegisterVariableString('NextFeedInWindow', 'Nächstes Einspeisefenster', '', 80);
         $this->RegisterVariableFloat('ExpectedRevenue', 'Erwarteter Erlös', '', 90);
@@ -160,6 +167,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeBoolean('AlphaDispatchActive', false);
         $this->RegisterAttributeString('AlphaDispatchCommandKey', '');
         $this->RegisterAttributeBoolean('RuntimePVSettingsInitialized', false);
+        $this->RegisterAttributeInteger('ManualTestUntil', 0);
+        $this->RegisterAttributeInteger('ManualTestPowerW', 0);
 
         $this->RegisterTimer('RefreshTimer', 0, 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
@@ -240,6 +249,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('RuntimePVHeadroomTargetSOC'), $this->ReadPropertyFloat('PVHeadroomTargetSOC'));
             SetValue($this->GetIDForIdent('RuntimePVStorageSharePct'), $this->ReadPropertyFloat('PVStorageSharePct'));
             SetValue($this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt'), $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
+            SetValue($this->GetIDForIdent('TestDischargePowerW'), min(1000, max(0, $this->ReadPropertyInteger('MaxDischargePowerW'))));
             $this->WriteAttributeBoolean('RuntimePVSettingsInitialized', true);
         }
 
@@ -328,6 +338,46 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $this->DebugLog('RequestAction', $Ident . ' = ' . json_encode($Value));
         switch ($Ident) {
+            case 'TestDischargePowerW':
+                $testPower = max(0, min((int)$Value, $this->ReadPropertyInteger('MaxDischargePowerW')));
+                SetValue($this->GetIDForIdent('TestDischargePowerW'), $testPower);
+                break;
+            case 'TestDischarge':
+                if ((bool)$Value) {
+                    $socVar = $this->ReadPropertyInteger('SOCVariable');
+                    $soc = ($socVar > 0 && @IPS_VariableExists($socVar)) ? (float)GetValue($socVar) : 0.0;
+                    if ($soc <= $this->ReadPropertyFloat('MinimumSOC')) {
+                        SetValue($this->GetIDForIdent('TestDischarge'), false);
+                        SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test nicht gestartet: SoC liegt am/unter Mindest-SoC.');
+                        break;
+                    }
+                    $testPower = max(0, min((int)GetValue($this->GetIDForIdent('TestDischargePowerW')), $this->ReadPropertyInteger('MaxDischargePowerW')));
+                    if ($testPower <= 0) {
+                        SetValue($this->GetIDForIdent('TestDischarge'), false);
+                        SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test nicht gestartet: Testleistung ist 0 W.');
+                        break;
+                    }
+                    $until = time() + 120;
+                    $this->WriteAttributeInteger('ManualTestUntil', $until);
+                    $this->WriteAttributeInteger('ManualTestPowerW', $testPower);
+                    SetValue($this->GetIDForIdent('TestDischarge'), true);
+                    SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test aktiv: ' . $testPower . ' W bis ' . date('H:i:s', $until));
+                    try {
+                        $this->SetFeedIn(true, $testPower, $until);
+                    } catch (Throwable $e) {
+                        $this->WriteAttributeInteger('ManualTestUntil', 0);
+                        SetValue($this->GetIDForIdent('TestDischarge'), false);
+                        SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test fehlgeschlagen: ' . $e->getMessage());
+                        $this->DebugLog('TestEntladung', 'FEHLER: ' . $e->getMessage());
+                    }
+                } else {
+                    $this->WriteAttributeInteger('ManualTestUntil', 0);
+                    $this->WriteAttributeInteger('ManualTestPowerW', 0);
+                    SetValue($this->GetIDForIdent('TestDischarge'), false);
+                    try { $this->StopFeedIn(); } catch (Throwable $e) { $this->DebugLog('TestEntladung', 'Stop-Fehler: ' . $e->getMessage()); }
+                    SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test gestoppt.');
+                }
+                break;
             case 'PVCurtailmentProtectionEnabled':
                 SetValue($this->GetIDForIdent($Ident), (bool)$Value);
                 $this->RecalculateInternal(false);
@@ -557,51 +607,78 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function Control()
     {
-        $this->DebugLog('Control', 'Steuerprüfung gestartet | Automatik=' . ($this->IsAutomaticEnabled() ? 'AN' : 'AUS'));
-        if (!$this->IsAutomaticEnabled()) {
-            $this->DebugLog('Control', 'Keine Einspeisung: Automatik deaktiviert');
-            $this->StopFeedIn();
-            return;
-        }
+        try {
+            $now = time();
 
-        $gate = $this->GetAutomaticLearningGateStatus();
-        SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
-        if (!$gate['ready']) {
-            $this->DebugLog('Control', 'Automatik gesperrt: ' . $gate['text']);
-            $this->SetStatus(202);
-            SetValue($this->GetIDForIdent('StatusText'), 'Automatik gesperrt: ' . $gate['text']);
-            $this->StopFeedIn();
-            return;
-        }
-
-        $this->SetStatus(102);
-        $raw = json_decode($this->ReadAttributeString('PlanJSON'), true);
-        if (!is_array($raw) || !isset($raw['slots'])) {
-            $this->DebugLog('Control', 'Kein gültiger Plan vorhanden');
-            $this->StopFeedIn();
-            return;
-        }
-
-        $now = time();
-        $active = null;
-        foreach ($raw['slots'] as $slot) {
-            if ($now >= (int)$slot['start'] && $now < (int)$slot['end'] && (float)$slot['powerW'] > 0) {
-                $active = $slot;
-                break;
+            // Manueller Hardwaretest hat für maximal 120 Sekunden Vorrang vor
+            // Automatik, Lernfreigabe und Einspeiseplan.
+            $testUntil = $this->ReadAttributeInteger('ManualTestUntil');
+            if ($testUntil > $now) {
+                $testPower = max(0, min($this->ReadAttributeInteger('ManualTestPowerW'), $this->ReadPropertyInteger('MaxDischargePowerW')));
+                $this->DebugLog('Control', 'Manueller Entladetest aktiv | ' . $testPower . ' W | bis ' . date('H:i:s', $testUntil));
+                $this->SetFeedIn(true, $testPower, $testUntil);
+                SetValue($this->GetIDForIdent('TestDischarge'), true);
+                SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test aktiv: ' . $testPower . ' W bis ' . date('H:i:s', $testUntil));
+                return;
             }
+            if ($testUntil > 0) {
+                $this->WriteAttributeInteger('ManualTestUntil', 0);
+                $this->WriteAttributeInteger('ManualTestPowerW', 0);
+                SetValue($this->GetIDForIdent('TestDischarge'), false);
+                SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test automatisch nach 120 Sekunden beendet.');
+                $this->StopFeedIn();
+            }
+
+            $this->DebugLog('Control', 'Steuerprüfung gestartet | Automatik=' . ($this->IsAutomaticEnabled() ? 'AN' : 'AUS'));
+            if (!$this->IsAutomaticEnabled()) {
+                $this->DebugLog('Control', 'Keine Einspeisung: Automatik deaktiviert');
+                $this->StopFeedIn();
+                return;
+            }
+
+            $gate = $this->GetAutomaticLearningGateStatus();
+            SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
+            if (!$gate['ready']) {
+                $this->DebugLog('Control', 'Automatik gesperrt: ' . $gate['text']);
+                $this->SetStatus(202);
+                SetValue($this->GetIDForIdent('StatusText'), 'Automatik gesperrt: ' . $gate['text']);
+                $this->StopFeedIn();
+                return;
+            }
+
+            $this->SetStatus(102);
+            $raw = json_decode($this->ReadAttributeString('PlanJSON'), true);
+            if (!is_array($raw) || !isset($raw['slots'])) {
+                $this->DebugLog('Control', 'Kein gültiger Plan vorhanden');
+                $this->StopFeedIn();
+                return;
+            }
+
+            $active = null;
+            foreach ($raw['slots'] as $slot) {
+                if ($now >= (int)$slot['start'] && $now < (int)$slot['end'] && (float)$slot['powerW'] > 0) {
+                    $active = $slot;
+                    break;
+                }
+            }
+
+            $price = $this->FindCurrentPrice(json_decode($this->ReadAttributeString('PricesJSON'), true));
+            SetValue($this->GetIDForIdent('CurrentPrice'), round($price, 3));
+
+            if ($active === null) {
+                $this->DebugLog('Control', 'Aktuell kein Einspeiseslot | Preis=' . round($price, 3) . ' ct/kWh');
+                $this->StopFeedIn();
+                return;
+            }
+
+            $this->DebugLog('Control', 'Aktiver Slot: ' . date('d.m. H:i', (int)$active['start']) . '-' . date('H:i', (int)$active['end']) . ' | ' . round((float)$active['powerW']) . ' W | ' . round((float)$active['priceCt'], 3) . ' ct/kWh');
+            $this->SetFeedIn(true, (float)$active['powerW'], (int)$active['end']);
+            SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung aktiv: ' . round((float)$active['powerW']) . ' W bis ' . date('H:i', (int)$active['end']));
+        } catch (Throwable $e) {
+            $this->DebugLog('Control', 'FEHLER: ' . $e->getMessage());
+            SetValue($this->GetIDForIdent('StatusText'), 'Steuerfehler: ' . $e->getMessage());
+            try { $this->StopFeedIn(); } catch (Throwable $ignored) {}
         }
-
-        $price = $this->FindCurrentPrice(json_decode($this->ReadAttributeString('PricesJSON'), true));
-        SetValue($this->GetIDForIdent('CurrentPrice'), round($price, 3));
-
-        if ($active === null) {
-            $this->DebugLog('Control', 'Aktuell kein Einspeiseslot | Preis=' . round($price, 3) . ' ct/kWh');
-            $this->StopFeedIn();
-            return;
-        }
-
-        $this->DebugLog('Control', 'Aktiver Slot: ' . date('H:i', (int)$active['start']) . '-' . date('H:i', (int)$active['end']) . ' | ' . round((float)$active['powerW']) . ' W | ' . round((float)$active['priceCt'], 3) . ' ct/kWh');
-        $this->SetFeedIn(true, (float)$active['powerW'], (int)$active['end']);
     }
 
     public function StopFeedIn()
@@ -2488,9 +2565,15 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function WriteVariableSmart(int $variableID, $value)
     {
+        if ($variableID <= 0 || !@IPS_VariableExists($variableID)) {
+            throw new Exception('Schreibvariable ungültig: ID ' . $variableID);
+        }
+
         try {
             RequestAction($variableID, $value);
+            $this->DebugLog('WriteVariable', 'RequestAction ID=' . $variableID . ' Wert=' . $value . ' erfolgreich');
         } catch (Throwable $e) {
+            $this->DebugLog('WriteVariable', 'RequestAction ID=' . $variableID . ' fehlgeschlagen: ' . $e->getMessage() . ' | Fallback SetValue');
             SetValue($variableID, $value);
         }
     }

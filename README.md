@@ -279,3 +279,8 @@ Die editierbaren Laufzeitvariablen verwenden nun eigene, typkorrekte IP-Symcon-P
 
 ### Preislogik für notwendige Speicherfreihaltung 1.7.3
 Die normale Einspeisung nutzt weiterhin den normalen Mindest-Einspeisepreis. Reicht die dadurch geschaffene Speicherkapazität für den PV-/Netzlimit-Schutz nicht aus, wählt der Optimierer zusätzlich die bestbezahlten noch freien Zeitfenster vor dem kritischen PV-Zeitpunkt. Die separate Preisuntergrenze für notwendige Speicherfreihaltung ist dabei eine harte Untergrenze. Standard ist nun 0 ct/kWh; negative Preise werden damit nicht verwendet, sofern der Benutzer die Grenze nicht bewusst negativ einstellt.
+
+### Entladetest und Steuerdiagnose 1.7.4
+Für die Diagnose der Batterieansteuerung gibt es zwei neue bedienbare Frontend-Variablen: `Test Entladeleistung` und `Test Entladung / Einspeisung`. Der Test umgeht bewusst Einspeiseplan, Preisprüfung und Lernfreigabe, respektiert aber Mindest-SoC und maximale Entladeleistung. Er läuft maximal 120 Sekunden und wird anschließend automatisch beendet.
+
+Während des Tests hat die manuelle Ansteuerung Vorrang vor dem minütlichen Control-Timer. Zusätzlich protokolliert der Debug-Modus nun jeden Schreibversuch auf die Batterievariablen und Steuerfehler werden im Optimierungsstatus sichtbar.
