@@ -302,3 +302,8 @@ Für die AlphaESS-Entladeansteuerung wird wieder Dispatch Mode 2 verwendet. Die 
 PV-Istwerte und PV-Prognose werden jetzt im gleichen Intervall aktualisiert. Maßgeblich ist `PVActualRefreshMinutes`; der separate Prognose-Timer ist deaktiviert, damit keine doppelten Prognoseabrufe entstehen.
 
 Bei jedem dieser Zyklen werden Prognose, aktueller Batterie-SoC und Einspeiseplan neu berechnet. Wird der eingestellte maximale PV-Ziel-SoC früher als prognostiziert erreicht oder überschritten, wird die reale Überschreitung sofort als zusätzlicher benötigter Speicherplatz berücksichtigt. Die eigentliche Steuerprüfung läuft weiterhin jede Minute.
+
+### Sofortiger Netzlimit-Schutz bei erreichtem PV-Ziel-SoC 1.7.9
+Sobald der aktuelle Batterie-SoC den eingestellten PV-Ziel-SoC überschreitet, beginnt der Abregelungsschutz sofort. Der Status zeigt dann `Netzlimit-Schutz JETZT` statt weiterhin nur den späteren prognostizierten kritischen Zeitpunkt. Der prognostizierte Netzlimit-Zeitpunkt wird zusätzlich informativ angezeigt.
+
+Der über dem Ziel-SoC liegende Energieinhalt wird als unmittelbar freizumachender Speicherplatz in die Planung übernommen. Prognose und Istwerte werden weiterhin gemeinsam im PV-Ist-Intervall aktualisiert; die Steuerung prüft jede Minute.

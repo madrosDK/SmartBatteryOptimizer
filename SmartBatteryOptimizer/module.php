@@ -1694,10 +1694,20 @@ class SmartBatteryOptimizer extends IPSModule
         // Ohne Netzlimit-Risiko reicht die bisherige Planung bis zum PV-Morgen.
         // Bei drohender Abregelung muss der nötige Speicherplatz spätestens vor
         // dem ersten kritischen 15-Minuten-Slot geschaffen sein.
-        $criticalDeadline = (int)($gridRisk['firstCriticalTs'] ?? 0);
-        $horizonEnd = $criticalDeadline > time()
-            ? max(time() + 3600, $criticalDeadline)
-            : max(time() + 3600, (int)$forecast['morningTs']);
+        $forecastCriticalDeadline = (int)($gridRisk['firstCriticalTs'] ?? 0);
+        $targetSOCReachedNow = $currentTargetExcessKWh > 0.001;
+
+        // Ist der PV-Ziel-SoC bereits erreicht/überschritten, beginnt der
+        // Abregelungsschutz JETZT und wartet nicht auf den prognostizierten
+        // kritischen PV-Zeitpunkt. Für die Slot-Auswahl bleibt mindestens die
+        // nächste Stunde offen, damit unmittelbar verfügbare Preis-Slots
+        // verwendet werden können.
+        $criticalDeadline = $targetSOCReachedNow ? time() : $forecastCriticalDeadline;
+        $horizonEnd = $targetSOCReachedNow
+            ? time() + 3600
+            : ($criticalDeadline > time()
+                ? max(time() + 3600, $criticalDeadline)
+                : max(time() + 3600, (int)$forecast['morningTs']));
         $allSlots = [];
         foreach ($prices as $p) {
             if ($p['end'] <= time() || $p['start'] >= $horizonEnd) continue;
@@ -1795,8 +1805,15 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $highest = count($selected) ? max(array_column($selected, 'priceCt')) : 0.0;
 
-        if (($gridRisk['firstCriticalTs'] ?? 0) > 0) {
-            $status .= ' | Netzlimit-Schutz ab ' . date('d.m. H:i', (int)$gridRisk['firstCriticalTs']);
+        if ($targetSOCReachedNow) {
+            $status .= ' | Netzlimit-Schutz JETZT'
+                . ' (SoC ' . number_format($soc, 1, ',', '.') . ' %'
+                . ' ≥ Ziel ' . number_format($pvTargetSOC, 1, ',', '.') . ' %)';
+            if ($forecastCriticalDeadline > time()) {
+                $status .= ' | prognostiziertes Netzlimit ' . date('d.m. H:i', $forecastCriticalDeadline);
+            }
+        } elseif ($forecastCriticalDeadline > 0) {
+            $status .= ' | Netzlimit-Schutz ab ' . date('d.m. H:i', $forecastCriticalDeadline);
         }
 
         if ($pvSpaceRequired > 0.05) {
