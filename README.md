@@ -317,3 +317,8 @@ Die Entladeleistung wird aus dem aktuellen SoC-Überschuss berechnet und auf die
 Die in 1.8.0 versehentlich verwendete, nicht vorhandene Eigenschaft `BatterySOCVariable` wurde auf die vorhandene `SOCVariable` korrigiert.
 
 Im AlphaESS-Modus ruft der sofortige Netzlimit-Schutz nun `SetAlphaESSDispatch()` direkt auf. Damit werden beim Entladen zwingend alle Dispatch-Werte in dieser Reihenfolge geschrieben: Active Power = 32000 + Entladeleistung, Mode = 2, Dispatch SoC aus dem konfigurierten Mindest-SoC, Dispatch Time aus der aktuellen Schutzdauer und zuletzt Dispatch Start = 1.
+
+### AlphaESS Dispatch ohne Cache-Unterdrückung 1.8.2
+Die AlphaESS-Schreibsequenz wird bei jedem aktiven Steuerzyklus vollständig neu gesendet. Ein intern als aktiv gespeicherter identischer Befehl darf die Registerschreibvorgänge nicht mehr überspringen.
+
+Die Reihenfolge bleibt: Active Power = 32000 + Entladeleistung, Mode = 2, Dispatch SoC, Dispatch Time und zuletzt Dispatch Start = 1. Nach jedem Schreibversuch wird der lokale IP-Symcon-Wert im Debug als Readback protokolliert. Dadurch ist für jedes der fünf Register einzeln sichtbar, welcher Sollwert geschrieben wurde und welcher Wert unmittelbar danach in IP-Symcon anliegt.

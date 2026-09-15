@@ -368,7 +368,7 @@ class SmartBatteryOptimizer extends IPSModule
                         $testSocRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
                         SetValue(
                             $this->GetIDForIdent('TestDischargeStatus'),
-                            'Direkttest: Power=' . (32000 + $testPower)
+                            'Direkttest VOLLE SEQUENZ: Power=' . (32000 + $testPower)
                             . ' | Mode=2'
                             . ' | SOC=' . $testSocRaw
                             . ' | Time=120'
@@ -2676,11 +2676,10 @@ class SmartBatteryOptimizer extends IPSModule
         $activePowerRaw = (int)round(32000 + $powerW); // >32000 = Entladen
         $key = $activePowerRaw . ':' . $socTargetRaw . ':' . $slotEnd;
 
-        if ($this->ReadAttributeBoolean('AlphaDispatchActive') && $this->ReadAttributeString('AlphaDispatchCommandKey') === $key) {
-            $this->DebugLog('AlphaESS', 'Dispatch bereits identisch aktiv – keine erneute Schreibsequenz.');
-            return;
-        }
-
+        // AlphaESS-Befehle nie nur aufgrund eines internen Cache-Status
+        // überspringen. Der lokale Status beweist nicht, dass alle Register
+        // am Gerät angekommen sind. Bei jedem aktiven Steuerzyklus wird die
+        // vollständige Dispatch-Sequenz erneut geschrieben.
         if ($this->ReadAttributeBoolean('AlphaDispatchActive')) {
             $this->WriteVariableSmart($startID, 0);
         }
@@ -2700,14 +2699,38 @@ class SmartBatteryOptimizer extends IPSModule
 
         // Reihenfolge ist absichtlich fest: Parameter zuerst, Start zuletzt.
         $this->WriteVariableSmart($powerID, $activePowerRaw);
+        $this->DebugAlphaReadback('ActivePower', $powerID, $activePowerRaw);
+
         $this->WriteVariableSmart($modeID, $dispatchMode);
+        $this->DebugAlphaReadback('Mode', $modeID, $dispatchMode);
+
         $this->WriteVariableSmart($socID, $socTargetRaw);
+        $this->DebugAlphaReadback('SOC', $socID, $socTargetRaw);
+
         $this->WriteVariableSmart($timeID, $duration);
+        $this->DebugAlphaReadback('Time', $timeID, $duration);
+
         $this->WriteVariableSmart($startID, 1);
+        $this->DebugAlphaReadback('Start', $startID, 1);
 
         $this->WriteAttributeBoolean('AlphaDispatchActive', true);
         $this->WriteAttributeString('AlphaDispatchCommandKey', $key);
         $this->DebugLog('AlphaESS', 'Dispatch Entladen: ' . round($powerW) . ' W, Ziel-SoC ' . round($socTargetRaw * 0.4, 1) . ' %, ' . $duration . ' s', 0);
+    }
+
+    private function DebugAlphaReadback(string $name, int $variableID, $expected): void
+    {
+        try {
+            $actual = GetValue($variableID);
+            $this->DebugLog(
+                'AlphaESS Readback',
+                $name . ' ID=' . $variableID
+                . ' | Soll=' . $expected
+                . ' | lokaler Istwert direkt danach=' . $actual
+            );
+        } catch (Throwable $e) {
+            $this->DebugLog('AlphaESS Readback', $name . ' ID=' . $variableID . ' | Lesen fehlgeschlagen: ' . $e->getMessage());
+        }
     }
 
     private function WriteVariableSmart(int $variableID, $value)
