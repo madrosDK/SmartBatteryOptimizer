@@ -364,3 +364,6 @@ Azimut-Konvention in der Konfiguration: Süd 0°, Ost −90°, West +90°, Nord 
 
 ### 1.9.4 – Lastprofil und Rest-SoC
 Eigenes Highcharts-Diagramm für das gelernte 24-Stunden-Lastprofil mit Ist-Verbrauch und Navigation über die letzten sieben Tage. Zusätzlich kann ein gewünschter Rest-SoC nach der Nacht-Einspeisung eingestellt werden (Standard 30 %). Kann die korrigierte PV-Prognose den erwarteten Tagesverbrauch decken, darf bis zu diesem Ziel entladen werden; bei zu wenig PV wird automatisch mehr Energie reserviert. Der Minimum-SoC bleibt absolute Untergrenze.
+
+### 1.9.5 – Mindest-SoC als Laufzeitvariable
+Der zusätzliche 30-%-Rest-SoC aus 1.9.4 wurde wieder entfernt. Für die Einspeiseplanung gilt ausschließlich der konfigurierte Mindest-SoC als absolute Untergrenze. Der Mindest-SoC steht zusätzlich als beschreibbare IP-Symcon-Variable `Mindest-SoC` zur Verfügung und kann damit direkt im Frontend bzw. per Skript geändert werden. Die Laufzeitvariable wird in Planung, Steuerung, Testentladung und AlphaESS-Dispatch verwendet.

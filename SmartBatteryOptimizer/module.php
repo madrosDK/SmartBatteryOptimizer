@@ -55,7 +55,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('FallbackDailyConsumptionKWh', 12.0);
         $this->RegisterPropertyFloat('ConsumptionForecastSafetyPct', 10.0);
         $this->RegisterPropertyFloat('BatteryTargetSOC', 100.0);
-        $this->RegisterPropertyFloat('GoodPVFeedInTargetSOC', 30.0);
         $this->RegisterPropertyInteger('MinimumValidNights', 3);
         $this->RegisterPropertyBoolean('AutomaticDayNight', false);
         $this->RegisterPropertyInteger('SunriseVariable', 0);
@@ -129,6 +128,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->EnableAction('RuntimePVStorageSharePct');
         $this->RegisterVariableFloat('RuntimePVSpaceMinimumPriceCt', 'Mindestpreis notwendige Speicherfreihaltung', 'SBO.PriceCt', 62);
         $this->EnableAction('RuntimePVSpaceMinimumPriceCt');
+        $this->RegisterVariableFloat('RuntimeMinimumSOC', 'Mindest-SoC', 'SBO.Percent', 67);
+        $this->EnableAction('RuntimeMinimumSOC');
 
         $this->RegisterVariableInteger('TestDischargePowerW', 'Test Entladeleistung', 'SBO.PowerW', 63);
         $this->EnableAction('TestDischargePowerW');
@@ -255,8 +256,13 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('RuntimePVHeadroomTargetSOC'), $this->ReadPropertyFloat('PVHeadroomTargetSOC'));
             SetValue($this->GetIDForIdent('RuntimePVStorageSharePct'), $this->ReadPropertyFloat('PVStorageSharePct'));
             SetValue($this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt'), $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
+            SetValue($this->GetIDForIdent('RuntimeMinimumSOC'), $this->GetRuntimeMinimumSOC());
             SetValue($this->GetIDForIdent('TestDischargePowerW'), min(1000, max(0, $this->ReadPropertyInteger('MaxDischargePowerW'))));
             $this->WriteAttributeBoolean('RuntimePVSettingsInitialized', true);
+        }
+
+        if ((float)GetValue($this->GetIDForIdent('RuntimeMinimumSOC')) <= 0.0 && $this->GetRuntimeMinimumSOC() > 0.0) {
+            SetValue($this->GetIDForIdent('RuntimeMinimumSOC'), $this->GetRuntimeMinimumSOC());
         }
 
         $debugMode = $this->ReadPropertyBoolean('DebugMode');
@@ -352,7 +358,7 @@ class SmartBatteryOptimizer extends IPSModule
                 if ((bool)$Value) {
                     $socVar = $this->ReadPropertyInteger('SOCVariable');
                     $soc = ($socVar > 0 && @IPS_VariableExists($socVar)) ? (float)GetValue($socVar) : 0.0;
-                    if ($soc <= $this->ReadPropertyFloat('MinimumSOC')) {
+                    if ($soc <= $this->GetRuntimeMinimumSOC()) {
                         SetValue($this->GetIDForIdent('TestDischarge'), false);
                         SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test nicht gestartet: SoC liegt am/unter Mindest-SoC.');
                         break;
@@ -370,7 +376,7 @@ class SmartBatteryOptimizer extends IPSModule
                     SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test aktiv: ' . $testPower . ' W bis ' . date('H:i:s', $until));
                     try {
                         $ids = $this->GetAlphaDispatchIDs();
-                        $testSocRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
+                        $testSocRaw = (int)round(max(0.0, min(100.0, $this->GetRuntimeMinimumSOC())) / 0.4);
                         SetValue(
                             $this->GetIDForIdent('TestDischargeStatus'),
                             'AlphaESS Einspeisetest: Power=' . (32000 + $testPower)
@@ -436,6 +442,10 @@ class SmartBatteryOptimizer extends IPSModule
                 break;
             case 'RuntimePVSpaceMinimumPriceCt':
                 SetValue($this->GetIDForIdent($Ident), (float)$Value);
+                $this->RecalculateInternal(false);
+                break;
+            case 'RuntimeMinimumSOC':
+                SetValue($this->GetIDForIdent($Ident), max(0.0, min(100.0, (float)$Value)));
                 $this->RecalculateInternal(false);
                 break;
             case 'AutomaticEnabled':
@@ -684,7 +694,7 @@ class SmartBatteryOptimizer extends IPSModule
                     $socVariableID = $this->ReadPropertyInteger('SOCVariable');
                     $soc = $socVariableID > 0 ? (float)GetValue($socVariableID) : 0.0;
                     $targetSOC = max(
-                        $this->ReadPropertyFloat('MinimumSOC'),
+                        $this->GetRuntimeMinimumSOC(),
                         min(100.0, $this->GetRuntimeFloat(
                             'RuntimePVHeadroomTargetSOC',
                             $this->ReadPropertyFloat('PVHeadroomTargetSOC')
@@ -1713,6 +1723,11 @@ class SmartBatteryOptimizer extends IPSModule
         ];
     }
 
+    private function GetRuntimeMinimumSOC(): float
+    {
+        return max(0.0, min(100.0, $this->GetRuntimeFloat('RuntimeMinimumSOC', $this->ReadPropertyFloat('MinimumSOC'))));
+    }
+
     private function BuildPlan(array $forecast, array $prices, float $nightKWh, array $consumptionProfile): array
     {
         $socVar = $this->ReadPropertyInteger('SOCVariable');
@@ -1720,7 +1735,8 @@ class SmartBatteryOptimizer extends IPSModule
         $soc = max(0.0, min(100.0, (float)GetValue($socVar)));
         $capacity = max(0.1, $this->ReadPropertyFloat('BatteryCapacityKWh'));
         $stored = $capacity * $soc / 100.0;
-        $minEnergy = $capacity * $this->ReadPropertyFloat('MinimumSOC') / 100.0;
+        $minimumSOC = $this->GetRuntimeMinimumSOC();
+        $minEnergy = $capacity * $minimumSOC / 100.0;
         $nightReserve = $nightKWh * (1.0 + $this->ReadPropertyFloat('SafetyReservePct') / 100.0);
 
         $tomorrowPV = (float)$forecast['tomorrowKWh'];
@@ -1732,13 +1748,9 @@ class SmartBatteryOptimizer extends IPSModule
         // Ziel: Der Speicher soll trotz geplanter Einspeisung am nächsten PV-Tag
         // wieder bis zum konfigurierten Ziel-SoC geladen werden können. Dafür wird
         // zuerst der gelernte Eigenverbrauch während der PV-Stunden abgezogen.
-        $targetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->ReadPropertyFloat('BatteryTargetSOC')));
+        $targetSOC = max($minimumSOC, min(100.0, $this->ReadPropertyFloat('BatteryTargetSOC')));
         $targetEnergy = $capacity * $targetSOC / 100.0;
-        $goodPVTargetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->ReadPropertyFloat('GoodPVFeedInTargetSOC')));
-        $goodPVTargetEnergy = $capacity * $goodPVTargetSOC / 100.0;
-        $pvCoversConsumption = $tomorrowPV >= $tomorrowConsumption && $tomorrowPV > 0.0;
-        $dynamicMorningStored = max($minEnergy, $targetEnergy - $pvSurplusTomorrow);
-        $requiredMorningStored = $pvCoversConsumption ? max($minEnergy, $goodPVTargetEnergy) : max($goodPVTargetEnergy, $dynamicMorningStored);
+        $requiredMorningStored = max($minEnergy, $targetEnergy - $pvSurplusTomorrow);
         $reserve = $nightReserve + $requiredMorningStored;
 
         if ($tomorrowPV < $this->ReadPropertyFloat('MinimumTomorrowPVKWh')) {
@@ -1800,7 +1812,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Speicherplatz für den erwarteten PV-Überschuss freihalten. Der lernende
         // Verbrauch wird vorab von der PV-Prognose abgezogen.
         $pvSpaceRequired = 0.0;
-        $pvTargetSOC = max($this->ReadPropertyFloat('MinimumSOC'), min(100.0, $this->GetRuntimeFloat('RuntimePVHeadroomTargetSOC', $this->ReadPropertyFloat('PVHeadroomTargetSOC'))));
+        $pvTargetSOC = max($this->GetRuntimeMinimumSOC(), min(100.0, $this->GetRuntimeFloat('RuntimePVHeadroomTargetSOC', $this->ReadPropertyFloat('PVHeadroomTargetSOC'))));
         $expectedMorningStored = max($minEnergy, $projectedStoredAtNightStart - max(0.0, $nightReserve));
         $targetMaxEnergy = $capacity * $pvTargetSOC / 100.0;
         $expectedPVToBattery = $pvSurplusTomorrow * max(0.0, min(100.0, $this->GetRuntimeFloat('RuntimePVStorageSharePct', $this->ReadPropertyFloat('PVStorageSharePct')))) / 100.0;
@@ -2025,8 +2037,6 @@ class SmartBatteryOptimizer extends IPSModule
             'morningReserveKWh' => $requiredMorningStored,
             'minimumEnergyKWh' => $minEnergy,
             'availableKWh' => $available,
-            'goodPVTargetSOC' => $goodPVTargetSOC,
-            'pvCoversConsumption' => $pvCoversConsumption,
             'requiredMorningStoredKWh' => $requiredMorningStored,
             'nightReserveKWh' => $nightReserve,
             'availableNowKWh' => $availableNow,
@@ -2765,7 +2775,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $ids = $this->GetAlphaDispatchIDs();
         $powerW = max(0, min($powerW, $this->ReadPropertyInteger('MaxDischargePowerW')));
-        $socRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
+        $socRaw = (int)round(max(0.0, min(100.0, $this->GetRuntimeMinimumSOC())) / 0.4);
 
         $this->AppendAlphaTestTrace('Start Mode-2-Test ' . $powerW . ' W | Start=1 -> Power -> Mode=2 -> SOC');
 
@@ -2844,7 +2854,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $activePowerRaw = (int)round(32000 + $powerW);
         $dispatchMode = 2;
-        $socTargetRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
+        $socTargetRaw = (int)round(max(0.0, min(100.0, $this->GetRuntimeMinimumSOC())) / 0.4);
         $duration = $slotEnd > time() ? ($slotEnd - time()) : 120;
         $duration = max(60, min(86400, (int)$duration));
 
