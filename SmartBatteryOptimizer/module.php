@@ -660,6 +660,47 @@ class SmartBatteryOptimizer extends IPSModule
                 return;
             }
 
+            // Sofortiger PV-/Netzlimit-Schutz: Sobald der aktuelle SoC den
+            // eingestellten PV-Ziel-SoC überschreitet, darf die Hardwaresteuerung
+            // nicht auf einen späteren Preis-/Plan-Slot warten. Dieser Schutz
+            // hat deshalb Vorrang vor Lernfreigabe und normalem Einspeiseplan.
+            if ($this->GetRuntimeBoolean('PVCurtailmentProtectionEnabled', $this->ReadPropertyBoolean('PreventPVCurtailment'))) {
+                $socID = $this->ReadPropertyInteger('BatterySOCVariable');
+                $socNow = ($socID > 0 && @IPS_VariableExists($socID)) ? (float)GetValue($socID) : 0.0;
+                $targetSOC = max(0.0, min(100.0, $this->GetRuntimeFloat('RuntimePVHeadroomTargetSOC', $this->ReadPropertyFloat('PVHeadroomTargetSOC'))));
+
+                if ($socID > 0 && $socNow > $targetSOC + 0.01) {
+                    $capacity = max(0.1, $this->ReadPropertyFloat('BatteryCapacityKWh'));
+                    $excessKWh = max(0.0, ($socNow - $targetSOC) / 100.0 * $capacity);
+                    $maxPowerW = max(1, $this->ReadPropertyInteger('MaxDischargePowerW'));
+
+                    // Jede Minute neu bestimmen. Leistung so wählen, dass der
+                    // aktuelle Überschuss innerhalb höchstens 15 Minuten
+                    // abgebaut wird; begrenzt durch die konfigurierte Maximalleistung.
+                    $protectionPowerW = min($maxPowerW, max(100.0, $excessKWh * 4.0 * 1000.0));
+                    $dispatchUntil = $now + 120;
+
+                    $this->DebugLog(
+                        'PV-Abregelung',
+                        'SOFORT-Dispatch: SoC=' . round($socNow, 2) . ' %'
+                        . ' > Ziel=' . round($targetSOC, 2) . ' %'
+                        . ' | Überschuss=' . round($excessKWh, 3) . ' kWh'
+                        . ' | Soll=' . round($protectionPowerW) . ' W'
+                    );
+
+                    // AlphaESS bei konfiguriertem AlphaESS-Modus über die bereits
+                    // getestete Dispatch-Sequenz Power -> Mode 2 -> SOC -> Time -> Start.
+                    $this->SetFeedIn(true, $protectionPowerW, $dispatchUntil);
+                    SetValue(
+                        $this->GetIDForIdent('StatusText'),
+                        'Netzlimit-Schutz AKTIV: ' . round($protectionPowerW) . ' W'
+                        . ' | SoC ' . number_format($socNow, 1, ',', '.') . ' %'
+                        . ' > Ziel ' . number_format($targetSOC, 1, ',', '.') . ' %'
+                    );
+                    return;
+                }
+            }
+
             $gate = $this->GetAutomaticLearningGateStatus();
             SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
             if (!$gate['ready']) {
@@ -2556,6 +2597,7 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $this->DebugLog('Batterie', ($enable ? 'Einspeisung AN' : 'Einspeisung AUS') . ' | Soll=' . round($powerW) . ' W' . ($slotEnd > 0 ? ' | bis ' . date('H:i:s', $slotEnd) : ''));
         if ($this->ReadPropertyInteger('BatteryControlMode') === 1) {
+            $this->DebugLog('Batterie', 'Steuerweg=AlphaESS Dispatch');
             $this->SetAlphaESSDispatch($enable, $powerW, $slotEnd);
         } else {
             $powerID = $this->ReadPropertyInteger('DischargePowerVariable');

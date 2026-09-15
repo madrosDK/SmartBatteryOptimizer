@@ -307,3 +307,8 @@ Bei jedem dieser Zyklen werden Prognose, aktueller Batterie-SoC und Einspeisepla
 Sobald der aktuelle Batterie-SoC den eingestellten PV-Ziel-SoC überschreitet, beginnt der Abregelungsschutz sofort. Der Status zeigt dann `Netzlimit-Schutz JETZT` statt weiterhin nur den späteren prognostizierten kritischen Zeitpunkt. Der prognostizierte Netzlimit-Zeitpunkt wird zusätzlich informativ angezeigt.
 
 Der über dem Ziel-SoC liegende Energieinhalt wird als unmittelbar freizumachender Speicherplatz in die Planung übernommen. Prognose und Istwerte werden weiterhin gemeinsam im PV-Ist-Intervall aktualisiert; die Steuerung prüft jede Minute.
+
+### Netzlimit-Schutz steuert AlphaESS sofort 1.8.0
+Der Status `Netzlimit-Schutz JETZT` ist nicht mehr nur Planungsinformation. Sobald der aktuelle Batterie-SoC über dem eingestellten PV-Ziel-SoC liegt, erzeugt die minütliche Steuerprüfung unmittelbar einen Entladebefehl. Der Sofortschutz läuft vor Lernfreigabe und normalem Preisplan.
+
+Die Entladeleistung wird aus dem aktuellen SoC-Überschuss berechnet und auf die konfigurierte maximale Entladeleistung begrenzt. Bei AlphaESS wird die bestehende Dispatch-Sequenz verwendet: Active Power, Mode 2, SoC, Time und zuletzt Start. Alle zwei Minuten wird der Dispatch durch die minütliche Steuerprüfung anhand des aktuellen SoC erneuert, solange der Ziel-SoC überschritten ist.
