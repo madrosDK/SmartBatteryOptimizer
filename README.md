@@ -330,3 +330,6 @@ Bei Entladung wird zuerst Dispatch Start auf 0 gesetzt. Danach werden Active Pow
 
 ### AlphaESS Dispatch 1.8.4
 Direkte Wertänderungen der read-only Modbusvariablen wurden aus dem Dispatch entfernt. Geschrieben wird ausschließlich über die jeweilige IP-Symcon-Aktion. Die zentrale Sequenz lautet Start 0, Active Power = 32000 + Entladeleistung, Mode 2, Dispatch SoC, Dispatch Time und zuletzt Start 1. Zwischen den Befehlen wird kurz serialisiert.
+
+### Gestufter AlphaESS-Diagnosetest 1.8.5
+Der manuelle Einspeisetest schreibt die sechs Schritte mit jeweils etwa drei Sekunden Abstand: Start=0, Active Power, Mode=2, SOC, Time und zuletzt Start=1. Vor und direkt nach jedem Schritt werden die sichtbaren Werte protokolliert. Nach Start=1 werden keine Dispatchwerte mehr geschrieben; der Test beobachtet nur noch alle drei Sekunden Power, Mode, SOC, Time und Start. Der Verlauf erscheint in `Test Entladung Status`.

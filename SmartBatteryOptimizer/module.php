@@ -169,6 +169,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeBoolean('RuntimePVSettingsInitialized', false);
         $this->RegisterAttributeInteger('ManualTestUntil', 0);
         $this->RegisterAttributeInteger('ManualTestPowerW', 0);
+        $this->RegisterAttributeInteger('AlphaTestStage', 0);
+        $this->RegisterAttributeInteger('AlphaTestNextTs', 0);
+        $this->RegisterAttributeString('AlphaTestTrace', '');
 
         $this->RegisterTimer('RefreshTimer', 0, 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
@@ -385,7 +388,7 @@ class SmartBatteryOptimizer extends IPSModule
                             . ' | Time=' . $ids['time']
                             . ' | Soll=' . $testPower . ' W'
                         );
-                        $this->SetAlphaESSDispatch(true, $testPower, $until);
+                        $this->StartAlphaESSDiagnosticTest($testPower);
                     } catch (Throwable $e) {
                         $this->WriteAttributeInteger('ManualTestUntil', 0);
                         SetValue($this->GetIDForIdent('TestDischarge'), false);
@@ -395,6 +398,8 @@ class SmartBatteryOptimizer extends IPSModule
                 } else {
                     $this->WriteAttributeInteger('ManualTestUntil', 0);
                     $this->WriteAttributeInteger('ManualTestPowerW', 0);
+                    $this->WriteAttributeInteger('AlphaTestStage', 0);
+                    $this->WriteAttributeInteger('AlphaTestNextTs', 0);
                     SetValue($this->GetIDForIdent('TestDischarge'), false);
                     try {
                         $this->SetAlphaESSDispatch(false, 0, 0);
@@ -637,17 +642,17 @@ class SmartBatteryOptimizer extends IPSModule
             $testUntil = $this->ReadAttributeInteger('ManualTestUntil');
             if ($testUntil > $now) {
                 $testPower = max(0, min($this->ReadAttributeInteger('ManualTestPowerW'), $this->ReadPropertyInteger('MaxDischargePowerW')));
-                $this->DebugLog('Control', 'Manueller Entladetest aktiv | ' . $testPower . ' W | bis ' . date('H:i:s', $testUntil));
-                $this->SetAlphaESSDispatch(true, $testPower, $testUntil);
+                $this->RunAlphaESSDiagnosticTest();
                 SetValue($this->GetIDForIdent('FeedInActive'), true);
                 SetValue($this->GetIDForIdent('PlannedPower'), (float)$testPower);
                 SetValue($this->GetIDForIdent('TestDischarge'), true);
-                SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test aktiv: ' . $testPower . ' W bis ' . date('H:i:s', $testUntil));
                 return;
             }
             if ($testUntil > 0) {
                 $this->WriteAttributeInteger('ManualTestUntil', 0);
                 $this->WriteAttributeInteger('ManualTestPowerW', 0);
+                $this->WriteAttributeInteger('AlphaTestStage', 0);
+                $this->WriteAttributeInteger('AlphaTestNextTs', 0);
                 SetValue($this->GetIDForIdent('TestDischarge'), false);
                 SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test automatisch nach 120 Sekunden beendet.');
                 $this->StopFeedIn();
@@ -2629,6 +2634,69 @@ class SmartBatteryOptimizer extends IPSModule
             'soc'   => $this->ReadPropertyInteger('AlphaDispatchSOCVariable'),
             'time'  => $this->ReadPropertyInteger('AlphaDispatchTimeVariable')
         ];
+    }
+
+    private function StartAlphaESSDiagnosticTest(int $powerW): void
+    {
+        $this->WriteAttributeInteger('AlphaTestStage', 1);
+        $this->WriteAttributeInteger('AlphaTestNextTs', time());
+        $this->WriteAttributeString('AlphaTestTrace', '');
+        $this->AppendAlphaTestTrace('Start Diagnosetest ' . $powerW . ' W');
+        $this->RunAlphaESSDiagnosticTest();
+    }
+
+    private function RunAlphaESSDiagnosticTest(): void
+    {
+        $stage = $this->ReadAttributeInteger('AlphaTestStage');
+        if ($stage <= 0 || time() < $this->ReadAttributeInteger('AlphaTestNextTs')) return;
+
+        $ids = $this->GetAlphaDispatchIDs();
+        $powerW = max(0, min($this->ReadAttributeInteger('ManualTestPowerW'), $this->ReadPropertyInteger('MaxDischargePowerW')));
+        $socRaw = (int)round(max(0.0, min(100.0, $this->ReadPropertyFloat('MinimumSOC'))) / 0.4);
+        $until = $this->ReadAttributeInteger('ManualTestUntil');
+        $duration = max(60, min(86400, $until > time() ? $until - time() : 60));
+
+        $steps = [
+            1 => ['Start/Reset', $ids['start'], 0],
+            2 => ['ActivePower', $ids['power'], 32000 + $powerW],
+            3 => ['Mode', $ids['mode'], 2],
+            4 => ['SOC', $ids['soc'], $socRaw],
+            5 => ['Time', $ids['time'], $duration],
+            6 => ['Start', $ids['start'], 1]
+        ];
+
+        if (isset($steps[$stage])) {
+            [$name, $id, $value] = $steps[$stage];
+            $before = @GetValue($id);
+            $this->WriteAlphaDispatchValue($name, $id, $value);
+            usleep(250000);
+            $after = @GetValue($id);
+            $this->AppendAlphaTestTrace('Stufe ' . $stage . ' ' . $name . ': vorher=' . $before . ' | Soll=' . $value . ' | danach=' . $after);
+            $this->WriteAttributeInteger('AlphaTestStage', $stage + 1);
+            $this->WriteAttributeInteger('AlphaTestNextTs', time() + 3);
+            return;
+        }
+
+        $this->AppendAlphaTestTrace(
+            'Beobachtung: Power=' . @GetValue($ids['power'])
+            . ' | Mode=' . @GetValue($ids['mode'])
+            . ' | SOC=' . @GetValue($ids['soc'])
+            . ' | Time=' . @GetValue($ids['time'])
+            . ' | Start=' . @GetValue($ids['start'])
+        );
+        $this->WriteAttributeInteger('AlphaTestNextTs', time() + 3);
+    }
+
+    private function AppendAlphaTestTrace(string $line): void
+    {
+        $trace = $this->ReadAttributeString('AlphaTestTrace');
+        $trace .= ($trace !== '' ? "\n" : '') . date('H:i:s') . ' ' . $line;
+        $lines = explode("\n", $trace);
+        if (count($lines) > 12) $lines = array_slice($lines, -12);
+        $trace = implode("\n", $lines);
+        $this->WriteAttributeString('AlphaTestTrace', $trace);
+        SetValue($this->GetIDForIdent('TestDischargeStatus'), $trace);
+        $this->DebugLog('AlphaESS Test', $line);
     }
 
     private function SetAlphaESSDispatch(bool $enable, float $powerW, int $slotEnd): void
