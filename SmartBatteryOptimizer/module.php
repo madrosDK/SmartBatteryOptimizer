@@ -379,7 +379,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.31';
+        $currentModuleVersion = '1.9.32';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -2788,7 +2788,12 @@ class SmartBatteryOptimizer extends IPSModule
     private function GetHourlyConsumptionForDay(int $archiveID, int $varID, int $dayStart): ?array
     {
         $dayEnd = $dayStart + 86400;
-        $values = @AC_GetLoggedValues($archiveID, $varID, $dayStart, $dayEnd, 0);
+        // Für den aktuellen Tag niemals über "jetzt" hinaus integrieren.
+        // Sonst würde der letzte archivierte Leistungswert künstlich bis Mitternacht
+        // fortgeschrieben und die aktuelle/zukünftige Stunde als voller Ist-Verbrauch erscheinen.
+        $integrationEnd = min($dayEnd, time());
+        if ($integrationEnd <= $dayStart) return null;
+        $values = @AC_GetLoggedValues($archiveID, $varID, $dayStart, $integrationEnd, 0);
         if (!is_array($values) || count($values) === 0) return null;
         $values = array_reverse($values);
 
@@ -2802,7 +2807,7 @@ class SmartBatteryOptimizer extends IPSModule
         $hourlyWh = array_fill(0, 24, 0.0);
         for ($i = 0; $i < count($values); $i++) {
             $segmentStart = max($dayStart, (int)$values[$i]['TimeStamp']);
-            $segmentEnd = ($i + 1 < count($values)) ? min($dayEnd, (int)$values[$i + 1]['TimeStamp']) : $dayEnd;
+            $segmentEnd = ($i + 1 < count($values)) ? min($integrationEnd, (int)$values[$i + 1]['TimeStamp']) : $integrationEnd;
             if ($segmentEnd <= $segmentStart) continue;
             $powerW = max(0.0, (float)$values[$i]['Value']);
 
