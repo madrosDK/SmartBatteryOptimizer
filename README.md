@@ -383,3 +383,9 @@ Forecast.Solar Public wird pro aktiver PV-Fläche separat abgefragt. Die Ergebni
 
 ### 1.9.9 – Asynchrone manuelle Neuberechnung
 Der Button `Prognose & Plan berechnen` startet die vollständige Berechnung jetzt über einen einmaligen Modul-Timer und gibt das Konfigurationsformular sofort wieder frei. `Letzte manuelle Aktion` zeigt den aktuellen Provider/Schritt sowie Abschluss oder Fehler. Der Worker schaltet seinen Timer vor der Berechnung wieder aus, damit Fehler keine Wiederholung auslösen.
+
+### 1.9.10 – Lastprofil-Highcharts korrigiert
+Die in 1.9.8 ergänzte Speicherung des ausgewählten Lastprofil-Tages enthielt in der erzeugten JavaScript-Zeile einen fehlerhaften PHP/JavaScript-String für den localStorage-Schlüssel. Nach einer Neuberechnung konnte das Lastprofil-Diagramm deshalb nicht mehr initialisiert werden. Der Schlüssel wird jetzt serverseitig korrekt als JSON/JavaScript-String erzeugt. Die Tagesauswahl bleibt bei HTMLBox-Aktualisierungen weiterhin erhalten.
+
+### 1.9.11 – PV-Debug-Sichtbarkeit bleibt auch bei HTMLBox-Aktualisierung erhalten
+Die Sichtbarkeit der einzelnen Debug-Prognosequellen wird nicht mehr ausschließlich im JavaScript/localStorage der aktuellen Highcharts-Instanz gehalten. Bei einem Legend-Klick wird der Zustand zusätzlich über `RequestAction` im Modul gespeichert. Beim vollständigen Neuaufbau der PV-HTMLBox wird dieser Zustand wieder als Startwert in Highcharts übernommen. Dadurch bleiben aktivierte/deaktivierte Debug-Profile sowohl beim Blättern als auch nach Prognose-, Istwert- und HTMLBox-Aktualisierungen erhalten.
