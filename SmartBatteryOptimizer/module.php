@@ -152,6 +152,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('ActionFeedback', 'Letzte manuelle Aktion', '', 123);
         $this->RegisterVariableString('ForecastSolarStatus', 'Forecast.Solar Flächenstatus', '', 125);
         $this->RegisterVariableString('PVDebugVisibilityState', 'PV Debug Sichtbarkeit', '', 126);
+        $this->RegisterVariableString('ProviderDebugHTML', 'Prognose Provider Debug', '~HTMLBox', 127);
         $this->EnableAction('PVDebugVisibilityState');
         $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 123);
         $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 123);
@@ -161,6 +162,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('PVSourceForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('ForecastSolarSurfaceCacheJSON', '{}');
         $this->RegisterAttributeString('PVDebugVisibilityJSON', '{}');
+        $this->RegisterAttributeString('ProviderDebugLogJSON', '[]');
         $this->RegisterAttributeString('AppliedModuleVersion', '');
         $this->RegisterAttributeString('PVSourceWeightsJSON', '{}');
         $this->RegisterAttributeInteger('PVSourceWeightLearningResetTs', 0);
@@ -286,6 +288,8 @@ class SmartBatteryOptimizer extends IPSModule
         $debugMode = $this->ReadPropertyBoolean('DebugMode');
         $lastAppliedDebugMode = $this->ReadAttributeBoolean('LastAppliedDebugMode');
         $debugModeChanged = ($debugMode !== $lastAppliedDebugMode);
+        @IPS_SetHidden($this->GetIDForIdent('ProviderDebugHTML'), !$debugMode);
+        if (!$debugMode) SetValue($this->GetIDForIdent('ProviderDebugHTML'), '');
         if ($debugModeChanged) {
             $this->WriteAttributeBoolean('LastAppliedDebugMode', $debugMode);
         }
@@ -364,7 +368,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.18';
+        $currentModuleVersion = '1.9.19';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -1087,7 +1091,7 @@ class SmartBatteryOptimizer extends IPSModule
                     'timezone' => 'Europe/Vienna',
                     'forecast_days' => 3
                 ]);
-                $data = $this->HttpGetJson($url);
+                $data = $this->HttpGetJson($url, 'Open-Meteo', ['Fläche'=>$name,'kWp'=>$kwp,'Azimut'=>$azimuth,'Neigung'=>$tilt,'AutoFaktor'=>$autoFactor,'Zeitzone'=>'Europe/Vienna']);
                 if (!isset($data['hourly']['time'], $data['hourly']['global_tilted_irradiance'])) {
                     throw new Exception('Ungültige Open-Meteo-Antwort für Fläche ' . $name);
                 }
@@ -1121,7 +1125,7 @@ class SmartBatteryOptimizer extends IPSModule
                 try {
                     $this->SetActionFeedback('Prognose: Forecast.Solar – ' . $name . ' wird abgefragt ...');
                     // Public API: JEDE aktive PV-Fläche erhält ihren eigenen Request.
-                    $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp);
+                    $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp, $name);
                     $forecastSolarCache[$key] = [
                         'savedAt' => time(),
                         'name' => $name,
@@ -1298,7 +1302,7 @@ class SmartBatteryOptimizer extends IPSModule
         ];
     }
 
-    private function FetchForecastSolarSurface(float $lat, float $lon, float $tilt, float $azimuth, float $kwp): array
+    private function FetchForecastSolarSurface(float $lat, float $lon, float $tilt, float $azimuth, float $kwp, string $surfaceName = ''): array
     {
         $key = trim($this->ReadPropertyString('ForecastSolarAPIKey'));
         $base = 'https://api.forecast.solar/';
@@ -1306,7 +1310,7 @@ class SmartBatteryOptimizer extends IPSModule
         $url = $base . 'estimate/' . rawurlencode((string)$lat) . '/' . rawurlencode((string)$lon) . '/' .
             rawurlencode((string)$tilt) . '/' . rawurlencode((string)$azimuth) . '/' . rawurlencode((string)$kwp);
 
-        $data = $this->HttpGetJson($url);
+        $data = $this->HttpGetJson($url, 'Forecast.Solar', ['Fläche'=>$surfaceName,'kWp'=>$kwp,'Azimut'=>$azimuth,'Neigung'=>$tilt]);
         if (!isset($data['result']['watts']) || !is_array($data['result']['watts'])) {
             throw new Exception('Ungültige Forecast.Solar-Antwort.');
         }
@@ -1332,7 +1336,7 @@ class SmartBatteryOptimizer extends IPSModule
         try {
             $data = $this->HttpGetJsonWithHeaders($url, [
                 'Authorization: Bearer ' . $apiKey
-            ]);
+            ], 'pvnode', ['Site-ID'=>$siteID,'Zeitzone'=>'utc']);
         } catch (Throwable $e) {
             $status = (int)$e->getCode();
 
@@ -3274,7 +3278,41 @@ class SmartBatteryOptimizer extends IPSModule
         return ($n % 2) ? (float)$values[$m] : ((float)$values[$m - 1] + (float)$values[$m]) / 2.0;
     }
 
-    private function HttpGetJsonWithHeaders(string $url, array $headers = []): array
+    private function AddProviderDebug(string $provider, string $request, array $meta, $response, int $status = 200, float $durationMs = 0.0): void
+    {
+        if (!$this->ReadPropertyBoolean('DebugMode')) return;
+        $entries = json_decode($this->ReadAttributeString('ProviderDebugLogJSON'), true);
+        if (!is_array($entries)) $entries = [];
+        // Zugangsdaten niemals in der HTMLBox anzeigen.
+        $safeRequest = preg_replace('~(Authorization:\s*Bearer\s+)[^\s]+~i', '$1***', $request);
+        $entries[] = [
+            'time' => time(), 'provider' => $provider, 'request' => $safeRequest,
+            'meta' => $meta, 'status' => $status, 'durationMs' => round($durationMs, 1),
+            'response' => $response
+        ];
+        if (count($entries) > 40) $entries = array_slice($entries, -40);
+        $this->WriteAttributeString('ProviderDebugLogJSON', json_encode($entries));
+        SetValue($this->GetIDForIdent('ProviderDebugHTML'), $this->RenderProviderDebugHTML($entries));
+    }
+
+    private function RenderProviderDebugHTML(array $entries): string
+    {
+        if (!$this->ReadPropertyBoolean('DebugMode')) return '';
+        $e = static function ($v): string { return htmlspecialchars((string)$v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); };
+        $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff;background:#181818;padding:8px">';
+        $html .= '<b>Prognose Provider Debug</b><br><span style="opacity:.75">Neueste Abfrage oben | Rohantworten aufklappbar</span>';
+        foreach (array_reverse($entries) as $row) {
+            $meta = is_array($row['meta'] ?? null) ? $row['meta'] : [];
+            $html .= '<details style="margin-top:8px;border-top:1px solid #555;padding-top:6px"><summary style="cursor:pointer"><b>'.$e($row['provider'] ?? '').'</b> | '.$e(date('d.m.Y H:i:s',(int)($row['time'] ?? 0))).' | HTTP '.$e($row['status'] ?? '').' | '.$e($row['durationMs'] ?? 0).' ms</summary>';
+            if ($meta) $html .= '<div style="margin:5px 0"><b>Parameter:</b> '.$e(implode(' | ', array_map(static fn($k,$v)=>$k.'='.$v,array_keys($meta),array_values($meta)))).'</div>';
+            $html .= '<div style="margin:5px 0;word-break:break-all"><b>Request:</b> '.$e($row['request'] ?? '').'</div>';
+            $raw = is_string($row['response'] ?? null) ? $row['response'] : json_encode($row['response'] ?? null, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+            $html .= '<details><summary style="cursor:pointer">Antwort anzeigen</summary><pre style="white-space:pre-wrap;word-break:break-word;background:#101010;padding:6px;max-height:500px;overflow:auto">'.$e($raw).'</pre></details></details>';
+        }
+        return $html.'</div>';
+    }
+
+    private function HttpGetJsonWithHeaders(string $url, array $headers = [], string $debugProvider = '', array $debugMeta = []): array
     {
         $allHeaders = array_merge(
             ['User-Agent: IP-Symcon-SmartBatteryOptimizer/1.5.6'],
@@ -3289,6 +3327,7 @@ class SmartBatteryOptimizer extends IPSModule
             ]
         ];
         $ctx = stream_context_create($opts);
+        $debugStart = microtime(true);
         $raw = @file_get_contents($url, false, $ctx);
 
         $status = 0;
@@ -3300,6 +3339,7 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
 
+        if ($debugProvider !== '') $this->AddProviderDebug($debugProvider, $url, $debugMeta, $raw === false ? 'HTTP-Abruf fehlgeschlagen' : $raw, $status, (microtime(true)-$debugStart)*1000.0);
         if ($raw === false) {
             throw new Exception('HTTP-Abruf fehlgeschlagen.', $status);
         }
@@ -3322,11 +3362,13 @@ class SmartBatteryOptimizer extends IPSModule
         return $data;
     }
 
-    private function HttpGetJson(string $url): array
+    private function HttpGetJson(string $url, string $debugProvider = '', array $debugMeta = []): array
     {
         $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.7\r\n"]];
         $ctx = stream_context_create($opts);
+        $debugStart = microtime(true);
         $raw = @file_get_contents($url, false, $ctx);
+        if ($debugProvider !== '') $this->AddProviderDebug($debugProvider, $url, $debugMeta, $raw === false ? 'HTTP-Abruf fehlgeschlagen' : $raw, $raw === false ? 0 : 200, (microtime(true)-$debugStart)*1000.0);
         if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen.');
         $data = json_decode($raw, true);
         if (!is_array($data)) throw new Exception('Antwort ist kein gültiges JSON.');
