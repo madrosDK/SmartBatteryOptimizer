@@ -369,7 +369,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.22';
+        $currentModuleVersion = '1.9.23';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -1190,7 +1190,13 @@ class SmartBatteryOptimizer extends IPSModule
                 $calibration = $this->AddPVCalibrationEnergySample($calibration, $key, $currentExpectedBaseW, $actualW);
                 $autoFactor = isset($calibration[$key]['factor']) ? (float)$calibration[$key]['factor'] : $autoFactor;
             } elseif ($useOpenMeteo && $autoEnabled && $calibrationFeedInGate['blocked'] && isset($calibration[$key])) {
-                unset($calibration[$key]['lastPointTs'], $calibration[$key]['lastPointExpectedW'], $calibration[$key]['lastPointActualW']);
+                // Sobald eine Abregelung erkannt wird, die komplette aktuelle Stunde aus
+                // der Kalibrierung entfernen. So kann auch ein bereits kurz vor Erkennung
+                // gebildetes Intervall mit teilweise abgeregelter PV-Leistung den Faktor
+                // nicht mehr nach unten ziehen. Nach Ende der Sperre startet die Integration
+                // mit einem neuen Ausgangspunkt; es gibt kein Intervall über die Sperrzeit.
+                $blockedHourStart = strtotime(date('Y-m-d H:00:00'));
+                $calibration = $this->InvalidatePVCalibrationFrom($calibration, $key, $blockedHourStart);
             }
 
             $diag = $this->GetPVCalibrationDiagnostics($calibration, $key);
@@ -1664,6 +1670,53 @@ class SmartBatteryOptimizer extends IPSModule
             'thresholdW' => $thresholdW,
             'text' => $text
         ];
+    }
+
+    private function InvalidatePVCalibrationFrom(array $calibration, string $key, int $fromTs): array
+    {
+        if (!isset($calibration[$key]) || !is_array($calibration[$key])) return $calibration;
+        $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
+        $kept = [];
+        foreach ($samples as $sample) {
+            $endTs = (int)($sample['endTs'] ?? $sample['ts'] ?? 0);
+            if ($endTs >= $fromTs) continue;
+            $kept[] = $sample;
+        }
+        $calibration[$key]['energySamples'] = $kept;
+        unset($calibration[$key]['lastPointTs'], $calibration[$key]['lastPointExpectedW'], $calibration[$key]['lastPointActualW']);
+        return $this->RecalculatePVCalibrationFactors($calibration, $key);
+    }
+
+    private function RecalculatePVCalibrationFactors(array $calibration, string $key): array
+    {
+        if (!isset($calibration[$key]) || !is_array($calibration[$key])) return $calibration;
+        $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
+        $now = time();
+        $factorCutoff = $now - max(1, $this->ReadPropertyInteger('PVCalibrationDays')) * 86400;
+        $sumExpected = 0.0; $sumActual = 0.0; $count = 0;
+        foreach ($samples as $sample) {
+            if ((int)($sample['ts'] ?? 0) < $factorCutoff) continue;
+            $exp=(float)($sample['expectedKWh'] ?? 0); $act=(float)($sample['actualKWh'] ?? 0);
+            if ($exp <= 0 || $act < 0) continue;
+            $sumExpected += $exp; $sumActual += $act; $count++;
+        }
+        $min=$this->ReadPropertyFloat('PVCalibrationMinFactor'); $max=$this->ReadPropertyFloat('PVCalibrationMaxFactor');
+        $calibration[$key]['factor'] = $sumExpected > 0 ? max($min,min($max,$sumActual/$sumExpected)) : 1.0;
+        $calibration[$key]['factorSampleCount']=$count;
+        $hourly=[];
+        for($hour=0;$hour<24;$hour++) {
+            $he=0.0;$ha=0.0;$hc=0;
+            foreach($samples as $sample) {
+                if ((int)($sample['ts'] ?? 0) < $factorCutoff) continue;
+                $sh=isset($sample['hour'])?(int)$sample['hour']:(int)date('G',(int)$sample['ts']);
+                if($sh!==$hour) continue;
+                $he+=(float)$sample['expectedKWh']; $ha+=(float)$sample['actualKWh']; $hc++;
+            }
+            if($he>0) $hourly[(string)$hour]=['factor'=>max($min,min($max,$ha/$he)),'samples'=>$hc];
+        }
+        $calibration[$key]['hourlyFactors']=$hourly;
+        $calibration[$key]['updated']=$now;
+        return $calibration;
     }
 
     private function GetPVForecastHourFactor(array $calibration, string $key, int $hour, float $overallFactor): float
@@ -3991,7 +4044,16 @@ class SmartBatteryOptimizer extends IPSModule
         $cal = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
         $days = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
-        $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = tatsächlich erzeugte Energie / prognostizierte Energie vor Auto-Faktor. Beide Werte werden über identische Zeitintervalle in kWh integriert und über die letzten ' . $days . ' Tage summiert.</span><br><br>';
+        $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = tatsächlich erzeugte Energie / prognostizierte Energie vor Auto-Faktor. Beide Werte werden über identische Zeitintervalle in kWh integriert und über die letzten ' . $days . ' Tage summiert.</span><br>';
+        $gate = $this->GetPVCalibrationFeedInGate();
+        if ($this->ReadPropertyBoolean('DebugMode')) {
+            $html .= '<div style="margin:8px 0;padding:6px;border:1px solid #666"><b>PV-Abregelung / Kalibriersperre</b><br>';
+            $html .= 'Netz: ' . ($gate['feedInW'] === null ? '-' : number_format((float)$gate['feedInW'],0,',','.') . ' W') . ' | ';
+            $html .= 'Sperre ab: ' . ($gate['thresholdW'] === null ? '-' : number_format((float)$gate['thresholdW'],0,',','.') . ' W') . ' | ';
+            $html .= 'Batterie: ' . ($gate['batteryPowerW'] === null ? '-' : number_format((float)$gate['batteryPowerW'],0,',','.') . ' W') . '<br>';
+            $html .= '<b>Abregelung erkannt: ' . (!empty($gate['blocked']) ? '<span style="color:#ffd166">JA – Kalibrierung gesperrt, aktuelle Stunde wird verworfen</span>' : 'NEIN – Kalibrierung erlaubt') . '</b></div>';
+        }
+        $html .= '<br>';
         if (count($cal) === 0) return $html . 'Keine aktive PV-Fläche.</div>';
         $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff">';
         $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist-Erzeugung</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist / Prognose</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Intervalle</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Lernzeitraum</th></tr>';
