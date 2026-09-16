@@ -139,6 +139,8 @@ class SmartBatteryOptimizer extends IPSModule
 
         $this->RegisterVariableBoolean('FeedInActive', 'Einspeisung aktiv', '~Switch', 66);
         $this->RegisterVariableFloat('PlannedPower', 'Geplante Einspeiseleistung', '~Watt', 70);
+        $this->RegisterVariableFloat('FeedInTargetEnergy', 'Geplante Einspeisemenge aktuell', '~Electricity', 71);
+        $this->RegisterVariableFloat('FeedInDeliveredEnergy', 'Tatsächlich eingespeiste Menge aktuell', '~Electricity', 72);
         $this->RegisterVariableString('NextFeedInWindow', 'Nächstes Einspeisefenster', '', 80);
         $this->RegisterVariableFloat('ExpectedRevenue', 'Erwarteter Erlös', '', 90);
         $this->RegisterVariableString('LastUpdate', 'Letzte Aktualisierung', '', 100);
@@ -178,6 +180,12 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('ConsumptionLearningSource', 'Fallback');
         $this->RegisterAttributeBoolean('AlphaDispatchActive', false);
         $this->RegisterAttributeString('AlphaDispatchCommandKey', '');
+        $this->RegisterAttributeString('ActiveFeedInPlanKey', '');
+        $this->RegisterAttributeFloat('ActiveFeedInTargetKWh', 0.0);
+        $this->RegisterAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
+        $this->RegisterAttributeInteger('ActiveFeedInLastTs', 0);
+        $this->RegisterAttributeFloat('ActiveFeedInLastExportW', 0.0);
+        $this->RegisterAttributeString('CompletedFeedInPlanKeysJSON', '{}');
         $this->RegisterAttributeBoolean('RuntimePVSettingsInitialized', false);
         $this->RegisterAttributeInteger('ManualTestUntil', 0);
         $this->RegisterAttributeInteger('ManualTestPowerW', 0);
@@ -356,7 +364,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.16';
+        $currentModuleVersion = '1.9.17';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -787,6 +795,10 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $this->SetActionFeedback('Einspeisung wird gestoppt ...');
         try {
+            $this->WriteAttributeString('ActiveFeedInPlanKey', '');
+            $this->WriteAttributeFloat('ActiveFeedInTargetKWh', 0.0);
+            $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
+            $this->WriteAttributeInteger('ActiveFeedInLastTs', 0);
             $this->StopFeedIn();
             $text = 'Einspeisung sofort gestoppt.';
             SetValue($this->GetIDForIdent('StatusText'), $text);
@@ -805,8 +817,6 @@ class SmartBatteryOptimizer extends IPSModule
         try {
             $now = time();
 
-            // Manueller Hardwaretest hat für maximal 120 Sekunden Vorrang vor
-            // Automatik, Lernfreigabe und Einspeiseplan.
             $testUntil = $this->ReadAttributeInteger('ManualTestUntil');
             if ($testUntil > $now) {
                 $testPower = max(0, min($this->ReadAttributeInteger('ManualTestPowerW'), $this->ReadPropertyInteger('MaxDischargePowerW')));
@@ -827,112 +837,181 @@ class SmartBatteryOptimizer extends IPSModule
             }
 
             $automaticEnabled = $this->IsAutomaticEnabled();
-            $pvProtectionEnabled = $this->GetRuntimeBoolean(
-                'PVCurtailmentProtectionEnabled',
-                $this->ReadPropertyBoolean('PreventPVCurtailment')
-            );
+            $pvProtectionEnabled = $this->GetRuntimeBoolean('PVCurtailmentProtectionEnabled', $this->ReadPropertyBoolean('PreventPVCurtailment'));
             $dayNightControl = $this->GetCurrentDayNightStatus();
+            $raw = json_decode($this->ReadAttributeString('PlanJSON'), true);
 
-            $this->DebugLog(
-                'Control',
-                'Steuerprüfung gestartet | Einspeiseautomatik=' . ($automaticEnabled ? 'AN' : 'AUS')
-                . ' | PV-Abregelung vermeiden=' . ($pvProtectionEnabled ? 'AN' : 'AUS')
-                . ' | ' . ($dayNightControl['isNight'] ? 'Nacht' : 'Tag')
-            );
+            // Einen vom Optimierer geplanten Preisslot zuerst prüfen. Der Plan selbst
+            // wurde bereits mit DetermineNightStart/DetermineMorningEnd begrenzt. Damit
+            // kann eine zweite Tag/Nacht-Prüfung den Dispatch am Slotbeginn nicht mehr
+            // versehentlich blockieren.
+            $plannedSlot = null;
+            if (is_array($raw) && isset($raw['slots']) && is_array($raw['slots'])) {
+                $completed = json_decode($this->ReadAttributeString('CompletedFeedInPlanKeysJSON'), true);
+                if (!is_array($completed)) $completed = [];
+                foreach ($completed as $k => $ts) if ((int)$ts < $now - 172800) unset($completed[$k]);
+                $this->WriteAttributeString('CompletedFeedInPlanKeysJSON', json_encode($completed));
+                foreach ($raw['slots'] as $slot) {
+                    $key = (string)($slot['planKey'] ?? ((int)$slot['start'] . ':' . (int)($slot['priceIntervalEnd'] ?? $slot['end'])));
+                    $intervalEnd = (int)($slot['priceIntervalEnd'] ?? $slot['end']);
+                    if ($now >= (int)$slot['start'] && $now < $intervalEnd && (float)$slot['powerW'] > 0 && !isset($completed[$key])) {
+                        $slot['planKey'] = $key;
+                        $plannedSlot = $slot;
+                        break;
+                    }
+                }
+            }
 
-            // PV-Abregelung vermeiden ist eine eigenständige Tagesfunktion und darf
-            // nicht von der preisoptimierten Einspeiseautomatik blockiert werden.
-            // Wird tagsüber der konfigurierte PV-Ziel-SoC überschritten, wird
-            // unmittelbar Speicherplatz geschaffen. Nachts greift diese Funktion
-            // nicht ein; dort arbeitet ausschließlich die Preis-/Nachtplanung.
+            // Eine bereits gestartete Einspeisemenge darf über das rechnerische Ende
+            // (20 kW * Zeit) hinaus weiterlaufen, bis die tatsächlich am Netz gemessene
+            // Zielenergie erreicht ist. Als Sicherheitsgrenze gilt das Nachtende.
+            $activeKey = $this->ReadAttributeString('ActiveFeedInPlanKey');
+            $continuingMeasuredRun = $activeKey !== '' && $this->ReadAttributeFloat('ActiveFeedInTargetKWh') > $this->ReadAttributeFloat('ActiveFeedInDeliveredKWh') + 0.001;
+
+            if ($automaticEnabled && ($plannedSlot !== null || $continuingMeasuredRun)) {
+                if ($plannedSlot !== null) {
+                    $key = (string)$plannedSlot['planKey'];
+                    if ($activeKey !== $key) {
+                        $this->StartMeasuredFeedInRun($key, (float)$plannedSlot['energyKWh']);
+                        $activeKey = $key;
+                    }
+                }
+
+                $targetKWh = $this->ReadAttributeFloat('ActiveFeedInTargetKWh');
+                $deliveredKWh = $this->UpdateMeasuredFeedInEnergy();
+                SetValue($this->GetIDForIdent('FeedInTargetEnergy'), round($targetKWh, 3));
+                SetValue($this->GetIDForIdent('FeedInDeliveredEnergy'), round($deliveredKWh, 3));
+
+                $socID = $this->ReadPropertyInteger('SOCVariable');
+                $soc = ($socID > 0 && @IPS_VariableExists($socID)) ? (float)GetValue($socID) : 100.0;
+                if ($soc <= $this->GetRuntimeMinimumSOC() + 0.01) {
+                    $this->FinishMeasuredFeedInRun(false, 'Mindest-SoC erreicht');
+                    return;
+                }
+                if ($deliveredKWh + 0.001 >= $targetKWh) {
+                    $this->FinishMeasuredFeedInRun(true, 'geplante Netzeinspeisemenge erreicht');
+                    return;
+                }
+
+                $today = strtotime('today 00:00:00');
+                $hardEnd = $now < $this->DetermineMorningEnd(0, $today)
+                    ? $this->DetermineMorningEnd(0, $today)
+                    : $this->DetermineMorningEnd(0, strtotime('tomorrow 00:00:00'));
+                if ($now >= $hardEnd) {
+                    $this->FinishMeasuredFeedInRun(false, 'Nachtende erreicht');
+                    return;
+                }
+
+                $powerW = $plannedSlot !== null ? (float)$plannedSlot['powerW'] : (float)$this->ReadPropertyInteger('MaxDischargePowerW');
+                // AlphaESS-Time ist nur noch ein 120-s-Watchdog. Control erneuert den
+                // Dispatch jede Minute, solange die reale Netzeinspeisemenge fehlt.
+                $this->SetFeedIn(true, $powerW, $now + 120);
+                SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung aktiv: Netz ' . number_format($deliveredKWh, 2, ',', '.') . ' / ' . number_format($targetKWh, 2, ',', '.') . ' kWh | Batterie-Soll ' . round($powerW) . ' W');
+                return;
+            }
+
+            $this->DebugLog('Control', 'Steuerprüfung | Automatik=' . ($automaticEnabled?'AN':'AUS') . ' | PV-Schutz=' . ($pvProtectionEnabled?'AN':'AUS') . ' | ' . ($dayNightControl['isNight']?'Nacht':'Tag'));
+
             if (!$dayNightControl['isNight']) {
                 if ($pvProtectionEnabled) {
                     $socVariableID = $this->ReadPropertyInteger('SOCVariable');
                     $soc = $socVariableID > 0 ? (float)GetValue($socVariableID) : 0.0;
-                    $targetSOC = max(
-                        $this->GetRuntimeMinimumSOC(),
-                        min(100.0, $this->GetRuntimeFloat(
-                            'RuntimePVHeadroomTargetSOC',
-                            $this->ReadPropertyFloat('PVHeadroomTargetSOC')
-                        ))
-                    );
-
+                    $targetSOC = max($this->GetRuntimeMinimumSOC(), min(100.0, $this->GetRuntimeFloat('RuntimePVHeadroomTargetSOC', $this->ReadPropertyFloat('PVHeadroomTargetSOC'))));
                     if ($soc > $targetSOC + 0.01) {
                         $powerW = max(0, $this->ReadPropertyInteger('MaxDischargePowerW'));
-                        $this->DebugLog(
-                            'PV-Abregelung',
-                            'Tagesentladung aktiv | SoC=' . round($soc, 1) . ' %'
-                            . ' | Ziel=' . round($targetSOC, 1) . ' %'
-                            . ' | Leistung=' . $powerW . ' W'
-                        );
                         $this->SetFeedIn(true, (float)$powerW, $now + 120);
-                        SetValue($this->GetIDForIdent('StatusText'),
-                            'PV-Abregelung vermeiden: ' . round($powerW) . ' W | SoC '
-                            . round($soc, 1) . ' % > Ziel ' . round($targetSOC, 1) . ' %');
+                        SetValue($this->GetIDForIdent('StatusText'), 'PV-Abregelung vermeiden: ' . round($powerW) . ' W | SoC ' . round($soc,1) . ' % > Ziel ' . round($targetSOC,1) . ' %');
                         return;
                     }
                 }
-
                 $this->StopFeedIn();
-                SetValue(
-                    $this->GetIDForIdent('StatusText'),
-                    $pvProtectionEnabled
-                        ? 'Tagbetrieb: kein PV-Headroom erforderlich'
-                        : 'Tagbetrieb: PV-Abregelungsschutz deaktiviert'
-                );
+                SetValue($this->GetIDForIdent('StatusText'), $pvProtectionEnabled ? 'Tagbetrieb: kein PV-Headroom erforderlich' : 'Tagbetrieb: PV-Abregelungsschutz deaktiviert');
                 return;
             }
 
-            // Die preisoptimierte Einspeiseautomatik ist eine getrennte Nachtfunktion.
             if (!$automaticEnabled) {
-                $this->DebugLog('Control', 'Keine Nacht-Einspeisung: Einspeiseautomatik deaktiviert');
                 $this->StopFeedIn();
                 return;
             }
-
             $gate = $this->GetAutomaticLearningGateStatus();
             SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
             if (!$gate['ready']) {
-                $this->DebugLog('Control', 'Automatik gesperrt: ' . $gate['text']);
                 $this->SetStatus(202);
                 SetValue($this->GetIDForIdent('StatusText'), 'Automatik gesperrt: ' . $gate['text']);
                 $this->StopFeedIn();
                 return;
             }
-
             $this->SetStatus(102);
-            $raw = json_decode($this->ReadAttributeString('PlanJSON'), true);
-            if (!is_array($raw) || !isset($raw['slots'])) {
-                $this->DebugLog('Control', 'Kein gültiger Plan vorhanden');
-                $this->StopFeedIn();
-                return;
-            }
-
-            $active = null;
-            foreach ($raw['slots'] as $slot) {
-                if ($now >= (int)$slot['start'] && $now < (int)$slot['end'] && (float)$slot['powerW'] > 0) {
-                    $active = $slot;
-                    break;
-                }
-            }
-
-            $price = $this->FindCurrentPrice(json_decode($this->ReadAttributeString('PricesJSON'), true));
-            SetValue($this->GetIDForIdent('CurrentPrice'), round($price, 3));
-
-            if ($active === null) {
-                $this->DebugLog('Control', 'Aktuell kein Einspeiseslot | Preis=' . round($price, 3) . ' ct/kWh');
-                $this->StopFeedIn();
-                return;
-            }
-
-            $this->DebugLog('Control', 'Aktiver Slot: ' . date('d.m. H:i', (int)$active['start']) . '-' . date('H:i', (int)$active['end']) . ' | ' . round((float)$active['powerW']) . ' W | ' . round((float)$active['priceCt'], 3) . ' ct/kWh');
-            $this->SetFeedIn(true, (float)$active['powerW'], (int)$active['end']);
-            SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung aktiv: ' . round((float)$active['powerW']) . ' W bis ' . date('H:i', (int)$active['end']));
+            $this->StopFeedIn();
         } catch (Throwable $e) {
             $this->DebugLog('Control', 'FEHLER: ' . $e->getMessage());
             SetValue($this->GetIDForIdent('StatusText'), 'Steuerfehler: ' . $e->getMessage());
             try { $this->StopFeedIn(); } catch (Throwable $ignored) {}
         }
+    }
+
+    private function StartMeasuredFeedInRun(string $key, float $targetKWh): void
+    {
+        $this->WriteAttributeString('ActiveFeedInPlanKey', $key);
+        $this->WriteAttributeFloat('ActiveFeedInTargetKWh', max(0.0, $targetKWh));
+        $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
+        $this->WriteAttributeInteger('ActiveFeedInLastTs', time());
+        $this->WriteAttributeFloat('ActiveFeedInLastExportW', $this->ReadCurrentGridExportW());
+        SetValue($this->GetIDForIdent('FeedInTargetEnergy'), max(0.0, $targetKWh));
+        SetValue($this->GetIDForIdent('FeedInDeliveredEnergy'), 0.0);
+        $this->DebugLog('Einspeisemenge', 'Start ' . $key . ' | Ziel=' . round($targetKWh,3) . ' kWh');
+    }
+
+    private function UpdateMeasuredFeedInEnergy(): float
+    {
+        $now = time();
+        $lastTs = $this->ReadAttributeInteger('ActiveFeedInLastTs');
+        $lastW = max(0.0, $this->ReadAttributeFloat('ActiveFeedInLastExportW'));
+        $currentW = $this->ReadCurrentGridExportW();
+        $delivered = max(0.0, $this->ReadAttributeFloat('ActiveFeedInDeliveredKWh'));
+        if ($lastTs > 0 && $now > $lastTs) {
+            $seconds = min(180, $now - $lastTs);
+            $delivered += (($lastW + $currentW) / 2.0) * ($seconds / 3600.0) / 1000.0;
+        }
+        $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', $delivered);
+        $this->WriteAttributeInteger('ActiveFeedInLastTs', $now);
+        $this->WriteAttributeFloat('ActiveFeedInLastExportW', $currentW);
+        return $delivered;
+    }
+
+    private function ReadCurrentGridExportW(): float
+    {
+        // Dieselbe Variable wie bei der PV-Lernsperre wird wiederverwendet.
+        // PVCalibrationFeedInInvert=true bedeutet: Rohwert ist bei Einspeisung negativ
+        // (typische Netzbezug-Variable). Intern wird Einspeisung immer positiv gerechnet.
+        $id = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
+        if ($id <= 0 || !@IPS_VariableExists($id)) {
+            throw new Exception('Netzbezug/Netzeinspeisung für reale Einspeisemengenmessung ist nicht konfiguriert.');
+        }
+        $raw = (float)GetValue($id);
+        $exportW = $this->ReadPropertyBoolean('PVCalibrationFeedInInvert') ? -$raw : $raw;
+        return max(0.0, $exportW);
+    }
+
+    private function FinishMeasuredFeedInRun(bool $completed, string $reason): void
+    {
+        $key = $this->ReadAttributeString('ActiveFeedInPlanKey');
+        $delivered = $this->ReadAttributeFloat('ActiveFeedInDeliveredKWh');
+        $target = $this->ReadAttributeFloat('ActiveFeedInTargetKWh');
+        if ($completed && $key !== '') {
+            $done = json_decode($this->ReadAttributeString('CompletedFeedInPlanKeysJSON'), true);
+            if (!is_array($done)) $done = [];
+            $done[$key] = time();
+            $this->WriteAttributeString('CompletedFeedInPlanKeysJSON', json_encode($done));
+        }
+        $this->StopFeedIn();
+        $this->WriteAttributeString('ActiveFeedInPlanKey', '');
+        $this->WriteAttributeFloat('ActiveFeedInTargetKWh', 0.0);
+        $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
+        $this->WriteAttributeInteger('ActiveFeedInLastTs', 0);
+        $this->WriteAttributeFloat('ActiveFeedInLastExportW', 0.0);
+        SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung beendet: ' . $reason . ' | Netz ' . number_format($delivered,2,',','.') . ' / ' . number_format($target,2,',','.') . ' kWh');
+        $this->DebugLog('Einspeisemenge', 'Ende | ' . $reason . ' | ' . round($delivered,3) . '/' . round($target,3) . ' kWh');
     }
 
     public function StopFeedIn()
@@ -2145,7 +2224,11 @@ class SmartBatteryOptimizer extends IPSModule
             $key = $p['start'] . ':' . $p['end'];
             $selected[] = [
                 'start' => $slotStart,
+                // plannedEnd ist nur die rechnerische Dauer bei Maximalleistung.
+                // Die reale Beendigung steuert Control anhand der gemessenen Netzeinspeisung.
                 'end' => $actualEnd,
+                'priceIntervalEnd' => $p['end'],
+                'planKey' => $key,
                 'priceCt' => $p['priceCt'],
                 'marketCt' => $p['marketCt'],
                 'energyKWh' => $energy,

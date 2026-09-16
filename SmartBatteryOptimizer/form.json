@@ -143,7 +143,7 @@
                 {
                     "type": "SelectVariable",
                     "name": "PVCalibrationFeedInVariable",
-                    "caption": "Netzeinspeisung für Kalibrier-Sperre"
+                    "caption": "Netzbezug / Netzeinspeisung (auch für reale Einspeisemengenmessung)"
                 },
                 {
                     "type": "SelectVariable",
@@ -171,7 +171,7 @@
                 {
                     "type": "CheckBox",
                     "name": "PVCalibrationFeedInInvert",
-                    "caption": "Vorzeichen der Netzeinspeisung invertieren (falls Einspeisung negativ geliefert wird)"
+                    "caption": "Vorzeichen invertieren (aktivieren, wenn Einspeisung als negativer Netzbezug geliefert wird)"
                 },
                 {
                     "type": "List",
