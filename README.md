@@ -405,3 +405,8 @@ Der automatische Lauf nach einem Modulupdate und der Button `ALLES AKTUALISIEREN
 `PV-Kalibrierung / Auto-Faktoren zurücksetzen` löscht jetzt zusätzlich die gelernte Anbietergewichtung und deren Fehlerhistorie. Alle aktuell aktivierten Prognosequellen erhalten unmittelbar eine neutrale Gleichgewichtung (bei drei Quellen je 33,3 %). Die Historie muss ebenfalls gelöscht werden, da die Gewichte sonst bei der nächsten Berechnung sofort wieder aus den alten Prognosefehlern rekonstruiert würden.
 
 Der Reset führt keine externen Forecast-Abfragen mehr aus und wartet daher nicht auf Forecast.Solar, Open-Meteo oder pvnode. Vorhandene Prognosedaten bleiben bis zur nächsten regulären Aktualisierung bestehen; Diagramm und Diagnose werden unmittelbar mit Auto-Faktor 1,000 und neutralen Anbietergewichten neu gerendert. Danach beginnt das automatische Gewichtslernen mit neuen Daten von vorne.
+
+### 1.9.16 – PV-Reset Fehler und Debug-Quellenlinien korrigiert
+Der Reset-Aufruf der PV-Kalibrierungsdiagnose übergibt wieder die erforderliche Forecast-Struktur; dadurch tritt der Fehler `Too few arguments ... RenderPVCalibrationDiagnosisHTML()` nicht mehr auf.
+
+Beim Zurücksetzen der Anbietergewichtung wird `PVSourceForecastHistoryJSON` nicht mehr gelöscht, da diese Historie zugleich die Open-Meteo-, Forecast.Solar- und pvnode-Debug-Linien im PV-Highcharts versorgt. Stattdessen wird ein Lern-Reset-Zeitstempel gespeichert. Die vorhandenen Debug-Linien bleiben dadurch sichtbar, während alte Vergleichstage nicht erneut zur Berechnung der Anbietergewichtung herangezogen werden. Direkt nach Reset starten alle aktiven Quellen weiterhin neutral gleichgewichtet.

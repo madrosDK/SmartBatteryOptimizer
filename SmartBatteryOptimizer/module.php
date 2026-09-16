@@ -161,6 +161,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('PVDebugVisibilityJSON', '{}');
         $this->RegisterAttributeString('AppliedModuleVersion', '');
         $this->RegisterAttributeString('PVSourceWeightsJSON', '{}');
+        $this->RegisterAttributeInteger('PVSourceWeightLearningResetTs', 0);
         $this->RegisterAttributeInteger('PVNodeConsecutiveRejects', 0);
         $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
         $this->RegisterAttributeString('PVNodeLastError', '');
@@ -355,7 +356,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.15';
+        $currentModuleVersion = '1.9.16';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -729,11 +730,14 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteAttributeString('PVCalibrationJSON', '{}');
             $this->WriteAttributeInteger('PVCalibrationEnergyVersion', 1);
 
-            // Auch das automatische Anbieter-Lernen zurücksetzen. Nur PVSourceWeightsJSON
-            // zu löschen wäre nicht ausreichend, weil CalculatePVSourceWeights() die alten
-            // Fehler sofort wieder aus PVSourceForecastHistoryJSON lernen würde.
+            // Auch das automatische Anbieter-Lernen zurücksetzen. Die Quellenhistorie
+            // bleibt für die Debug-Linien erhalten; ein Reset-Zeitstempel verhindert,
+            // dass alte Vergleichstage sofort wieder in die Gewichtung eingehen.
             $this->WriteAttributeString('PVSourceWeightsJSON', '{}');
-            $this->WriteAttributeString('PVSourceForecastHistoryJSON', '{}');
+            // Debug-Linien benötigen die gespeicherte Quellenhistorie weiterhin.
+            // Deshalb NICHT löschen. Stattdessen merkt ein Zeitstempel, ab wann
+            // neue Daten wieder für das Gewichtslernen verwendet werden dürfen.
+            $this->WriteAttributeInteger('PVSourceWeightLearningResetTs', time());
 
             // Neutrale Startgewichtung direkt sichtbar machen – ohne Provider-Abfrage.
             $enabledSources = [];
@@ -758,7 +762,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $forecast['forecastSourceWeights'] = $neutralWeights;
                 $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
                 SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
-                SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML());
+                SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
             }
 
             $parts = [];
@@ -1348,12 +1352,16 @@ class SmartBatteryOptimizer extends IPSModule
         $history = json_decode($this->ReadAttributeString('PVSourceForecastHistoryJSON'), true);
         if (!is_array($history)) $history = [];
         $days = max(1, min(30, $this->ReadPropertyInteger('ForecastWeightLearningDays')));
+        $learningResetTs = $this->ReadAttributeInteger('PVSourceWeightLearningResetTs');
         $scores = [];
 
         foreach ($sources as $source) {
             $errors = [];
             for ($d = 1; $d <= $days; $d++) {
                 $dayStart = strtotime('-' . $d . ' days 00:00:00');
+                // Nach einem Gewichtsreset alte Vergleichstage nicht erneut zum Lernen
+                // heranziehen. Die Daten bleiben aber für die Debug-Linien gespeichert.
+                if ($learningResetTs > 0 && ($dayStart + 86400) <= $learningResetTs) continue;
                 $date = date('Y-m-d', $dayStart);
                 $forecast = $history[$source][$date] ?? null;
                 if (!is_array($forecast)) continue;
