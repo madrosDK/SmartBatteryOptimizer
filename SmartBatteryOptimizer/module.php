@@ -368,7 +368,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.19';
+        $currentModuleVersion = '1.9.20';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -1309,8 +1309,80 @@ class SmartBatteryOptimizer extends IPSModule
         if ($key !== '') $base .= rawurlencode($key) . '/';
         $url = $base . 'estimate/' . rawurlencode((string)$lat) . '/' . rawurlencode((string)$lon) . '/' .
             rawurlencode((string)$tilt) . '/' . rawurlencode((string)$azimuth) . '/' . rawurlencode((string)$kwp);
+        $meta = ['Fläche'=>$surfaceName,'kWp'=>$kwp,'Azimut'=>$azimuth,'Neigung'=>$tilt];
 
-        $data = $this->HttpGetJson($url, 'Forecast.Solar', ['Fläche'=>$surfaceName,'kWp'=>$kwp,'Azimut'=>$azimuth,'Neigung'=>$tilt]);
+        // Forecast.Solar bevorzugt über cURL abrufen. Das liefert bei HTTPS-/DNS-/
+        // Verbindungsproblemen eine wesentlich aussagekräftigere Diagnose als
+        // file_get_contents(). Falls cURL nicht verfügbar ist, bleibt der Stream-Fallback.
+        if (function_exists('curl_init')) {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_MAXREDIRS => 3,
+                CURLOPT_CONNECTTIMEOUT => 8,
+                CURLOPT_TIMEOUT => 15,
+                CURLOPT_USERAGENT => 'IP-Symcon-SmartBatteryOptimizer/1.9.20',
+                CURLOPT_HTTPHEADER => ['Accept: application/json'],
+                CURLOPT_HEADER => true
+            ]);
+            $started = microtime(true);
+            $rawWithHeaders = curl_exec($ch);
+            $duration = (microtime(true) - $started) * 1000.0;
+            $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $headerSize = (int)curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+            $effectiveUrl = (string)curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+            $curlErrNo = curl_errno($ch);
+            $curlError = curl_error($ch);
+            curl_close($ch);
+
+            if ($rawWithHeaders === false) {
+                $detail = 'cURL Fehler ' . $curlErrNo . ($curlError !== '' ? ': ' . $curlError : '');
+                $this->AddProviderDebug('Forecast.Solar', $url, $meta + ['Methode'=>'cURL','Effective-URL'=>$effectiveUrl], $detail, $status, $duration);
+                throw new Exception('Forecast.Solar: ' . $detail, $status);
+            }
+
+            $headers = substr((string)$rawWithHeaders, 0, $headerSize);
+            $raw = substr((string)$rawWithHeaders, $headerSize);
+            $this->AddProviderDebug('Forecast.Solar', $url, $meta + ['Methode'=>'cURL','Effective-URL'=>$effectiveUrl,'Response-Header'=>$headers], $raw, $status, $duration);
+
+            if ($status >= 400 || $status === 0) {
+                throw new Exception('Forecast.Solar: HTTP ' . $status . ($raw !== '' ? ' – ' . substr($raw, 0, 300) : ''), $status);
+            }
+            $data = json_decode($raw, true);
+            if (!is_array($data)) {
+                throw new Exception('Forecast.Solar: Antwort ist kein gültiges JSON.', $status);
+            }
+        } else {
+            $opts = ['http' => [
+                'timeout' => 15,
+                'ignore_errors' => true,
+                'follow_location' => 1,
+                'max_redirects' => 3,
+                'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.9.20\r\nAccept: application/json\r\n"
+            ]];
+            $ctx = stream_context_create($opts);
+            $started = microtime(true);
+            error_clear_last();
+            $raw = @file_get_contents($url, false, $ctx);
+            $duration = (microtime(true) - $started) * 1000.0;
+            $lastError = error_get_last();
+            $headers = isset($http_response_header) && is_array($http_response_header) ? implode("\n", $http_response_header) : '';
+            $status = 0;
+            if (isset($http_response_header) && is_array($http_response_header)) {
+                foreach ($http_response_header as $line) {
+                    if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $line, $m)) $status = (int)$m[1];
+                }
+            }
+            $errorText = is_array($lastError) ? (string)($lastError['message'] ?? '') : '';
+            $debugResponse = $raw === false ? ('Stream-Fehler: ' . ($errorText !== '' ? $errorText : 'unbekannt')) : $raw;
+            $this->AddProviderDebug('Forecast.Solar', $url, $meta + ['Methode'=>'PHP Stream','Response-Header'=>$headers], $debugResponse, $status, $duration);
+            if ($raw === false) throw new Exception('Forecast.Solar HTTP-Abruf fehlgeschlagen' . ($errorText !== '' ? ': ' . $errorText : ''), $status);
+            $data = json_decode($raw, true);
+            if ($status >= 400) throw new Exception('Forecast.Solar: HTTP ' . $status, $status);
+            if (!is_array($data)) throw new Exception('Forecast.Solar: Antwort ist kein gültiges JSON.', $status);
+        }
+
         if (!isset($data['result']['watts']) || !is_array($data['result']['watts'])) {
             throw new Exception('Ungültige Forecast.Solar-Antwort.');
         }
