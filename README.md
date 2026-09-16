@@ -392,3 +392,16 @@ Die Sichtbarkeit der einzelnen Debug-Prognosequellen wird nicht mehr ausschließ
 
 ### 1.9.12 – Lastprofil: keine Ist-Werte aus der Zukunft
 Im Verbrauchs-/Lastprofil-Diagramm werden für den heutigen Tag Ist-Balken nur noch für bereits begonnene Stunden erzeugt. Zukünftige Stunden erhalten `null` und werden von Highcharts nicht gezeichnet. Die angezeigte Ist-Tagessumme summiert ebenfalls nur die bis jetzt dargestellten Ist-Stunden. Historische Tage bleiben vollständig.
+
+### 1.9.13 – Vollständige Aktualisierung bei Modulupdate und per Button
+Bei einem echten Versionswechsel des Moduls wird nach `ApplyChanges()` automatisch ein einmaliger Vollrefresh gestartet. Dieser lernt Nachtverbrauch und Verbrauchsprofil erneut aus den vorhandenen Archivdaten (ohne Kalibrierwerte zurückzusetzen), ruft die aktuellen Prognose-/Preisquellen ab, berechnet Planung und Statuswerte neu und rendert sämtliche abhängigen HTMLBoxen/Diagramme neu. Ein normales erneutes `Übernehmen` innerhalb derselben Version löst keinen zusätzlichen automatischen Vollrefresh aus.
+
+Im Konfigurationsformular gibt es zusätzlich den Button `ALLES AKTUALISIEREN`. Er startet denselben vollständigen Ablauf jederzeit manuell und läuft über einen Worker-Timer, damit der Button nicht auf externe Provider warten muss. Der Fortschritt und der Abschluss werden in `Letzte manuelle Aktion` angezeigt.
+
+### 1.9.14 – Aktualisieren ohne erneutes Archiv-Lernen
+Der automatische Lauf nach einem Modulupdate und der Button `ALLES AKTUALISIEREN` lernen Nachtverbrauch und Verbrauchsprofil nicht mehr neu aus dem Archiv. Die bereits gespeicherten Lernwerte bleiben unverändert. Aktualisiert werden die aktuellen externen Daten/Preise, die daraus abhängige aktuelle Planung sowie alle Werte, HTMLBoxen und Highcharts-Anzeigen. Die separaten Buttons `Nur Nachtverbrauch neu lernen` und `Verbrauchsprofil neu lernen` bleiben die einzigen manuellen Funktionen, die diese Lernwerte gezielt neu aus dem Archiv bestimmen.
+
+### 1.9.15 – PV-Reset setzt auch Prognoseanbieter-Gewichtung zurück
+`PV-Kalibrierung / Auto-Faktoren zurücksetzen` löscht jetzt zusätzlich die gelernte Anbietergewichtung und deren Fehlerhistorie. Alle aktuell aktivierten Prognosequellen erhalten unmittelbar eine neutrale Gleichgewichtung (bei drei Quellen je 33,3 %). Die Historie muss ebenfalls gelöscht werden, da die Gewichte sonst bei der nächsten Berechnung sofort wieder aus den alten Prognosefehlern rekonstruiert würden.
+
+Der Reset führt keine externen Forecast-Abfragen mehr aus und wartet daher nicht auf Forecast.Solar, Open-Meteo oder pvnode. Vorhandene Prognosedaten bleiben bis zur nächsten regulären Aktualisierung bestehen; Diagramm und Diagnose werden unmittelbar mit Auto-Faktor 1,000 und neutralen Anbietergewichten neu gerendert. Danach beginnt das automatische Gewichtslernen mit neuen Daten von vorne.

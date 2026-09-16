@@ -159,6 +159,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('PVSourceForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('ForecastSolarSurfaceCacheJSON', '{}');
         $this->RegisterAttributeString('PVDebugVisibilityJSON', '{}');
+        $this->RegisterAttributeString('AppliedModuleVersion', '');
         $this->RegisterAttributeString('PVSourceWeightsJSON', '{}');
         $this->RegisterAttributeInteger('PVNodeConsecutiveRejects', 0);
         $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
@@ -188,6 +189,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ManualRecalculateWorker', 0, 'SBO_RunManualRecalculate($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('FullRefreshWorker', 0, 'SBO_RunFullRefresh($_IPS[\'TARGET\']);');
         $this->RegisterTimer('DeferredDebugRebuildTimer', 0, 'SBO_DeferredDebugRebuild($_IPS[\'TARGET\']);');
     }
 
@@ -351,6 +353,15 @@ class SmartBatteryOptimizer extends IPSModule
         } catch (Throwable $e) {
             $this->DebugLog('Debug-Rebuild', $e->getMessage(), 0);
         }
+        // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
+        // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
+        $currentModuleVersion = '1.9.15';
+        if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
+            $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
+            $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
+            $this->SetTimerInterval('FullRefreshWorker', 1500);
+        }
+
     }
 
     public function RequestAction($Ident, $Value)
@@ -537,6 +548,33 @@ class SmartBatteryOptimizer extends IPSModule
         $this->DebugLog('Manuelle Aktion', $text);
     }
 
+    public function RefreshAll()
+    {
+        $this->SetActionFeedback('Alles aktualisieren: Auftrag angenommen ...');
+        $this->SetTimerInterval('FullRefreshWorker', 1000);
+        echo "Aktualisierung aller Anzeigen und Diagramme wurde gestartet. Der Fortschritt steht in „Letzte manuelle Aktion“.";
+    }
+
+    public function RunFullRefresh()
+    {
+        $this->SetTimerInterval('FullRefreshWorker', 0);
+        $this->SetActionFeedback('Alles aktualisieren: Anzeigen, Prognosen und Diagramme werden aktualisiert ...');
+        try {
+            // Bewusst KEIN erneutes Lernen aus dem Archiv. Vorhandene Lernwerte und
+            // Verbrauchsprofile bleiben unverändert. RecalculateInternal(true) holt
+            // nur die aktuellen externen Daten/Preise, berechnet die aktuelle Planung
+            // und rendert alle davon abhängigen Werte, HTMLBoxen und Highcharts neu.
+            $this->RecalculateInternal(true);
+
+            $status = (string)GetValue($this->GetIDForIdent('StatusText'));
+            $this->SetActionFeedback('Alle Anzeigen und Diagramme aktualisiert. ' . $status);
+        } catch (Throwable $e) {
+            $text = 'Alles aktualisieren FEHLER: ' . $e->getMessage();
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+        }
+    }
+
     public function Recalculate()
     {
         $this->SetActionFeedback('Prognose & Plan: Auftrag angenommen – Berechnung startet ...');
@@ -685,18 +723,50 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function ResetPVCalibration()
     {
-        $this->SetActionFeedback('PV-Kalibrierung wird zurückgesetzt ...');
+        $this->SetActionFeedback('PV-Kalibrierung und Prognose-Gewichtung werden zurückgesetzt ...');
         try {
+            // PV-Flächenkalibrierung / Stundenfaktoren zurücksetzen.
             $this->WriteAttributeString('PVCalibrationJSON', '{}');
             $this->WriteAttributeInteger('PVCalibrationEnergyVersion', 1);
-            SetValue($this->GetIDForIdent('PVCalibrationStatus'), 'PV-Kalibrierung zurückgesetzt – Auto-Faktoren starten wieder bei 1,000.');
 
-            // Sofort neu berechnen. Damit werden ForecastJSON, PV-Highcharts,
-            // Diagnose und Einspeiseplan unmittelbar ohne den nächsten Timerlauf
-            // mit den zurückgesetzten Faktoren aufgebaut.
-            $this->RecalculateInternal(true);
+            // Auch das automatische Anbieter-Lernen zurücksetzen. Nur PVSourceWeightsJSON
+            // zu löschen wäre nicht ausreichend, weil CalculatePVSourceWeights() die alten
+            // Fehler sofort wieder aus PVSourceForecastHistoryJSON lernen würde.
+            $this->WriteAttributeString('PVSourceWeightsJSON', '{}');
+            $this->WriteAttributeString('PVSourceForecastHistoryJSON', '{}');
 
-            $text = 'PV-Kalibrierung / Auto-Faktoren zurückgesetzt und Prognose sofort neu berechnet.';
+            // Neutrale Startgewichtung direkt sichtbar machen – ohne Provider-Abfrage.
+            $enabledSources = [];
+            if ($this->ReadPropertyBoolean('UseOpenMeteoForecast')) $enabledSources[] = 'openmeteo';
+            if ($this->ReadPropertyBoolean('UseForecastSolarForecast')) $enabledSources[] = 'forecastsolar';
+            if ($this->ReadPropertyBoolean('UsePVNodeForecast')) $enabledSources[] = 'pvnode';
+            $neutralWeights = [];
+            if (count($enabledSources) > 0) {
+                $w = 1.0 / count($enabledSources);
+                foreach ($enabledSources as $source) $neutralWeights[$source] = $w;
+            }
+            $this->WriteAttributeString('PVSourceWeightsJSON', json_encode($neutralWeights));
+
+            SetValue($this->GetIDForIdent('PVCalibrationStatus'), 'PV-Kalibrierung zurückgesetzt – Auto-Faktoren 1,000; Anbietergewichtung neutral.');
+
+            // KEINE externe Forecast-Abfrage beim Reset: dadurch erfolgt der Reset sofort.
+            // Vorhandene Forecast-Werte bleiben erhalten, werden aber für die Anzeige mit
+            // neutralen Gewichten neu gerendert. Die nächste reguläre Forecast-Aktualisierung
+            // liefert neue Providerwerte und beginnt die Gewichtungshistorie von vorne.
+            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+            if (is_array($forecast) && count($forecast) > 0) {
+                $forecast['forecastSourceWeights'] = $neutralWeights;
+                $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
+                SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+                SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML());
+            }
+
+            $parts = [];
+            foreach ($neutralWeights as $source => $weight) {
+                $parts[] = $this->SourceDisplayName($source) . ' ' . number_format($weight * 100.0, 1, ',', '.') . ' %';
+            }
+            $text = 'PV-Kalibrierung / Auto-Faktoren und Prognose-Gewichtung zurückgesetzt'
+                . (count($parts) ? ': ' . implode(' | ', $parts) : '') . '.';
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
             echo $text;
@@ -707,6 +777,7 @@ class SmartBatteryOptimizer extends IPSModule
             echo $text;
         }
     }
+
 
     public function ManualStopFeedIn()
     {

@@ -796,6 +796,11 @@
     "actions": [
         {
             "type": "Button",
+            "caption": "ALLES AKTUALISIEREN",
+            "onClick": "SBO_RefreshAll($id);"
+        },
+        {
+            "type": "Button",
             "caption": "Jetzt Prognose & Plan berechnen",
             "onClick": "SBO_Recalculate($id);"
         },
