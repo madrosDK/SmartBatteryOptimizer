@@ -146,11 +146,6 @@
                     "caption": "Netzbezug / Netzeinspeisung (auch für reale Einspeisemengenmessung)"
                 },
                 {
-                    "type": "SelectVariable",
-                    "name": "PVCalibrationBatteryPowerVariable",
-                    "caption": "Batterieleistung für PV-Lernsperre (Laden negativ / Entladen positiv)"
-                },
-                {
                     "type": "NumberSpinner",
                     "name": "PVCalibrationFeedInLimitW",
                     "caption": "Einspeisegrenze",

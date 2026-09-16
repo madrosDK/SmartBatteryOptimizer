@@ -25,7 +25,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('PVCalibrationMinFactor', 0.50);
         $this->RegisterPropertyFloat('PVCalibrationMaxFactor', 1.50);
         $this->RegisterPropertyInteger('PVCalibrationFeedInVariable', 0);
-        $this->RegisterPropertyInteger('PVCalibrationBatteryPowerVariable', 0);
         $this->RegisterPropertyInteger('PVCalibrationFeedInLimitW', 10000);
         $this->RegisterPropertyInteger('PVCalibrationFeedInToleranceW', 500);
         $this->RegisterPropertyBoolean('PVCalibrationFeedInInvert', false);
@@ -373,7 +372,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.25';
+        $currentModuleVersion = '1.9.26';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -1685,51 +1684,29 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function GetPVCalibrationFeedInGate(): array
     {
-        $feedInVariableID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
-        $batteryPowerVariableID = $this->ReadPropertyInteger('PVCalibrationBatteryPowerVariable');
-
-        if ($feedInVariableID <= 0 || !@IPS_VariableExists($feedInVariableID)) {
-            return ['blocked' => false, 'configured' => false, 'feedInW' => null, 'batteryPowerW' => null, 'thresholdW' => null, 'text' => ''];
+        $variableID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
+        if ($variableID <= 0 || !@IPS_VariableExists($variableID)) {
+            return ['blocked'=>false,'configured'=>false,'gridW'=>null,'feedInW'=>null,'thresholdW'=>null,'text'=>''];
         }
 
         try {
-            $feedInW = (float)GetValue($feedInVariableID);
-            if ($this->ReadPropertyBoolean('PVCalibrationFeedInInvert')) {
-                $feedInW *= -1.0;
-            }
+            // Anlagenkonvention des Netz-Zählers: Bezug positiv, Einspeisung negativ.
+            $gridW = (float)GetValue($variableID);
+            $feedInW = max(0.0, -$gridW);
         } catch (Throwable $e) {
-            $this->DebugLog('PVCalibration', 'Netzeinspeisung konnte nicht gelesen werden: ' . $e->getMessage(), 0);
-            return ['blocked' => false, 'configured' => true, 'feedInW' => null, 'batteryPowerW' => null, 'thresholdW' => null, 'text' => 'Netzeinspeisung nicht lesbar'];
-        }
-
-        // Vorzeichen laut Anlagenmessung:
-        // Batterie lädt = negativ, Batterie entlädt = positiv.
-        // Nur wenn die Batterie NICHT mehr lädt (>= 0 W) und gleichzeitig die
-        // Netzeinspeisung nahe am Limit liegt, ist der PV-Istwert für die
-        // Faktorberechnung wahrscheinlich durch Abregelung verfälscht.
-        $batteryConfigured = $batteryPowerVariableID > 0 && @IPS_VariableExists($batteryPowerVariableID);
-        $batteryPowerW = null;
-        if ($batteryConfigured) {
-            try {
-                $batteryPowerW = (float)GetValue($batteryPowerVariableID);
-            } catch (Throwable $e) {
-                $this->DebugLog('PVCalibration', 'Batterieleistung konnte nicht gelesen werden: ' . $e->getMessage(), 0);
-            }
+            $this->DebugLog('PVCalibration', 'Netzwert konnte nicht gelesen werden: '.$e->getMessage(), 0);
+            return ['blocked'=>false,'configured'=>true,'gridW'=>null,'feedInW'=>null,'thresholdW'=>null,'text'=>'Netzwert nicht lesbar'];
         }
 
         $limitW = max(0.0, (float)$this->ReadPropertyInteger('PVCalibrationFeedInLimitW'));
         $toleranceW = max(0.0, (float)$this->ReadPropertyInteger('PVCalibrationFeedInToleranceW'));
         $thresholdW = max(0.0, $limitW - $toleranceW);
-        $nearFeedInLimit = $limitW > 0.0 && $feedInW >= $thresholdW;
-        $batteryNotCharging = $batteryPowerW !== null && $batteryPowerW >= 0.0;
+        $nearLimit = $limitW > 0.0 && $feedInW >= $thresholdW;
 
-        // Hysterese über die Zeit: Ein erkannter Abregelzustand bleibt aktiv.
-        // Freigabe erst, wenn die Netzeinspeisung 5 Minuten ohne Unterbrechung
-        // unter DERSELBEN Sperrschwelle liegt. Jeder Messwert >= Schwelle setzt
-        // die 5-Minuten-Frist wieder zurück.
         $blocked = $this->ReadAttributeBoolean('PVCalibrationCurtailmentLatched');
         $belowSince = $this->ReadAttributeInteger('PVCalibrationBelowThresholdSince');
-        if (!$blocked && $nearFeedInLimit && $batteryNotCharging) {
+
+        if (!$blocked && $nearLimit) {
             $blocked = true;
             $belowSince = 0;
             $this->WriteAttributeBoolean('PVCalibrationCurtailmentLatched', true);
@@ -1740,7 +1717,7 @@ class SmartBatteryOptimizer extends IPSModule
                     $belowSince = time();
                     $this->WriteAttributeInteger('PVCalibrationBelowThresholdSince', $belowSince);
                 }
-                if (time() - $belowSince >= 300) {
+                if ((time() - $belowSince) >= 300) {
                     $blocked = false;
                     $belowSince = 0;
                     $this->WriteAttributeBoolean('PVCalibrationCurtailmentLatched', false);
@@ -1752,30 +1729,19 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
 
-        $text = '';
-        if ($blocked) {
-            $text = 'Lernen pausiert – PV-Abregelung wahrscheinlich'
-                . ' | Netz ' . number_format($feedInW, 0, ',', '.') . ' W'
-                . ' | Batterie ' . number_format((float)$batteryPowerW, 0, ',', '.') . ' W'
-                . ' | Sperre ab ' . number_format($thresholdW, 0, ',', '.') . ' W';
-            $this->DebugLog('PVCalibration', $text);
-        } elseif ($nearFeedInLimit && $batteryPowerW !== null && $batteryPowerW < 0.0) {
-            $this->DebugLog(
-                'PVCalibration',
-                'Lernwert erlaubt trotz hoher Einspeisung: Batterie lädt noch mit '
-                . number_format(abs($batteryPowerW), 0, ',', '.') . ' W'
-            );
-        }
+        $text = $blocked
+            ? 'Lernen pausiert – Einspeisegrenze erreicht | Netzvariable '
+                .number_format($gridW,0,',','.').' W | Einspeisung '
+                .number_format($feedInW,0,',','.').' W | Sperre ab '
+                .number_format($thresholdW,0,',','.').' W'
+            : '';
 
         return [
-            'blocked' => $blocked,
-            'configured' => true,
-            'feedInW' => $feedInW,
-            'batteryPowerW' => $batteryPowerW,
-            'thresholdW' => $thresholdW,
-            'belowThresholdSince' => $belowSince,
-            'releaseRemainingSec' => ($blocked && $belowSince > 0) ? max(0, 300 - (time() - $belowSince)) : null,
-            'text' => $text
+            'blocked'=>$blocked, 'configured'=>true, 'gridW'=>$gridW,
+            'feedInW'=>$feedInW, 'batteryPowerW'=>null, 'thresholdW'=>$thresholdW,
+            'belowThresholdSince'=>$belowSince,
+            'releaseRemainingSec'=>($blocked && $belowSince>0) ? max(0,300-(time()-$belowSince)) : null,
+            'text'=>$text
         ];
     }
 
