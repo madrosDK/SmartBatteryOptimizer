@@ -369,7 +369,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.23';
+        $currentModuleVersion = '1.9.24';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -773,9 +773,25 @@ class SmartBatteryOptimizer extends IPSModule
             $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
             if (is_array($forecast) && count($forecast) > 0) {
                 $forecast['forecastSourceWeights'] = $neutralWeights;
+
+                // Alle im Forecast-Cache mitgeführten Kalibrierwerte sofort neutralisieren.
+                // Dadurch zeigen Chart und Diagnose direkt nach dem Tastendruck 1,000 bzw.
+                // die neutrale Anbietergewichtung und warten nicht auf den nächsten Zyklus.
+                foreach (['surfaceFactors', 'surfaceAutoFactors', 'hourlyCalibrationFactors', 'calibrationFactors'] as $factorKey) {
+                    if (isset($forecast[$factorKey]) && is_array($forecast[$factorKey])) {
+                        array_walk_recursive($forecast[$factorKey], function (&$value) {
+                            if (is_numeric($value)) $value = 1.0;
+                        });
+                    }
+                }
+
                 $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
                 SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
                 SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
+            } else {
+                // Auch ohne vorhandenen Forecast die Diagnose unmittelbar aus dem
+                // zurückgesetzten Kalibrierzustand neu aufbauen.
+                SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML([]));
             }
 
             $parts = [];
