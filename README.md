@@ -424,3 +424,6 @@ Forecast.Solar-Ergebnisse werden pro PV-Fläche mindestens 15 Minuten wiederverw
 
 ### 1.9.25 – PV-Kalibrierung im 30-Sekunden-Takt
 Die PV-Kalibrierung und die Diagnose-HTMLBox werden alle 30 Sekunden aus lokalen IP-Symcon-Werten aktualisiert. Eine erkannte Einspeiseabregelung bleibt verriegelt und wird erst aufgehoben, wenn die Einspeisung fünf Minuten durchgehend unter der konfigurierten Sperrschwelle liegt. Ein einzelner Messwert unterhalb der Schwelle hebt die Sperre nicht auf. Externe Prognoseanbieter werden dadurch nicht häufiger abgefragt.
+
+### 1.9.28 – Mehrheitsbasierte Abregelung
+Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig schaltet sie bei mindestens 75 % Messwerten an/über der Sperrschwelle ein und bei mindestens 75 % Messwerten darunter wieder aus. Der Prozentsatz ist konfigurierbar. Bei Aktivierung werden ausschließlich der Sperrzeitraum sowie zwei Minuten vor dem ersten hohen Messwert verworfen; nach Freigabe werden neue Werte sofort wieder zur Kalibrierung verwendet.

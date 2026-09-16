@@ -27,6 +27,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('PVCalibrationFeedInVariable', 0);
         $this->RegisterPropertyInteger('PVCalibrationFeedInLimitW', 10000);
         $this->RegisterPropertyInteger('PVCalibrationFeedInToleranceW', 500);
+        $this->RegisterPropertyInteger('PVCalibrationPollSeconds', 30);
+        $this->RegisterPropertyInteger('PVCalibrationCurtailmentMajorityPct', 75);
         $this->RegisterPropertyBoolean('PVCalibrationFeedInInvert', false);
         $this->RegisterPropertyString('PVSurfaces', json_encode([
             ['Active' => true, 'Name' => 'Süd', 'KWp' => 10.0, 'OrientationKnown' => true, 'Azimuth' => 0, 'Tilt' => 25, 'Factor' => 1.0, 'AutoCalibrate' => true, 'PVVariable1' => 0, 'PVVariable2' => 0, 'PVVariable3' => 0]
@@ -174,6 +176,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
         $this->RegisterAttributeBoolean('PVCalibrationCurtailmentLatched', false);
         $this->RegisterAttributeInteger('PVCalibrationBelowThresholdSince', 0);
+        $this->RegisterAttributeInteger('PVCalibrationAboveThresholdSince', 0);
+        $this->RegisterAttributeInteger('PVCalibrationAboveThresholdCount', 0);
+        $this->RegisterAttributeInteger('PVCalibrationBlockedFromTs', 0);
+        $this->RegisterAttributeString('PVCalibrationCurtailmentSamplesJSON', '[]');
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeString('PlanJSON', '[]');
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
@@ -310,7 +316,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
         $this->SetTimerInterval('PVForecastTimer', $pvForecastRefresh * 60 * 1000);
         $this->SetTimerInterval('PVActualTimer', $pvActualRefresh * 60 * 1000);
-        $this->SetTimerInterval('PVCalibrationTimer', 30 * 1000);
+        $pvCalibrationPollSeconds = max(10, min(120, $this->ReadPropertyInteger('PVCalibrationPollSeconds')));
+        $this->SetTimerInterval('PVCalibrationTimer', $pvCalibrationPollSeconds * 1000);
         $this->SetTimerInterval('ControlTimer', 60 * 1000);
         $this->DebugLog('ApplyChanges', 'Debug=' . ($this->ReadPropertyBoolean('DebugMode') ? 'AN' : 'AUS') . ' | Timer Preise=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min | Steuerprüfung=1 min');
 
@@ -372,7 +379,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.26';
+        $currentModuleVersion = '1.9.28';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -653,8 +660,9 @@ class SmartBatteryOptimizer extends IPSModule
 
                 if ($gate['blocked']) {
                     if (isset($calibration[$key])) {
+                        $blockedFromTs = (int)($gate['blockedFromTs'] ?? time());
                         $calibration = $this->InvalidatePVCalibrationFrom(
-                            $calibration, $key, strtotime(date('Y-m-d H:00:00'))
+                            $calibration, $key, max(0, $blockedFromTs)
                         );
                     }
                 } elseif ($actualW !== null && $expectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
@@ -680,7 +688,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
             SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
         } catch (Throwable $e) {
-            $this->DebugLog('PVCalibration', '30-s-Aktualisierung fehlgeschlagen: ' . $e->getMessage(), 0);
+            $this->DebugLog('PVCalibration', 'Kalibrierungs-Aktualisierung fehlgeschlagen: ' . $e->getMessage(), 0);
         }
     }
 
@@ -1704,31 +1712,54 @@ class SmartBatteryOptimizer extends IPSModule
         $nearLimit = $limitW > 0.0 && $feedInW >= $thresholdW;
 
         $blocked = $this->ReadAttributeBoolean('PVCalibrationCurtailmentLatched');
-        $belowSince = $this->ReadAttributeInteger('PVCalibrationBelowThresholdSince');
+        $blockedFromTs = $this->ReadAttributeInteger('PVCalibrationBlockedFromTs');
+        $majorityPct = max(50, min(100, $this->ReadPropertyInteger('PVCalibrationCurtailmentMajorityPct')));
+        $windowSec = 120;
+        $now = time();
 
-        if (!$blocked && $nearLimit) {
+        // Rollendes 2-Minuten-Fenster. Jede lokale Kalibrierungsabfrage liefert
+        // genau einen Messpunkt: oberhalb/gleich Sperre oder darunter.
+        $samples = json_decode($this->ReadAttributeString('PVCalibrationCurtailmentSamplesJSON'), true);
+        if (!is_array($samples)) $samples = [];
+        $samples[] = ['ts'=>$now, 'high'=>$nearLimit ? 1 : 0];
+        $cutoff = $now - $windowSec;
+        $samples = array_values(array_filter($samples, function($x) use ($cutoff) {
+            return is_array($x) && (int)($x['ts'] ?? 0) >= $cutoff;
+        }));
+        $this->WriteAttributeString('PVCalibrationCurtailmentSamplesJSON', json_encode($samples));
+
+        $count = count($samples);
+        $highCount = 0;
+        foreach ($samples as $x) if (!empty($x['high'])) $highCount++;
+        $lowCount = $count - $highCount;
+        $highPct = $count > 0 ? 100.0 * $highCount / $count : 0.0;
+        $lowPct = $count > 0 ? 100.0 * $lowCount / $count : 0.0;
+        $oldestTs = $count > 0 ? (int)$samples[0]['ts'] : $now;
+        // Entscheidung erst, wenn das Fenster annähernd vollständig beobachtet wurde.
+        $windowReady = ($now - $oldestTs) >= max(1, $windowSec - max(10, min(120, $this->ReadPropertyInteger('PVCalibrationPollSeconds'))));
+
+        if (!$blocked && $windowReady && $highPct >= $majorityPct) {
             $blocked = true;
-            $belowSince = 0;
-            $this->WriteAttributeBoolean('PVCalibrationCurtailmentLatched', true);
-            $this->WriteAttributeInteger('PVCalibrationBelowThresholdSince', 0);
-        } elseif ($blocked) {
-            if ($feedInW < $thresholdW) {
-                if ($belowSince <= 0) {
-                    $belowSince = time();
-                    $this->WriteAttributeInteger('PVCalibrationBelowThresholdSince', $belowSince);
-                }
-                if ((time() - $belowSince) >= 300) {
-                    $blocked = false;
-                    $belowSince = 0;
-                    $this->WriteAttributeBoolean('PVCalibrationCurtailmentLatched', false);
-                    $this->WriteAttributeInteger('PVCalibrationBelowThresholdSince', 0);
-                }
-            } else {
-                $belowSince = 0;
-                $this->WriteAttributeInteger('PVCalibrationBelowThresholdSince', 0);
+            // Sicherheitsbereich: zwei Minuten VOR dem ersten hohen Wert im aktuellen
+            // Fenster bis zum späteren Ende der Sperre werden nicht zum Lernen benutzt.
+            $firstHighTs = $now;
+            foreach ($samples as $x) {
+                if (!empty($x['high'])) { $firstHighTs = (int)$x['ts']; break; }
             }
+            $blockedFromTs = max(0, $firstHighTs - 120);
+            $this->WriteAttributeBoolean('PVCalibrationCurtailmentLatched', true);
+            $this->WriteAttributeInteger('PVCalibrationBlockedFromTs', $blockedFromTs);
+        } elseif ($blocked && $windowReady && $lowPct >= $majorityPct) {
+            $blocked = false;
+            $blockedFromTs = 0;
+            $this->WriteAttributeBoolean('PVCalibrationCurtailmentLatched', false);
+            $this->WriteAttributeInteger('PVCalibrationBlockedFromTs', 0);
+            // Ab jetzt dürfen neue Intervalle wieder lernen; alter Sperrbereich bleibt entfernt.
         }
 
+        $belowSince = 0;
+        $aboveSince = 0;
+        $aboveCount = $highCount;
         $text = $blocked
             ? 'Lernen pausiert – Einspeisegrenze erreicht | Netzvariable '
                 .number_format($gridW,0,',','.').' W | Einspeisung '
@@ -1740,6 +1771,13 @@ class SmartBatteryOptimizer extends IPSModule
             'blocked'=>$blocked, 'configured'=>true, 'gridW'=>$gridW,
             'feedInW'=>$feedInW, 'batteryPowerW'=>null, 'thresholdW'=>$thresholdW,
             'belowThresholdSince'=>$belowSince,
+            'aboveThresholdSince'=>$aboveSince,
+            'aboveThresholdCount'=>$aboveCount,
+            'blockedFromTs'=>$blockedFromTs,
+            'windowHighPct'=>$highPct,
+            'windowLowPct'=>$lowPct,
+            'majorityPct'=>$majorityPct,
+            'windowReady'=>$windowReady,
             'releaseRemainingSec'=>($blocked && $belowSince>0) ? max(0,300-(time()-$belowSince)) : null,
             'text'=>$text
         ];
@@ -1838,9 +1876,10 @@ class SmartBatteryOptimizer extends IPSModule
         $lastExpectedW = (float)($calibration[$key]['lastPointExpectedW'] ?? 0.0);
         $lastActualW = (float)($calibration[$key]['lastPointActualW'] ?? 0.0);
 
-        // Alle 30 Sekunden einen neuen Integrationspunkt bilden.
+        // Im konfigurierten Kalibrierungsintervall einen neuen Integrationspunkt bilden.
         // Zwischen zwei Punkten werden Leistungskurven trapezförmig integriert -> echte kWh.
-        if ($lastTs > 0 && $now - $lastTs >= 30) {
+        $pollSeconds = max(10, min(120, $this->ReadPropertyInteger('PVCalibrationPollSeconds')));
+        if ($lastTs > 0 && $now - $lastTs >= $pollSeconds) {
             $dt = $now - $lastTs;
             // Große Datenlücken nicht als konstante Leistung interpretieren.
             if ($dt <= 3600 && $lastExpectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
@@ -1859,7 +1898,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         // Den aktuellen Punkt immer als Ausgangspunkt für das nächste Intervall merken.
-        if ($lastTs === 0 || $now - $lastTs >= 30) {
+        if ($lastTs === 0 || $now - $lastTs >= $pollSeconds) {
             $calibration[$key]['lastPointTs'] = $now;
             $calibration[$key]['lastPointExpectedW'] = $expectedW;
             $calibration[$key]['lastPointActualW'] = $actualW;
@@ -4124,17 +4163,17 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'Netz: ' . ($gate['feedInW'] === null ? '-' : number_format((float)$gate['feedInW'],0,',','.') . ' W') . ' | ';
             $html .= 'Sperre ab: ' . ($gate['thresholdW'] === null ? '-' : number_format((float)$gate['thresholdW'],0,',','.') . ' W') . ' | ';
             $html .= 'Batterie: ' . ($gate['batteryPowerW'] === null ? '-' : number_format((float)$gate['batteryPowerW'],0,',','.') . ' W') . '<br>';
-            $html .= '<b>Abregelung erkannt: ' . (!empty($gate['blocked']) ? '<span style="color:#ffd166">JA – Kalibrierung gesperrt, aktuelle Stunde wird verworfen</span>' : 'NEIN – Kalibrierung erlaubt') . '</b>';
-            if (!empty($gate['blocked'])) {
-                if (!empty($gate['belowThresholdSince'])) {
-                    $remain = (int)($gate['releaseRemainingSec'] ?? 0);
-                    $html .= '<br>Unter Schwelle seit: ' . date('H:i:s', (int)$gate['belowThresholdSince'])
-                        . ' | Freigabe in: ' . floor($remain / 60) . ':' . str_pad((string)($remain % 60), 2, '0', STR_PAD_LEFT) . ' min';
-                } else {
-                    $html .= '<br>Freigabe: erst nach 5:00 min dauerhaft unter ' . number_format((float)$gate['thresholdW'],0,',','.') . ' W';
-                }
+            $html .= '<b>Abregelung erkannt: ' . (!empty($gate['blocked']) ? '<span style="color:#ffd166">JA – Kalibrierung gesperrt; nur Zeitraum ab bestätigter Grenzüberschreitung wird verworfen</span>' : 'NEIN – Kalibrierung erlaubt') . '</b>';
+            $html .= '<br>2-Min-Fenster: über Schwelle '
+                . number_format((float)($gate['windowHighPct'] ?? 0), 1, ',', '.') . ' % | unter Schwelle '
+                . number_format((float)($gate['windowLowPct'] ?? 0), 1, ',', '.') . ' % | Schaltschwelle '
+                . number_format((float)($gate['majorityPct'] ?? 75), 0, ',', '.') . ' %';
+            if (!empty($gate['blocked']) && !empty($gate['blockedFromTs'])) {
+                $html .= '<br>Verworfener Bereich beginnt: ' . date('H:i:s', (int)$gate['blockedFromTs'])
+                    . ' (2 min vor erstem hohen Wert)';
             }
-            $html .= '<br><span style="opacity:.75">Aktualisierung der Kalibrierung und dieser Anzeige: alle 30 Sekunden</span></div>';
+            $pollSeconds = max(10, min(120, $this->ReadPropertyInteger('PVCalibrationPollSeconds')));
+            $html .= '<br><span style="opacity:.75">Aktualisierung der Kalibrierung und dieser Anzeige: alle ' . $pollSeconds . ' Sekunden</span></div>';
         }
         $html .= '<br>';
         if (count($cal) === 0) return $html . 'Keine aktive PV-Fläche.</div>';
