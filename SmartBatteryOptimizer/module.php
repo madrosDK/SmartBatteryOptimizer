@@ -184,6 +184,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('ManualRecalculateWorker', 0, 'SBO_RunManualRecalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('DeferredDebugRebuildTimer', 0, 'SBO_DeferredDebugRebuild($_IPS[\'TARGET\']);');
     }
 
@@ -523,11 +524,24 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function Recalculate()
     {
-        $this->SetActionFeedback('Prognose & Plan werden berechnet ...');
-        $this->RecalculateInternal(true);
-        $status = (string)GetValue($this->GetIDForIdent('StatusText'));
-        $this->SetActionFeedback('Prognose & Plan berechnet. ' . $status);
-        echo "Prognose & Plan wurden berechnet.\n\n" . $status;
+        $this->SetActionFeedback('Prognose & Plan: Auftrag angenommen – Berechnung startet ...');
+        $this->SetTimerInterval('ManualRecalculateWorker', 1000);
+        echo "Berechnung wurde gestartet. Der Fortschritt steht in „Letzte manuelle Aktion“.";
+    }
+
+    public function RunManualRecalculate()
+    {
+        $this->SetTimerInterval('ManualRecalculateWorker', 0);
+        $this->SetActionFeedback('Prognose & Plan: Berechnung läuft – Prognosequellen werden abgefragt ...');
+        try {
+            $this->RecalculateInternal(true);
+            $status = (string)GetValue($this->GetIDForIdent('StatusText'));
+            $this->SetActionFeedback('Prognose & Plan fertig. ' . $status);
+        } catch (Throwable $e) {
+            $text = 'Prognose & Plan FEHLER: ' . $e->getMessage();
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+        }
     }
 
     public function RefreshOptimization()
@@ -933,6 +947,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $fsHours = null;
                 $fromCache = false;
                 try {
+                    $this->SetActionFeedback('Prognose: Forecast.Solar – ' . $name . ' wird abgefragt ...');
                     // Public API: JEDE aktive PV-Fläche erhält ihren eigenen Request.
                     $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp);
                     $forecastSolarCache[$key] = [
@@ -969,6 +984,7 @@ class SmartBatteryOptimizer extends IPSModule
                     }
                     $surfaceTotalsBySource['forecastsolar'][$name] = $sum;
                     $forecastSolarSurfaceStatus[] = $name . ': ' . number_format($sum, 2, ',', '.') . ' kWh morgen' . ($fromCache ? ' (Cache)' : ' (Live)');
+                    $this->SetActionFeedback('Prognose: Forecast.Solar – ' . $name . ' OK, ' . number_format($sum, 2, ',', '.') . ' kWh morgen' . ($fromCache ? ' (Cache)' : ''));
                     $this->DebugLog('Forecast.Solar', $name . ' | morgen=' . round($sum, 3) . ' kWh | kWp=' . $kwp . ' | Azimut=' . $azimuth . ' | Neigung=' . $tilt . ' | ' . ($fromCache ? 'Cache' : 'Live'));
                 }
             }
