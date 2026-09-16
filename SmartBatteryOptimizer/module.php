@@ -3445,8 +3445,33 @@ class SmartBatteryOptimizer extends IPSModule
             $dayStart = strtotime('-' . $age . ' days 00:00:00');
             $actual = ($archiveID > 0 && $varID > 0 && @IPS_VariableExists($varID)) ? $this->GetHourlyConsumptionForDay($archiveID, $varID, $dayStart) : null;
             $rows = [];
-            for ($h=0;$h<24;$h++) $rows[]=['label'=>str_pad((string)$h,2,'0',STR_PAD_LEFT).':00','forecastKWh'=>round(max(0.0,(float)($learned[$h]??0)),3),'actualKWh'=>is_array($actual)?round(max(0.0,(float)($actual[$h]??0)),3):null];
-            $days[]=['date'=>date('Y-m-d',$dayStart),'label'=>date('d.m.Y',$dayStart),'forecastTotalKWh'=>round(array_sum($learned),3),'actualTotalKWh'=>is_array($actual)?round(array_sum($actual),3):null,'rows'=>$rows];
+            $actualTotal = 0.0;
+            $actualHasValues = false;
+            $now = time();
+            for ($h=0;$h<24;$h++) {
+                $hourStart = $dayStart + $h * 3600;
+                // Für heute darf ein Ist-Balken erst erscheinen, wenn die betreffende
+                // Stunde begonnen hat. Zukünftige Stunden sind ausdrücklich null und
+                // werden damit von Highcharts nicht gezeichnet.
+                $actualValue = null;
+                if (is_array($actual) && $hourStart <= $now) {
+                    $actualValue = round(max(0.0,(float)($actual[$h]??0)),3);
+                    $actualTotal += $actualValue;
+                    $actualHasValues = true;
+                }
+                $rows[]=[
+                    'label'=>str_pad((string)$h,2,'0',STR_PAD_LEFT).':00',
+                    'forecastKWh'=>round(max(0.0,(float)($learned[$h]??0)),3),
+                    'actualKWh'=>$actualValue
+                ];
+            }
+            $days[]=[
+                'date'=>date('Y-m-d',$dayStart),
+                'label'=>date('d.m.Y',$dayStart),
+                'forecastTotalKWh'=>round(array_sum($learned),3),
+                'actualTotalKWh'=>$actualHasValues?round($actualTotal,3):null,
+                'rows'=>$rows
+            ];
         }
         $html='<div style="font-family:Tahoma;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
         if($highchartsJS==='') return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';

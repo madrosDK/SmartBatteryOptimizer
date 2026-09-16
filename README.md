@@ -389,3 +389,6 @@ Die in 1.9.8 ergänzte Speicherung des ausgewählten Lastprofil-Tages enthielt i
 
 ### 1.9.11 – PV-Debug-Sichtbarkeit bleibt auch bei HTMLBox-Aktualisierung erhalten
 Die Sichtbarkeit der einzelnen Debug-Prognosequellen wird nicht mehr ausschließlich im JavaScript/localStorage der aktuellen Highcharts-Instanz gehalten. Bei einem Legend-Klick wird der Zustand zusätzlich über `RequestAction` im Modul gespeichert. Beim vollständigen Neuaufbau der PV-HTMLBox wird dieser Zustand wieder als Startwert in Highcharts übernommen. Dadurch bleiben aktivierte/deaktivierte Debug-Profile sowohl beim Blättern als auch nach Prognose-, Istwert- und HTMLBox-Aktualisierungen erhalten.
+
+### 1.9.12 – Lastprofil: keine Ist-Werte aus der Zukunft
+Im Verbrauchs-/Lastprofil-Diagramm werden für den heutigen Tag Ist-Balken nur noch für bereits begonnene Stunden erzeugt. Zukünftige Stunden erhalten `null` und werden von Highcharts nicht gezeichnet. Die angezeigte Ist-Tagessumme summiert ebenfalls nur die bis jetzt dargestellten Ist-Stunden. Historische Tage bleiben vollständig.
