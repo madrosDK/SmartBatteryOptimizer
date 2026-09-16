@@ -173,6 +173,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeBoolean('LastAppliedDebugMode', false);
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
+        $this->RegisterAttributeBoolean('PVCalibrationCurtailmentLatched', false);
+        $this->RegisterAttributeInteger('PVCalibrationBelowThresholdSince', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeString('PlanJSON', '[]');
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
@@ -199,6 +201,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('RefreshTimer', 0, 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('PVCalibrationTimer', 0, 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ManualRecalculateWorker', 0, 'SBO_RunManualRecalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('FullRefreshWorker', 0, 'SBO_RunFullRefresh($_IPS[\'TARGET\']);');
@@ -308,6 +311,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
         $this->SetTimerInterval('PVForecastTimer', $pvForecastRefresh * 60 * 1000);
         $this->SetTimerInterval('PVActualTimer', $pvActualRefresh * 60 * 1000);
+        $this->SetTimerInterval('PVCalibrationTimer', 30 * 1000);
         $this->SetTimerInterval('ControlTimer', 60 * 1000);
         $this->DebugLog('ApplyChanges', 'Debug=' . ($this->ReadPropertyBoolean('DebugMode') ? 'AN' : 'AUS') . ' | Timer Preise=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min | Steuerprüfung=1 min');
 
@@ -369,7 +373,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.24';
+        $currentModuleVersion = '1.9.25';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -622,6 +626,63 @@ class SmartBatteryOptimizer extends IPSModule
         // Die Prognose besitzt wieder ihr eigenes konfigurierbares Intervall.
         $this->DebugLog('PVActual', 'PV-Ist + Planung aktualisieren; gespeicherte PV-Prognose verwenden');
         $this->RecalculateInternal(false);
+    }
+
+    public function RefreshPVCalibration()
+    {
+        try {
+            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+            if (!is_array($forecast)) $forecast = [];
+            $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
+            if (!is_array($calibration)) $calibration = [];
+            $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+            if (!is_array($surfaces)) $surfaces = [];
+
+            // Gate bei jedem 30-s-Takt aktualisieren. Ein einmal erkannter Zustand bleibt
+            // verriegelt und wird erst nach 5 Minuten DURCHGEHEND unter derselben Schwelle frei.
+            $gate = $this->GetPVCalibrationFeedInGate();
+            $surfaceCalibration = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
+
+            foreach ($surfaces as $idx => $surface) {
+                if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
+                $name = trim((string)($surface['Name'] ?? 'PV'));
+                if ($name === '') $name = 'PV ' . ($idx + 1);
+                $key = $this->SurfaceKey($name, $idx);
+                $actualW = $this->ReadSurfaceActualPower($surface);
+                $expectedW = isset($surfaceCalibration[$name]['expectedBaseW'])
+                    ? (float)$surfaceCalibration[$name]['expectedBaseW'] : 0.0;
+
+                if ($gate['blocked']) {
+                    if (isset($calibration[$key])) {
+                        $calibration = $this->InvalidatePVCalibrationFrom(
+                            $calibration, $key, strtotime(date('Y-m-d H:00:00'))
+                        );
+                    }
+                } elseif ($actualW !== null && $expectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
+                    $calibration = $this->AddPVCalibrationEnergySample($calibration, $key, $expectedW, $actualW);
+                }
+
+                $diag = $this->GetPVCalibrationDiagnostics($calibration, $key);
+                if (!isset($surfaceCalibration[$name]) || !is_array($surfaceCalibration[$name])) $surfaceCalibration[$name] = [];
+                $surfaceCalibration[$name]['autoFactor'] = (float)($calibration[$key]['factor'] ?? 1.0);
+                $surfaceCalibration[$name]['sumExpectedKWh'] = (float)($diag['sumExpectedKWh'] ?? 0.0);
+                $surfaceCalibration[$name]['sumActualKWh'] = (float)($diag['sumActualKWh'] ?? 0.0);
+                $surfaceCalibration[$name]['learnedRatio'] = $diag['learnedRatio'] ?? null;
+                $surfaceCalibration[$name]['sampleCount'] = (int)($diag['sampleCount'] ?? 0);
+                $surfaceCalibration[$name]['firstSampleTs'] = (int)($diag['firstSampleTs'] ?? 0);
+                $surfaceCalibration[$name]['lastSampleTs'] = (int)($diag['lastSampleTs'] ?? 0);
+                $surfaceCalibration[$name]['calibrationBlocked'] = (bool)$gate['blocked'];
+                $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
+            }
+
+            $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
+            $forecast['surfaceCalibration'] = $surfaceCalibration;
+            $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
+            SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
+            SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
+        } catch (Throwable $e) {
+            $this->DebugLog('PVCalibration', '30-s-Aktualisierung fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
     }
 
     private function RecalculateInternal(bool $refreshPVForecast)
@@ -1661,7 +1722,35 @@ class SmartBatteryOptimizer extends IPSModule
         $thresholdW = max(0.0, $limitW - $toleranceW);
         $nearFeedInLimit = $limitW > 0.0 && $feedInW >= $thresholdW;
         $batteryNotCharging = $batteryPowerW !== null && $batteryPowerW >= 0.0;
-        $blocked = $nearFeedInLimit && $batteryNotCharging;
+
+        // Hysterese über die Zeit: Ein erkannter Abregelzustand bleibt aktiv.
+        // Freigabe erst, wenn die Netzeinspeisung 5 Minuten ohne Unterbrechung
+        // unter DERSELBEN Sperrschwelle liegt. Jeder Messwert >= Schwelle setzt
+        // die 5-Minuten-Frist wieder zurück.
+        $blocked = $this->ReadAttributeBoolean('PVCalibrationCurtailmentLatched');
+        $belowSince = $this->ReadAttributeInteger('PVCalibrationBelowThresholdSince');
+        if (!$blocked && $nearFeedInLimit && $batteryNotCharging) {
+            $blocked = true;
+            $belowSince = 0;
+            $this->WriteAttributeBoolean('PVCalibrationCurtailmentLatched', true);
+            $this->WriteAttributeInteger('PVCalibrationBelowThresholdSince', 0);
+        } elseif ($blocked) {
+            if ($feedInW < $thresholdW) {
+                if ($belowSince <= 0) {
+                    $belowSince = time();
+                    $this->WriteAttributeInteger('PVCalibrationBelowThresholdSince', $belowSince);
+                }
+                if (time() - $belowSince >= 300) {
+                    $blocked = false;
+                    $belowSince = 0;
+                    $this->WriteAttributeBoolean('PVCalibrationCurtailmentLatched', false);
+                    $this->WriteAttributeInteger('PVCalibrationBelowThresholdSince', 0);
+                }
+            } else {
+                $belowSince = 0;
+                $this->WriteAttributeInteger('PVCalibrationBelowThresholdSince', 0);
+            }
+        }
 
         $text = '';
         if ($blocked) {
@@ -1684,6 +1773,8 @@ class SmartBatteryOptimizer extends IPSModule
             'feedInW' => $feedInW,
             'batteryPowerW' => $batteryPowerW,
             'thresholdW' => $thresholdW,
+            'belowThresholdSince' => $belowSince,
+            'releaseRemainingSec' => ($blocked && $belowSince > 0) ? max(0, 300 - (time() - $belowSince)) : null,
             'text' => $text
         ];
     }
@@ -1781,9 +1872,9 @@ class SmartBatteryOptimizer extends IPSModule
         $lastExpectedW = (float)($calibration[$key]['lastPointExpectedW'] ?? 0.0);
         $lastActualW = (float)($calibration[$key]['lastPointActualW'] ?? 0.0);
 
-        // Höchstens alle 20 Minuten einen neuen Integrationspunkt bilden.
+        // Alle 30 Sekunden einen neuen Integrationspunkt bilden.
         // Zwischen zwei Punkten werden Leistungskurven trapezförmig integriert -> echte kWh.
-        if ($lastTs > 0 && $now - $lastTs >= 1200) {
+        if ($lastTs > 0 && $now - $lastTs >= 30) {
             $dt = $now - $lastTs;
             // Große Datenlücken nicht als konstante Leistung interpretieren.
             if ($dt <= 3600 && $lastExpectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
@@ -1802,7 +1893,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         // Den aktuellen Punkt immer als Ausgangspunkt für das nächste Intervall merken.
-        if ($lastTs === 0 || $now - $lastTs >= 1200) {
+        if ($lastTs === 0 || $now - $lastTs >= 30) {
             $calibration[$key]['lastPointTs'] = $now;
             $calibration[$key]['lastPointExpectedW'] = $expectedW;
             $calibration[$key]['lastPointActualW'] = $actualW;
@@ -4067,7 +4158,17 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'Netz: ' . ($gate['feedInW'] === null ? '-' : number_format((float)$gate['feedInW'],0,',','.') . ' W') . ' | ';
             $html .= 'Sperre ab: ' . ($gate['thresholdW'] === null ? '-' : number_format((float)$gate['thresholdW'],0,',','.') . ' W') . ' | ';
             $html .= 'Batterie: ' . ($gate['batteryPowerW'] === null ? '-' : number_format((float)$gate['batteryPowerW'],0,',','.') . ' W') . '<br>';
-            $html .= '<b>Abregelung erkannt: ' . (!empty($gate['blocked']) ? '<span style="color:#ffd166">JA – Kalibrierung gesperrt, aktuelle Stunde wird verworfen</span>' : 'NEIN – Kalibrierung erlaubt') . '</b></div>';
+            $html .= '<b>Abregelung erkannt: ' . (!empty($gate['blocked']) ? '<span style="color:#ffd166">JA – Kalibrierung gesperrt, aktuelle Stunde wird verworfen</span>' : 'NEIN – Kalibrierung erlaubt') . '</b>';
+            if (!empty($gate['blocked'])) {
+                if (!empty($gate['belowThresholdSince'])) {
+                    $remain = (int)($gate['releaseRemainingSec'] ?? 0);
+                    $html .= '<br>Unter Schwelle seit: ' . date('H:i:s', (int)$gate['belowThresholdSince'])
+                        . ' | Freigabe in: ' . floor($remain / 60) . ':' . str_pad((string)($remain % 60), 2, '0', STR_PAD_LEFT) . ' min';
+                } else {
+                    $html .= '<br>Freigabe: erst nach 5:00 min dauerhaft unter ' . number_format((float)$gate['thresholdW'],0,',','.') . ' W';
+                }
+            }
+            $html .= '<br><span style="opacity:.75">Aktualisierung der Kalibrierung und dieser Anzeige: alle 30 Sekunden</span></div>';
         }
         $html .= '<br>';
         if (count($cal) === 0) return $html . 'Keine aktive PV-Fläche.</div>';

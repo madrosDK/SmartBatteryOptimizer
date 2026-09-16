@@ -421,3 +421,6 @@ Forecast.Solar wird bevorzugt über cURL abgerufen. Dadurch werden HTTPS-, DNS-,
 
 ### 1.9.21 – Forecast.Solar Rate-Limit-Schutz
 Forecast.Solar-Ergebnisse werden pro PV-Fläche mindestens 15 Minuten wiederverwendet; auch manuelle Gesamtaktualisierungen lösen innerhalb dieser Zeit keinen neuen Forecast.Solar-Request aus. Antwortet Forecast.Solar mit HTTP 429, wird `x-ratelimit-retry-at` gespeichert. Bis zu diesem Zeitpunkt werden keine weiteren Forecast.Solar-Anfragen gesendet. Stattdessen nutzt das Modul vorhandene Flächen-Caches. Nach Ablauf der Sperre darf die nächste reguläre Aktualisierung wieder anfragen.
+
+### 1.9.25 – PV-Kalibrierung im 30-Sekunden-Takt
+Die PV-Kalibrierung und die Diagnose-HTMLBox werden alle 30 Sekunden aus lokalen IP-Symcon-Werten aktualisiert. Eine erkannte Einspeiseabregelung bleibt verriegelt und wird erst aufgehoben, wenn die Einspeisung fünf Minuten durchgehend unter der konfigurierten Sperrschwelle liegt. Ein einzelner Messwert unterhalb der Schwelle hebt die Sperre nicht auf. Externe Prognoseanbieter werden dadurch nicht häufiger abgefragt.
