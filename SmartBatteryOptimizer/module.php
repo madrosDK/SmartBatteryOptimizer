@@ -364,7 +364,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.17';
+        $currentModuleVersion = '1.9.18';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -1084,7 +1084,7 @@ class SmartBatteryOptimizer extends IPSModule
                     'hourly' => 'global_tilted_irradiance',
                     'tilt' => $tilt,
                     'azimuth' => $azimuth,
-                    'timezone' => 'auto',
+                    'timezone' => 'Europe/Vienna',
                     'forecast_days' => 3
                 ]);
                 $data = $this->HttpGetJson($url);
@@ -1093,8 +1093,11 @@ class SmartBatteryOptimizer extends IPSModule
                 }
 
                 $sum = 0.0;
+                $openMeteoTimezone = new DateTimeZone('Europe/Vienna');
                 foreach ($data['hourly']['time'] as $i => $timeStr) {
-                    $ts = strtotime($timeStr);
+                    $dt = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i', (string)$timeStr, $openMeteoTimezone);
+                    if ($dt === false) $dt = new DateTimeImmutable((string)$timeStr, $openMeteoTimezone);
+                    $ts = $dt->getTimestamp();
                     $gti = max(0.0, (float)$data['hourly']['global_tilted_irradiance'][$i]);
                     $basePowerKW = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
                     $forecastHour = (int)date('G', $ts);
