@@ -161,6 +161,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('PVForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('PVSourceForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('ForecastSolarSurfaceCacheJSON', '{}');
+        $this->RegisterAttributeInteger('ForecastSolarRetryAfterTs', 0);
         $this->RegisterAttributeString('PVDebugVisibilityJSON', '{}');
         $this->RegisterAttributeString('ProviderDebugLogJSON', '[]');
         $this->RegisterAttributeString('AppliedModuleVersion', '');
@@ -368,7 +369,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.20';
+        $currentModuleVersion = '1.9.22';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -1125,7 +1126,25 @@ class SmartBatteryOptimizer extends IPSModule
                 try {
                     $this->SetActionFeedback('Prognose: Forecast.Solar – ' . $name . ' wird abgefragt ...');
                     // Public API: JEDE aktive PV-Fläche erhält ihren eigenen Request.
-                    $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp, $name);
+                    $retryAfterTs = $this->ReadAttributeInteger('ForecastSolarRetryAfterTs');
+                    $cachedSurface = $forecastSolarCache[$key] ?? null;
+                    $cacheAge = is_array($cachedSurface) ? (time() - (int)($cachedSurface['savedAt'] ?? 0)) : PHP_INT_MAX;
+
+                    // Erfolgreiche Forecast.Solar-Flächendaten mindestens 15 Minuten
+                    // wiederverwenden. Das gilt auch für manuelle Gesamtaktualisierungen.
+                    if (is_array($cachedSurface) && $cacheAge >= 0 && $cacheAge < 900 && is_array($cachedSurface['hours'] ?? null)) {
+                        $fsHours = $cachedSurface['hours'];
+                        $this->DebugLog('Forecast.Solar', $name . ' | Cache ' . round($cacheAge / 60, 1) . ' min | kein API-Aufruf');
+                    } elseif ($retryAfterTs > time()) {
+                        if (is_array($cachedSurface) && is_array($cachedSurface['hours'] ?? null)) {
+                            $fsHours = $cachedSurface['hours'];
+                            $this->DebugLog('Forecast.Solar', $name . ' | Rate-Limit bis ' . date('H:i:s', $retryAfterTs) . ' | Cache verwendet');
+                        } else {
+                            throw new Exception('Forecast.Solar Rate-Limit aktiv bis ' . date('d.m.Y H:i:s', $retryAfterTs) . '; kein Flächen-Cache vorhanden.');
+                        }
+                    } else {
+                        $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp, $name);
+                    }
                     $forecastSolarCache[$key] = [
                         'savedAt' => time(),
                         'name' => $name,
@@ -1344,6 +1363,17 @@ class SmartBatteryOptimizer extends IPSModule
 
             $headers = substr((string)$rawWithHeaders, 0, $headerSize);
             $raw = substr((string)$rawWithHeaders, $headerSize);
+
+            // Forecast.Solar liefert bei HTTP 429 den exakten Freigabezeitpunkt.
+            if ($status === 429 && preg_match('/^x-ratelimit-retry-at:\s*(.+)$/mi', $headers, $rm)) {
+                $retryTs = strtotime(trim($rm[1]));
+                if ($retryTs !== false && $retryTs > time()) {
+                    $this->WriteAttributeInteger('ForecastSolarRetryAfterTs', $retryTs);
+                }
+            } elseif ($status >= 200 && $status < 300) {
+                // Erfolgreicher Request hebt eine eventuell abgelaufene Sperre auf.
+                $this->WriteAttributeInteger('ForecastSolarRetryAfterTs', 0);
+            }
             $this->AddProviderDebug('Forecast.Solar', $url, $meta + ['Methode'=>'cURL','Effective-URL'=>$effectiveUrl,'Response-Header'=>$headers], $raw, $status, $duration);
 
             if ($status >= 400 || $status === 0) {
@@ -3372,7 +3402,8 @@ class SmartBatteryOptimizer extends IPSModule
         if (!$this->ReadPropertyBoolean('DebugMode')) return '';
         $e = static function ($v): string { return htmlspecialchars((string)$v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); };
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff;background:#181818;padding:8px">';
-        $html .= '<b>Prognose Provider Debug</b><br><span style="opacity:.75">Neueste Abfrage oben | Rohantworten aufklappbar</span>';
+        $html .= '<details open><summary style="cursor:pointer;font-family:Tahoma;font-size:14px;font-weight:bold;padding:4px 0">Prognose Provider Debug</summary>';
+        $html .= '<div style="margin-top:3px"><span style="opacity:.75">Neueste Abfrage oben | Rohantworten aufklappbar</span>';
         foreach (array_reverse($entries) as $row) {
             $meta = is_array($row['meta'] ?? null) ? $row['meta'] : [];
             $html .= '<details style="margin-top:8px;border-top:1px solid #555;padding-top:6px"><summary style="cursor:pointer"><b>'.$e($row['provider'] ?? '').'</b> | '.$e(date('d.m.Y H:i:s',(int)($row['time'] ?? 0))).' | HTTP '.$e($row['status'] ?? '').' | '.$e($row['durationMs'] ?? 0).' ms</summary>';
@@ -3381,7 +3412,7 @@ class SmartBatteryOptimizer extends IPSModule
             $raw = is_string($row['response'] ?? null) ? $row['response'] : json_encode($row['response'] ?? null, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
             $html .= '<details><summary style="cursor:pointer">Antwort anzeigen</summary><pre style="white-space:pre-wrap;word-break:break-word;background:#101010;padding:6px;max-height:500px;overflow:auto">'.$e($raw).'</pre></details></details>';
         }
-        return $html.'</div>';
+        return $html.'</div></details></div>';
     }
 
     private function HttpGetJsonWithHeaders(string $url, array $headers = [], string $debugProvider = '', array $debugMeta = []): array

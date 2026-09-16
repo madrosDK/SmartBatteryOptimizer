@@ -418,3 +418,6 @@ Außerdem prüft `Control()` geplante Preisslots jetzt vor der zusätzlichen akt
 
 ### 1.9.20 – Forecast.Solar HTTPS-Abruf und Fehlerdiagnose
 Forecast.Solar wird bevorzugt über cURL abgerufen. Dadurch werden HTTPS-, DNS-, Timeout- und Verbindungsfehler mit konkretem cURL-Fehlercode und Fehlertext sichtbar. Die Debug-HTML zeigt zusätzlich Abrufmethode, effektive URL, HTTP-Status, Antwortdauer und Response-Header. Falls cURL in der IP-Symcon-PHP-Umgebung nicht verfügbar ist, wird weiterhin der PHP-Stream verwendet; dessen tatsächliche Fehlermeldung aus `error_get_last()` wird nun ebenfalls protokolliert.
+
+### 1.9.21 – Forecast.Solar Rate-Limit-Schutz
+Forecast.Solar-Ergebnisse werden pro PV-Fläche mindestens 15 Minuten wiederverwendet; auch manuelle Gesamtaktualisierungen lösen innerhalb dieser Zeit keinen neuen Forecast.Solar-Request aus. Antwortet Forecast.Solar mit HTTP 429, wird `x-ratelimit-retry-at` gespeichert. Bis zu diesem Zeitpunkt werden keine weiteren Forecast.Solar-Anfragen gesendet. Stattdessen nutzt das Modul vorhandene Flächen-Caches. Nach Ablauf der Sperre darf die nächste reguläre Aktualisierung wieder anfragen.
