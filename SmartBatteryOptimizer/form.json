@@ -1,5 +1,30 @@
-[
-    "elements",
-    "actions",
-    "status"
-]
+{
+    "elements": [
+        {
+            "type": "ExpansionPanel",
+            "caption": "PV-Kalibrierung / Lernsperre",
+            "expanded": false,
+            "items": [
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVCalibrationPollSeconds",
+                    "caption": "Abfrageintervall (Sekunden)",
+                    "minimum": 10,
+                    "maximum": 120
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "PVCalibrationCurtailmentMajorityPct",
+                    "caption": "Mehrheit für Sperre / Freigabe (%)",
+                    "minimum": 50,
+                    "maximum": 100
+                }
+            ]
+        },
+        "elements",
+        "actions",
+        "status"
+    ],
+    "actions": [],
+    "status": []
+}
