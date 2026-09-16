@@ -147,12 +147,15 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 121);
         $this->RegisterVariableString('ConsumptionProfileChartHTML', 'Verbrauch Lastprofil Diagramm', '~HTMLBox', 124);
         $this->RegisterVariableString('PVCalibrationDiagnosisHTML', 'PV-Kalibrierung Diagnose', '~HTMLBox', 122);
+        $this->RegisterVariableString('ActionFeedback', 'Letzte manuelle Aktion', '', 123);
+        $this->RegisterVariableString('ForecastSolarStatus', 'Forecast.Solar Flächenstatus', '', 125);
         $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 123);
         $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 123);
 
         $this->RegisterAttributeString('ForecastJSON', '{}');
         $this->RegisterAttributeString('PVForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('PVSourceForecastHistoryJSON', '{}');
+        $this->RegisterAttributeString('ForecastSolarSurfaceCacheJSON', '{}');
         $this->RegisterAttributeString('PVSourceWeightsJSON', '{}');
         $this->RegisterAttributeInteger('PVNodeConsecutiveRejects', 0);
         $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
@@ -511,9 +514,20 @@ class SmartBatteryOptimizer extends IPSModule
         return $id > 0 ? (bool)GetValue($id) : false;
     }
 
+    private function SetActionFeedback(string $text): void
+    {
+        $message = date('d.m.Y H:i:s') . ' | ' . $text;
+        SetValue($this->GetIDForIdent('ActionFeedback'), $message);
+        $this->DebugLog('Manuelle Aktion', $text);
+    }
+
     public function Recalculate()
     {
+        $this->SetActionFeedback('Prognose & Plan werden berechnet ...');
         $this->RecalculateInternal(true);
+        $status = (string)GetValue($this->GetIDForIdent('StatusText'));
+        $this->SetActionFeedback('Prognose & Plan berechnet. ' . $status);
+        echo "Prognose & Plan wurden berechnet.\n\n" . $status;
     }
 
     public function RefreshOptimization()
@@ -602,45 +616,83 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function LearnNightConsumption()
     {
+        $this->SetActionFeedback('Nachtverbrauch wird neu gelernt ...');
         try {
             $value = $this->LearnNightConsumptionInternal();
             SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($value, 3));
             SetValue($this->GetIDForIdent('NightConsumptionSource'), $this->ReadAttributeString('NightLearningSource'));
             SetValue($this->GetIDForIdent('ValidNightSamples'), $this->ReadAttributeInteger('NightSampleCount'));
-            SetValue($this->GetIDForIdent('StatusText'), 'Nachtverbrauch: ' . number_format($value, 2, ',', '.') . ' kWh (' . $this->ReadAttributeString('NightLearningSource') . ')');
+            $this->RecalculateInternal(false);
+            $text = 'Nachtverbrauch neu gelernt: ' . number_format($value, 2, ',', '.') . ' kWh (' . $this->ReadAttributeString('NightLearningSource') . ')';
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
         } catch (Throwable $e) {
-            SetValue($this->GetIDForIdent('StatusText'), 'Lernen fehlgeschlagen: ' . $e->getMessage());
+            $text = 'Nachtverbrauch lernen fehlgeschlagen: ' . $e->getMessage();
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
         }
     }
 
     public function LearnConsumptionProfile()
     {
+        $this->SetActionFeedback('Verbrauchsprofil wird neu gelernt ...');
         try {
             $profile = $this->LearnConsumptionProfileInternal(true);
-            $night = $this->LearnNightConsumptionInternal();
-            $forecast = $this->ApplyConsumptionForecastToPV($this->FetchPVForecast(), $profile, $night);
-            SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)$forecast['consumptionTomorrowKWh'], 3));
-            SetValue($this->GetIDForIdent('ExpectedPVSurplusTomorrow'), round((float)$forecast['pvSurplusTomorrowKWh'], 3));
-            SetValue($this->GetIDForIdent('ConsumptionLearningStatus'), $this->ReadAttributeString('ConsumptionLearningSource'));
-            SetValue($this->GetIDForIdent('StatusText'), 'Verbrauchsprofil neu gelernt: ' . number_format((float)$forecast['consumptionTomorrowKWh'], 2, ',', '.') . ' kWh für morgen');
+            $this->RecalculateInternal(false);
+            $daily = (float)($profile['dailyKWh'] ?? 0.0);
+            $text = 'Verbrauchsprofil neu gelernt: ' . number_format($daily, 2, ',', '.') . ' kWh/Tag; Diagramm und Plan aktualisiert.';
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
         } catch (Throwable $e) {
-            SetValue($this->GetIDForIdent('StatusText'), 'Verbrauchsprofil lernen fehlgeschlagen: ' . $e->getMessage());
+            $text = 'Verbrauchsprofil lernen fehlgeschlagen: ' . $e->getMessage();
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
         }
     }
 
     public function ResetPVCalibration()
     {
+        $this->SetActionFeedback('PV-Kalibrierung wird zurückgesetzt ...');
         try {
             $this->WriteAttributeString('PVCalibrationJSON', '{}');
             $this->WriteAttributeInteger('PVCalibrationEnergyVersion', 1);
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), 'PV-Kalibrierung zurückgesetzt – Auto-Faktoren starten wieder bei 1,000.');
-            SetValue($this->GetIDForIdent('StatusText'), 'PV-Kalibrierung zurückgesetzt. Neue Messwerte werden ab der nächsten Berechnung über den eingestellten Lernzeitraum neu angelernt.');
 
-            $gate = $this->GetAutomaticLearningGateStatus();
-            SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
-            $this->SetStatus(($this->IsAutomaticEnabled() && !$gate['ready']) ? 202 : 102);
+            // Sofort neu berechnen. Damit werden ForecastJSON, PV-Highcharts,
+            // Diagnose und Einspeiseplan unmittelbar ohne den nächsten Timerlauf
+            // mit den zurückgesetzten Faktoren aufgebaut.
+            $this->RecalculateInternal(true);
+
+            $text = 'PV-Kalibrierung / Auto-Faktoren zurückgesetzt und Prognose sofort neu berechnet.';
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
         } catch (Throwable $e) {
-            SetValue($this->GetIDForIdent('StatusText'), 'PV-Kalibrierung zurücksetzen fehlgeschlagen: ' . $e->getMessage());
+            $text = 'PV-Kalibrierung zurücksetzen fehlgeschlagen: ' . $e->getMessage();
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
+        }
+    }
+
+    public function ManualStopFeedIn()
+    {
+        $this->SetActionFeedback('Einspeisung wird gestoppt ...');
+        try {
+            $this->StopFeedIn();
+            $text = 'Einspeisung sofort gestoppt.';
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
+        } catch (Throwable $e) {
+            $text = 'Einspeisung stoppen fehlgeschlagen: ' . $e->getMessage();
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
         }
     }
 
@@ -814,6 +866,16 @@ class SmartBatteryOptimizer extends IPSModule
         $calibrationFeedInGate = $this->GetPVCalibrationFeedInGate();
         $nowHour = strtotime(date('Y-m-d H:00:00'));
 
+        // Forecast.Solar muss bei Public pro Fläche abgefragt werden. Ergebnisse werden
+        // zunächst separat gesammelt und erst dann als vollständige Anlagenprognose übernommen.
+        // So kann ein Fehler/429 bei Fläche 2 nicht unbemerkt zu einer halben Prognose führen.
+        $forecastSolarTempHours = [];
+        $forecastSolarSurfaceStatus = [];
+        $forecastSolarRequired = 0;
+        $forecastSolarResolved = 0;
+        $forecastSolarCache = json_decode($this->ReadAttributeString('ForecastSolarSurfaceCacheJSON'), true);
+        if (!is_array($forecastSolarCache)) $forecastSolarCache = [];
+
         foreach ($surfaces as $idx => $surface) {
             if (empty($surface['Active']) || (float)($surface['KWp'] ?? 0) <= 0) continue;
 
@@ -867,22 +929,47 @@ class SmartBatteryOptimizer extends IPSModule
             }
 
             if ($useForecastSolar) {
+                $forecastSolarRequired++;
+                $fsHours = null;
+                $fromCache = false;
                 try {
+                    // Public API: JEDE aktive PV-Fläche erhält ihren eigenen Request.
                     $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp);
+                    $forecastSolarCache[$key] = [
+                        'savedAt' => time(),
+                        'name' => $name,
+                        'kwp' => $kwp,
+                        'tilt' => $tilt,
+                        'azimuth' => $azimuth,
+                        'hours' => $fsHours
+                    ];
+                } catch (Throwable $e) {
+                    // Bei Rate-Limit/temporärem Fehler niemals nur die andere Fläche verwenden.
+                    // Eine vorhandene, höchstens 6 h alte Flächenprognose darf als Ersatz dienen.
+                    $cached = $forecastSolarCache[$key] ?? null;
+                    if (is_array($cached) && isset($cached['hours']) && is_array($cached['hours']) &&
+                        (time() - (int)($cached['savedAt'] ?? 0)) <= 21600) {
+                        $fsHours = $cached['hours'];
+                        $fromCache = true;
+                        $this->DebugLog('Forecast.Solar', $name . ' | Live-Abruf fehlgeschlagen, Cache verwendet: ' . $e->getMessage(), 0);
+                    } else {
+                        $forecastSolarSurfaceStatus[] = $name . ': FEHLER – ' . $e->getMessage();
+                        $this->DebugLog('Forecast.Solar', $name . ' | FEHLER, kein gültiger Cache: ' . $e->getMessage(), 0);
+                    }
+                }
+
+                if (is_array($fsHours) && count($fsHours) > 0) {
+                    $forecastSolarResolved++;
                     $sum = 0.0;
                     foreach ($fsHours as $ts => $powerKW) {
-                        // Forecast.Solar liefert bereits eine PV-Leistungsprognose für die
-                        // konfigurierte kWp-Leistung. Nur die anlagenspezifischen Korrekturen
-                        // werden zusätzlich angewendet; SystemEfficiency wird nicht doppelt angesetzt.
                         $correctedKW = max(0.0, (float)$powerKW) * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
-                        if (!isset($sourceHours['forecastsolar'][$ts])) $sourceHours['forecastsolar'][$ts] = 0.0;
-                        $sourceHours['forecastsolar'][$ts] += $correctedKW;
+                        if (!isset($forecastSolarTempHours[$ts])) $forecastSolarTempHours[$ts] = 0.0;
+                        $forecastSolarTempHours[$ts] += $correctedKW;
                         if (date('Y-m-d', (int)$ts) === date('Y-m-d', strtotime('tomorrow'))) $sum += $correctedKW;
                     }
                     $surfaceTotalsBySource['forecastsolar'][$name] = $sum;
-                    $this->DebugLog('Forecast.Solar', $name . ' | morgen=' . round($sum, 3) . ' kWh | Stunden=' . count($fsHours));
-                } catch (Throwable $e) {
-                    $this->DebugLog('ForecastSolar', $e->getMessage(), 0);
+                    $forecastSolarSurfaceStatus[] = $name . ': ' . number_format($sum, 2, ',', '.') . ' kWh morgen' . ($fromCache ? ' (Cache)' : ' (Live)');
+                    $this->DebugLog('Forecast.Solar', $name . ' | morgen=' . round($sum, 3) . ' kWh | kWp=' . $kwp . ' | Azimut=' . $azimuth . ' | Neigung=' . $tilt . ' | ' . ($fromCache ? 'Cache' : 'Live'));
                 }
             }
 
@@ -912,6 +999,20 @@ class SmartBatteryOptimizer extends IPSModule
                 'calibrationBlocked' => (bool)$calibrationFeedInGate['blocked'],
                 'calibrationBlockReason' => (string)$calibrationFeedInGate['text']
             ];
+        }
+
+        if ($useForecastSolar) {
+            $this->WriteAttributeString('ForecastSolarSurfaceCacheJSON', json_encode($forecastSolarCache));
+            if ($forecastSolarRequired > 0 && $forecastSolarResolved === $forecastSolarRequired) {
+                $sourceHours['forecastsolar'] = $forecastSolarTempHours;
+                $sumAll = array_sum($surfaceTotalsBySource['forecastsolar']);
+                $forecastSolarSurfaceStatus[] = 'Gesamt: ' . number_format($sumAll, 2, ',', '.') . ' kWh morgen';
+            } else {
+                // Wichtig: keine Teilanlage in die Quellengewichtung geben.
+                $sourceHours['forecastsolar'] = [];
+                $forecastSolarSurfaceStatus[] = 'Forecast.Solar nicht verwendet: nur ' . $forecastSolarResolved . ' von ' . $forecastSolarRequired . ' Flächen verfügbar.';
+            }
+            SetValue($this->GetIDForIdent('ForecastSolarStatus'), implode(' | ', $forecastSolarSurfaceStatus));
         }
 
         // pvnode V2 arbeitet mit einem in pvnode gespeicherten Gesamtstandort
@@ -3319,7 +3420,7 @@ class SmartBatteryOptimizer extends IPSModule
         $html='<div style="font-family:Tahoma;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
         if($highchartsJS==='') return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
         $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
-        $html.='var days='.json_encode($days).',id='.json_encode($chartId).',idx=Math.max(0,days.length-1),chart=null;function e(s){return document.getElementById(id+s)}function draw(){if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
+        $html.='var days='.json_encode($days).',id='.json_encode($chartId).',key="sbo_consumption_selected_day_".$this->InstanceID,idx=Math.max(0,days.length-1),chart=null;try{var sd=localStorage.getItem(key);if(sd){for(var si=0;si<days.length;si++){if(days[si].date===sd){idx=si;break;}}}}catch(e){}function e(s){return document.getElementById(id+s)}function draw(){if(days.length){try{localStorage.setItem(key,days[idx].date)}catch(e){}}if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
         return $html;
     }
 
@@ -3442,16 +3543,17 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'var today=' . json_encode($todayDate) . ';';
             $html .= 'var chartId=' . json_encode($chartId) . ';';
             $html .= 'var visibilityKey="sbo_pv_debug_visibility_' . $this->InstanceID . '";';
+            $html .= 'var selectedDayKey="sbo_pv_selected_day_' . $this->InstanceID . '";';
             $html .= 'function loadVisibility(){try{var v=localStorage.getItem(visibilityKey);return v?JSON.parse(v):{};}catch(e){return {};}}';
             $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}}';
             $html .= 'var debugVisibility=loadVisibility();';
             $html .= 'var chart=null;';
-            $html .= 'var idx=0;var i;for(i=0;i<days.length;i++){if(days[i].date===today){idx=i;break;}}';
+            $html .= 'var idx=0;var savedDay=null;try{savedDay=localStorage.getItem(selectedDayKey);}catch(e){}var i,found=false;for(i=0;i<days.length;i++){if(savedDay&&days[i].date===savedDay){idx=i;found=true;break;}}if(!found){for(i=0;i<days.length;i++){if(days[i].date===today){idx=i;break;}}}';
             $html .= 'function el(s){return document.getElementById(chartId+s);}';
             $html .= 'function draw(){';
             $html .= 'if(typeof chart!=="undefined"&&chart){try{chart.series.forEach(function(sr){var k=sr.options.custom&&sr.options.custom.sourceKey;if(k){debugVisibility[k]=sr.visible;}});saveVisibility(debugVisibility);}catch(e){}}';
             $html .= 'if(!days.length||typeof Highcharts==="undefined"){return;}';
-            $html .= 'var d=days[idx];var categories=[];var forecastData=[];var actualData=[];var sourceData={};';
+            $html .= 'var d=days[idx];try{localStorage.setItem(selectedDayKey,d.date);}catch(e){}var categories=[];var forecastData=[];var actualData=[];var sourceData={};';
             $html .= 'for(var src in d.sourceLabels){if(Object.prototype.hasOwnProperty.call(d.sourceLabels,src)){sourceData[src]=[];}}';
             $html .= 'for(var j=0;j<d.rows.length;j++){var r=d.rows[j];categories.push(r.label);forecastData.push({y:r.forecastKWh,custom:r});actualData.push(r.actualKWh===null?null:{y:r.actualKWh,custom:r});for(var src2 in sourceData){var sv=(r.sourceKWh&&Object.prototype.hasOwnProperty.call(r.sourceKWh,src2))?r.sourceKWh[src2]:null;sourceData[src2].push(sv===null?null:{y:sv,custom:r});}}';
             $html .= 'var chartSeries=[{name:"PV-Prognose kombiniert",data:forecastData,zIndex:1,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},{name:"Ist-Produktion",data:actualData,color:"rgba(255,213,79,0.38)",zIndex:3,pointPadding:0.20,dataLabels:{enabled:false}}];';

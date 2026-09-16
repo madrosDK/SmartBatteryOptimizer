@@ -817,7 +817,7 @@
         {
             "type": "Button",
             "caption": "Einspeisung sofort stoppen",
-            "onClick": "SBO_StopFeedIn($id);"
+            "onClick": "SBO_ManualStopFeedIn($id);"
         }
     ],
     "status": [
