@@ -427,3 +427,6 @@ Die PV-Kalibrierung und die Diagnose-HTMLBox werden alle 30 Sekunden aus lokalen
 
 ### 1.9.28 – Mehrheitsbasierte Abregelung
 Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig schaltet sie bei mindestens 75 % Messwerten an/über der Sperrschwelle ein und bei mindestens 75 % Messwerten darunter wieder aus. Der Prozentsatz ist konfigurierbar. Bei Aktivierung werden ausschließlich der Sperrzeitraum sowie zwei Minuten vor dem ersten hohen Messwert verworfen; nach Freigabe werden neue Werte sofort wieder zur Kalibrierung verwendet.
+
+### Datenexport
+Über **Gespeicherte Modul-Daten als JSON exportieren** werden alle internen Lern-, Kalibrierungs-, Prognose-, Cache-, Preis-, Plan- und Statusattribute sowie die aktuellen Modulvariablen in eine JSON-Datei geschrieben. Die Datei liegt unter `user/SmartBatteryOptimizer/` im IP-Symcon-Kernelverzeichnis. API-Schlüssel werden nicht exportiert. Historische Rohwerte der referenzierten IP-Symcon-Variablen bleiben im normalen IP-Symcon-Archiv und werden nicht dupliziert.

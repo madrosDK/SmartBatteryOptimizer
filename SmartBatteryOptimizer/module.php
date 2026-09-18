@@ -154,6 +154,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('ForecastSolarStatus', 'Forecast.Solar Flächenstatus', '', 125);
         $this->RegisterVariableString('PVDebugVisibilityState', 'PV Debug Sichtbarkeit', '', 126);
         $this->RegisterVariableString('ProviderDebugHTML', 'Prognose Provider Debug', '~HTMLBox', 127);
+        $this->RegisterVariableString('DataExportStatus', 'Datenspeicher Export', '', 128);
         $this->EnableAction('PVDebugVisibilityState');
         $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 123);
         $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 123);
@@ -379,13 +380,90 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.39';
+        $currentModuleVersion = '1.9.40';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
             $this->SetTimerInterval('FullRefreshWorker', 1500);
         }
 
+    }
+
+    public function ExportStoredData(): string
+    {
+        $stringAttributes = [
+            'ForecastJSON','PVForecastHistoryJSON','PVSourceForecastHistoryJSON','ForecastSolarSurfaceCacheJSON',
+            'PVDebugVisibilityJSON','ProviderDebugLogJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
+            'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PricesJSON','PlanJSON','NightLearningSource',
+            'ConsumptionProfileJSON','ConsumptionLearningSource','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
+            'CompletedFeedInPlanKeysJSON','AlphaTestTrace'
+        ];
+        $integerAttributes = [
+            'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
+            'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
+            'PVCalibrationBlockedFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
+            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs'
+        ];
+        $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW'];
+        $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized'];
+
+        $attributes = [];
+        foreach ($stringAttributes as $name) $attributes[$name] = $this->ReadAttributeString($name);
+        foreach ($integerAttributes as $name) $attributes[$name] = $this->ReadAttributeInteger($name);
+        foreach ($floatAttributes as $name) $attributes[$name] = $this->ReadAttributeFloat($name);
+        foreach ($booleanAttributes as $name) $attributes[$name] = $this->ReadAttributeBoolean($name);
+
+        // Zusätzlich alle aktuellen Modulvariablen sichern. Die historischen Rohdaten aus dem
+        // IP-Symcon Archiv bleiben im Archiv und werden nicht nochmals in diese Datei kopiert.
+        $variables = [];
+        foreach (IPS_GetChildrenIDs($this->InstanceID) as $childID) {
+            $object = @IPS_GetObject($childID);
+            if (!is_array($object) || (int)($object['ObjectType'] ?? -1) !== 2) continue;
+            $variable = @IPS_GetVariable($childID);
+            if (!is_array($variable)) continue;
+            $ident = (string)($object['ObjectIdent'] ?? '');
+            if ($ident === '') continue;
+            $variables[$ident] = [
+                'id' => $childID,
+                'name' => (string)($object['ObjectName'] ?? ''),
+                'type' => (int)($variable['VariableType'] ?? -1),
+                'value' => GetValue($childID)
+            ];
+        }
+
+        // Konfiguration als Referenz mitsichern, Zugangsdaten aber bewusst nicht exportieren.
+        $configuration = json_decode(IPS_GetConfiguration($this->InstanceID), true);
+        if (!is_array($configuration)) $configuration = [];
+        foreach (['ForecastSolarAPIKey','PVNodeAPIKey'] as $secretKey) {
+            if (array_key_exists($secretKey, $configuration)) $configuration[$secretKey] = '__NICHT_EXPORTIERT__';
+        }
+
+        $payload = [
+            'format' => 'SmartBatteryOptimizer-DataExport',
+            'formatVersion' => 1,
+            'moduleVersion' => '1.9.40',
+            'instanceID' => $this->InstanceID,
+            'exportedAt' => date('c'),
+            'configurationWithoutSecrets' => $configuration,
+            'attributes' => $attributes,
+            'variables' => $variables,
+            'note' => 'Historische Rohwerte der referenzierten IP-Symcon Variablen liegen weiterhin im IP-Symcon Archiv und sind nicht dupliziert.'
+        ];
+
+        $dir = rtrim(IPS_GetKernelDir(), '/\\') . DIRECTORY_SEPARATOR . 'user' . DIRECTORY_SEPARATOR . 'SmartBatteryOptimizer';
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new Exception('Exportordner konnte nicht erstellt werden: ' . $dir);
+        }
+        $file = $dir . DIRECTORY_SEPARATOR . 'SmartBatteryOptimizer_Data_' . $this->InstanceID . '_' . date('Y-m-d_H-i-s') . '.json';
+        $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($json === false || @file_put_contents($file, $json) === false) {
+            throw new Exception('Exportdatei konnte nicht geschrieben werden: ' . $file);
+        }
+        $size = filesize($file);
+        $message = 'Export erstellt: ' . $file . ' (' . number_format((float)$size / 1024.0, 1, ',', '.') . ' KB)';
+        SetValue($this->GetIDForIdent('DataExportStatus'), $message);
+        $this->DebugLog('Datenexport', $message);
+        return $message;
     }
 
     public function RequestAction($Ident, $Value)

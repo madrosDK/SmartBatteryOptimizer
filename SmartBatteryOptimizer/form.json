@@ -832,6 +832,11 @@
             "type": "Button",
             "caption": "Einspeisung sofort stoppen",
             "onClick": "SBO_ManualStopFeedIn($id);"
+        },
+        {
+            "type": "Button",
+            "caption": "Gespeicherte Modul-Daten als JSON exportieren",
+            "onClick": "echo SBO_ExportStoredData($id);"
         }
     ],
     "status": [
