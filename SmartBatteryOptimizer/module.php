@@ -379,7 +379,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.32';
+        $currentModuleVersion = '1.9.33';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -2564,6 +2564,22 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         usort($selected, fn($a, $b) => $a['start'] <=> $b['start']);
+
+        // Teilfenster unmittelbar VOR einem bereits gewählten, angrenzenden Preisfenster
+        // an dessen Ende schieben. Beispiel: Werden 19:00-20:00 vollständig und aus
+        // 18:00-19:00 nur 2 Minuten benötigt, wird daraus 18:58-20:00 statt
+        // 18:00-18:02 + 19:00-20:00. Energie und Preiszuordnung bleiben unverändert.
+        for ($i = 0; $i < count($selected) - 1; $i++) {
+            $currentEndBoundary = (int)($selected[$i]['priceIntervalEnd'] ?? $selected[$i]['end']);
+            $nextStart = (int)$selected[$i + 1]['start'];
+            $duration = max(1, (int)$selected[$i]['end'] - (int)$selected[$i]['start']);
+            $isPartial = (int)$selected[$i]['end'] < $currentEndBoundary;
+            if ($isPartial && abs($nextStart - $currentEndBoundary) <= 1) {
+                $selected[$i]['start'] = max((int)$selected[$i]['start'], $currentEndBoundary - $duration);
+                $selected[$i]['end'] = $currentEndBoundary;
+            }
+        }
+
         $next = '-';
         $nowForNext = time();
         foreach ($selected as $idx => $slot) {
