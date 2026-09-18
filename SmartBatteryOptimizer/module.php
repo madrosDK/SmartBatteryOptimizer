@@ -380,7 +380,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.43';
+        $currentModuleVersion = '1.9.44';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -4153,23 +4153,24 @@ class SmartBatteryOptimizer extends IPSModule
             $history = [];
         }
 
-        // Aktuelle Prognose sicherstellen, wenn noch kein historischer Eintrag existiert.
+        // HEUTE und MORGEN im Diagramm immer aus dem AKTUELLEN Forecast aufbauen.
+        // Historische Tage bleiben unverändert gespeichert. Das ist wichtig, weil sich der
+        // PV-Auto-Faktor während des Tages ändern kann: Die blaue Highcharts-Serie muss dann
+        // sofort dieselben korrigierten totalKW-Werte zeigen wie die Diagnose.
         $hours = is_array($forecast['hours'] ?? null) ? $forecast['hours'] : [];
         foreach ([$todayDate, $tomorrowDate] as $date) {
-            if (!isset($history[$date])) {
-                $dayStart = strtotime($date . ' 00:00:00');
-                $hourly = [];
-                for ($h = 0; $h < 24; $h++) {
-                    // Stundenmittel in kW über eine volle Stunde entspricht der Energie kWh.
-                    $hourly[$h] = round(max(0.0, (float)($hours[$dayStart + $h * 3600]['totalKW'] ?? 0.0)), 4);
-                }
-                $history[$date] = [
-                    'hourlyKWh' => $hourly,
-                    'totalKWh' => array_sum($hourly),
-                    'savedAt' => time(),
-                    'dayAhead' => ($date === $tomorrowDate)
-                ];
+            $dayStart = strtotime($date . ' 00:00:00');
+            $hourly = [];
+            for ($h = 0; $h < 24; $h++) {
+                // totalKW enthält bereits: Provider -> Quellengewichtung -> Anlagen-Auto-Faktor.
+                $hourly[$h] = round(max(0.0, (float)($hours[$dayStart + $h * 3600]['totalKW'] ?? 0.0)), 4);
             }
+            $history[$date] = [
+                'hourlyKWh' => $hourly,
+                'totalKWh' => array_sum($hourly),
+                'savedAt' => time(),
+                'dayAhead' => ($date === $tomorrowDate)
+            ];
         }
         ksort($history);
 
