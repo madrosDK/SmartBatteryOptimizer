@@ -380,7 +380,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.42';
+        $currentModuleVersion = '1.9.43';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -1445,19 +1445,32 @@ class SmartBatteryOptimizer extends IPSModule
         $this->DebugLog('PV-Gewichtung', array_map(fn($v) => round((float)$v * 100, 2), $weights));
 
         // Auto-Faktor als letzter Schritt NACH der Quellengewichtung.
-        $plantAutoWeighted = 0.0; $plantAutoKWp = 0.0;
+        // Die Flächen werden nach ihrer tatsächlich verglichenen Prognoseenergie gewichtet,
+        // NICHT nach installierten kWp. Dadurch entspricht der Anlagenfaktor exakt:
+        // Summe Ist-Energie / Summe Prognose-vor-Auto über alle freigegebenen PV-Flächen.
+        $plantExpectedKWh = 0.0;
+        $plantCorrectedKWh = 0.0;
+        $plantReadySurfaces = 0;
         foreach ($surfaces as $idx => $surface) {
             if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
-            $kwpAuto = max(0.0, (float)($surface['KWp'] ?? 0.0));
-            if ($kwpAuto <= 0.0) continue;
             $nameAuto = trim((string)($surface['Name'] ?? 'PV'));
             if ($nameAuto === '') $nameAuto = 'PV ' . ($idx + 1);
             $keyAuto = $this->SurfaceKey($nameAuto, $idx);
-            $factorAuto = !empty($calibration[$keyAuto]['factorReady']) ? (float)($calibration[$keyAuto]['factor'] ?? 1.0) : 1.0;
-            $factorAuto = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $factorAuto));
-            $plantAutoWeighted += $factorAuto * $kwpAuto; $plantAutoKWp += $kwpAuto;
+            $diagAuto = $this->GetPVCalibrationDiagnostics($calibration, $keyAuto);
+            if (empty($diagAuto['factorReady'])) continue;
+            $expectedAuto = max(0.0, (float)($diagAuto['sumExpectedKWh'] ?? 0.0));
+            if ($expectedAuto <= 0.0) continue;
+            $factorAuto = max(
+                $this->ReadPropertyFloat('PVCalibrationMinFactor'),
+                min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diagAuto['ratio'] ?? 1.0))
+            );
+            $plantExpectedKWh += $expectedAuto;
+            $plantCorrectedKWh += $expectedAuto * $factorAuto;
+            $plantReadySurfaces++;
         }
-        $plantAutoFactor = $plantAutoKWp > 0.0 ? $plantAutoWeighted / $plantAutoKWp : 1.0;
+        $plantAutoFactor = ($plantReadySurfaces > 0 && $plantExpectedKWh > 0.0)
+            ? ($plantCorrectedKWh / $plantExpectedKWh)
+            : 1.0;
 
         $allTs = [];
         foreach ($availableSources as $source) foreach ($sourceHours[$source] as $ts => $_) $allTs[(int)$ts] = true;
@@ -4338,7 +4351,7 @@ class SmartBatteryOptimizer extends IPSModule
         $plantFactor = (float)($forecast['plantAutoFactor'] ?? 1.0);
         $html .= '<div style="margin:8px 0;padding:6px;border:1px solid #555"><b>Gesamtprognose / Auto-Korrektur</b><br>'
             . 'Kombinierte Prognose vor Auto: <b>' . number_format($beforeAuto, 2, ',', '.') . ' kWh</b>'
-            . ' | Anlagen-Auto-Faktor: <b>' . number_format($plantFactor, 3, ',', '.') . '</b>'
+            . ' | Anlagen-Auto-Faktor (energiegewichtet): <b>' . number_format($plantFactor, 3, ',', '.') . '</b>'
             . ' | Prognose nach Auto: <b>' . number_format($afterAuto, 2, ',', '.') . ' kWh</b></div>';
         $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff">';
         $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist-Erzeugung</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist / Prognose</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Intervalle</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Lernzeitraum</th></tr>';
