@@ -380,7 +380,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.45';
+        $currentModuleVersion = '1.9.46';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -2710,26 +2710,55 @@ class SmartBatteryOptimizer extends IPSModule
 
         usort($selected, fn($a, $b) => $a['start'] <=> $b['start']);
 
-        // Teilfenster so legen, dass unmittelbar angrenzende ausgewählte Preisstunden
-        // als EIN durchgehender Lauf gefahren werden. Entscheidend sind die ORIGINALEN
-        // Preisintervall-Grenzen, nicht die bereits gekürzten Planzeiten.
-        // Beispiel bei 2 Minuten Bedarf aus 18-19 Uhr + gewähltem Slot ab 19 Uhr:
-        // 18:58-19:00 statt 18:15-18:17; anschließend ohne Unterbrechung weiter ab 19:00.
-        for ($i = 0; $i < count($selected) - 1; $i++) {
-            $currentIntervalEnd = (int)($selected[$i]['priceIntervalEnd'] ?? $selected[$i]['end']);
-            $nextIntervalStart = (int)($selected[$i + 1]['priceIntervalStart'] ?? $selected[$i + 1]['start']);
-            $plannedDuration = max(1, (int)$selected[$i]['end'] - (int)$selected[$i]['start']);
-            $fullAvailableDuration = max(1, $currentIntervalEnd - (int)$selected[$i]['start']);
-            $isPartial = $plannedDuration < $fullAvailableDuration;
-
-            if ($isPartial && abs($nextIntervalStart - $currentIntervalEnd) <= 1) {
-                $newStart = $currentIntervalEnd - $plannedDuration;
-                // Niemals in die Vergangenheit verschieben. Falls der benötigte zusammenhängende
-                // Start bereits vorbei wäre, beginnt der Lauf sofort.
-                $selected[$i]['start'] = max(time(), $newStart);
-                $selected[$i]['end'] = $currentIntervalEnd;
-            }
+        // Preisquelle arbeitet intern mit 15-Minuten-Slots, obwohl im Diagramm und für
+        // die Vergütung Stundenmittel gelten. Werden aus einer Stunde nur z.B. 17 Minuten
+        // benötigt und die direkt folgende Stunde ist ebenfalls ausgewählt, müssen diese
+        // 17 Minuten AN DAS ENDE der ersten Stunde gelegt werden. Sonst entstünde z.B.
+        // 18:00-18:17 + 19:00-20:00 mit unnötiger Pause statt 18:43-20:00.
+        $selectedByHour = [];
+        foreach ($selected as $slot) {
+            $hourStart = strtotime(date('Y-m-d H:00:00', (int)($slot['priceIntervalStart'] ?? $slot['start'])));
+            if (!isset($selectedByHour[$hourStart])) $selectedByHour[$hourStart] = [];
+            $selectedByHour[$hourStart][] = $slot;
         }
+        ksort($selectedByHour);
+        $packedSelected = [];
+        $selectedHours = array_keys($selectedByHour);
+        foreach ($selectedHours as $hourIndex => $hourStart) {
+            $hourSlots = $selectedByHour[$hourStart];
+            $hourEnd = $hourStart + 3600;
+            $duration = 0;
+            $energy = 0.0;
+            $revenueEnergy = 0.0;
+            foreach ($hourSlots as $slot) {
+                $duration += max(0, (int)$slot['end'] - (int)$slot['start']);
+                $energy += (float)($slot['energyKWh'] ?? 0.0);
+                $revenueEnergy += (float)($slot['energyKWh'] ?? 0.0) * (float)($slot['priceCt'] ?? 0.0);
+            }
+            if ($duration <= 0) continue;
+
+            $nextHourSelected = isset($selectedByHour[$hourEnd]);
+            $isPartialHour = $duration < 3599;
+            $packedStart = min((int)$hourSlots[0]['start'], $hourStart);
+            $packedEnd = $packedStart + $duration;
+            if ($isPartialHour && $nextHourSelected) {
+                $packedEnd = $hourEnd;
+                $packedStart = max(time(), $hourEnd - $duration);
+            }
+
+            $first = $hourSlots[0];
+            $first['start'] = $packedStart;
+            $first['end'] = $packedEnd;
+            $first['priceIntervalStart'] = $hourStart;
+            $first['priceIntervalEnd'] = $hourEnd;
+            $first['planKey'] = $hourStart . ':' . $hourEnd;
+            $first['energyKWh'] = $energy;
+            if ($energy > 0.0) $first['priceCt'] = $revenueEnergy / $energy;
+            $first['powerW'] = $duration > 0 ? ($energy / ($duration / 3600.0)) * 1000.0 : (float)($first['powerW'] ?? 0.0);
+            $packedSelected[] = $first;
+        }
+        $selected = $packedSelected;
+        usort($selected, fn($a, $b) => $a['start'] <=> $b['start']);
 
         $next = '-';
         $nowForNext = time();
