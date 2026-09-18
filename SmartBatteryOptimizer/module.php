@@ -379,7 +379,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.33';
+        $currentModuleVersion = '1.9.34';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -4096,7 +4096,11 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'var chartId=' . json_encode($chartId) . ';';
             $html .= 'var visibilityKey="sbo_pv_debug_visibility_' . $this->InstanceID . '";';
             $html .= 'var selectedDayKey="sbo_pv_selected_day_' . $this->InstanceID . '";';
-            $html .= 'var serverVisibility=' . ($this->ReadAttributeString('PVDebugVisibilityJSON') ?: '{}') . ';';
+            $storedVisibility = $this->ReadAttributeString('PVDebugVisibilityJSON');
+            $runtimeVisibility = (string)GetValue($this->GetIDForIdent('PVDebugVisibilityState'));
+            if ($runtimeVisibility !== '' && $runtimeVisibility !== '{}') $storedVisibility = $runtimeVisibility;
+            if ($storedVisibility === '') $storedVisibility = '{}';
+            $html .= 'var serverVisibility=' . $storedVisibility . ';';
             $html .= 'function loadVisibility(){var out={};for(var k in serverVisibility){if(Object.prototype.hasOwnProperty.call(serverVisibility,k)){out[k]=!!serverVisibility[k];}}try{var v=localStorage.getItem(visibilityKey);if(v){var l=JSON.parse(v);for(var k2 in l){if(Object.prototype.hasOwnProperty.call(l,k2)){out[k2]=!!l[k2];}}}}catch(e){}return out;}';
             $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}try{if(typeof IPS!=="undefined"&&IPS.requestAction){IPS.requestAction(' . $this->InstanceID . ',"PVDebugVisibilityState",JSON.stringify(v));}}catch(e){}}';
             $html .= 'var debugVisibility=loadVisibility();';
@@ -4104,13 +4108,13 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'var idx=0;var savedDay=null;try{savedDay=localStorage.getItem(selectedDayKey);}catch(e){}var i,found=false;for(i=0;i<days.length;i++){if(savedDay&&days[i].date===savedDay){idx=i;found=true;break;}}if(!found){for(i=0;i<days.length;i++){if(days[i].date===today){idx=i;break;}}}';
             $html .= 'function el(s){return document.getElementById(chartId+s);}';
             $html .= 'function draw(){';
-            $html .= 'if(typeof chart!=="undefined"&&chart){try{chart.series.forEach(function(sr){var k=sr.options.custom&&sr.options.custom.sourceKey;if(k){debugVisibility[k]=sr.visible;}});saveVisibility(debugVisibility);}catch(e){}}';
+            $html .= 'if(typeof chart!=="undefined"&&chart){try{chart.series.forEach(function(sr){var k=sr.options.custom&&sr.options.custom.sourceKey;if(k){debugVisibility[k]=sr.visible;}});}catch(e){}}';
             $html .= 'if(!days.length||typeof Highcharts==="undefined"){return;}';
             $html .= 'var d=days[idx];try{localStorage.setItem(selectedDayKey,d.date);}catch(e){}var categories=[];var forecastData=[];var actualData=[];var sourceData={};';
             $html .= 'for(var src in d.sourceLabels){if(Object.prototype.hasOwnProperty.call(d.sourceLabels,src)){sourceData[src]=[];}}';
             $html .= 'for(var j=0;j<d.rows.length;j++){var r=d.rows[j];categories.push(r.label);forecastData.push({y:r.forecastKWh,custom:r});actualData.push(r.actualKWh===null?null:{y:r.actualKWh,custom:r});for(var src2 in sourceData){var sv=(r.sourceKWh&&Object.prototype.hasOwnProperty.call(r.sourceKWh,src2))?r.sourceKWh[src2]:null;sourceData[src2].push(sv===null?null:{y:sv,custom:r});}}';
             $html .= 'var chartSeries=[{name:"PV-Prognose kombiniert",data:forecastData,zIndex:1,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},{name:"Ist-Produktion",data:actualData,color:"rgba(255,213,79,0.38)",zIndex:3,pointPadding:0.20,dataLabels:{enabled:false}}];';
-            $html .= 'for(var src3 in sourceData){if(Object.prototype.hasOwnProperty.call(sourceData,src3)){var vis=Object.prototype.hasOwnProperty.call(debugVisibility,src3)?!!debugVisibility[src3]:false;chartSeries.push({name:d.sourceLabels[src3],type:"line",data:sourceData[src3],visible:vis,zIndex:5,lineWidth:2,marker:{enabled:true,radius:2},custom:{sourceKey:src3},events:{legendItemClick:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){debugVisibility[key]=!this.visible;saveVisibility(debugVisibility);}}},dataLabels:{enabled:false}});}}';
+            $html .= 'for(var src3 in sourceData){if(Object.prototype.hasOwnProperty.call(sourceData,src3)){var vis=Object.prototype.hasOwnProperty.call(debugVisibility,src3)?!!debugVisibility[src3]:false;chartSeries.push({name:d.sourceLabels[src3],type:"line",data:sourceData[src3],visible:vis,zIndex:5,lineWidth:2,marker:{enabled:true,radius:2},custom:{sourceKey:src3},events:{legendItemClick:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){var nextVisible=!this.visible;debugVisibility[key]=nextVisible;saveVisibility(debugVisibility);}}},dataLabels:{enabled:false}});}}';
             $html .= 'chart=chart=Highcharts.chart(chartId,{';
             $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
             $html .= 'title:{text:null},credits:{enabled:false},';
