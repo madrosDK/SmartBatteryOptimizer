@@ -379,7 +379,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.38';
+        $currentModuleVersion = '1.9.39';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -1342,6 +1342,44 @@ class SmartBatteryOptimizer extends IPSModule
 
         $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
 
+        // PV-Auto-Faktor gilt für die kombinierte Anlagenprognose und damit für ALLE
+        // aktivierten Prognosequellen. Aus den Flächenfaktoren wird dafür ein nach kWp
+        // gewichteter Anlagenfaktor gebildet. Solange ein Flächenfaktor noch nicht
+        // freigegeben ist, trägt diese Fläche neutral mit 1,0 bei.
+        $plantAutoWeighted = 0.0;
+        $plantAutoKWp = 0.0;
+        foreach ($surfaces as $idx => $surface) {
+            if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
+            $kwpAuto = max(0.0, (float)($surface['KWp'] ?? 0.0));
+            if ($kwpAuto <= 0.0) continue;
+            $nameAuto = trim((string)($surface['Name'] ?? 'PV'));
+            if ($nameAuto === '') $nameAuto = 'PV ' . ($idx + 1);
+            $keyAuto = $this->SurfaceKey($nameAuto, $idx);
+            $factorAuto = !empty($calibration[$keyAuto]['factorReady'])
+                ? (float)($calibration[$keyAuto]['factor'] ?? 1.0) : 1.0;
+            $factorAuto = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $factorAuto));
+            $plantAutoWeighted += $factorAuto * $kwpAuto;
+            $plantAutoKWp += $kwpAuto;
+        }
+        $plantAutoFactor = $plantAutoKWp > 0.0 ? $plantAutoWeighted / $plantAutoKWp : 1.0;
+
+        // Open-Meteo wurde oben bereits flächenspezifisch korrigiert. Für die gemeinsame
+        // Anlagenkorrektur wird diese Vor-Korrektur entfernt und anschließend derselbe
+        // Anlagenfaktor wie bei Forecast.Solar und pvnode angewendet.
+        if ($useOpenMeteo && count($sourceHours['openmeteo']) > 0) {
+            // Neu aus den bereits korrigierten Werten lässt sich bei unterschiedlichen
+            // Stundenfaktoren kein sauberer Basiswert rekonstruieren. Daher Open-Meteo
+            // hier nicht nochmals multiplizieren; die anderen Quellen werden auf denselben
+            // Anlagen-Autofaktor gebracht.
+        }
+        foreach (['forecastsolar', 'pvnode'] as $autoSource) {
+            if (!isset($sourceHours[$autoSource]) || !is_array($sourceHours[$autoSource])) continue;
+            foreach ($sourceHours[$autoSource] as $autoTs => $autoKW) {
+                $sourceHours[$autoSource][$autoTs] = max(0.0, (float)$autoKW) * $plantAutoFactor;
+            }
+        }
+        $this->DebugLog('PV-Auto-Faktor', 'Anlagenfaktor=' . round($plantAutoFactor, 4) . ' | auf Forecast.Solar/pvnode angewendet; Open-Meteo flächenspezifisch korrigiert');
+
         $availableSources = [];
         if ($useOpenMeteo && count($sourceHours['openmeteo']) > 0) $availableSources[] = 'openmeteo';
         if ($useForecastSolar && count($sourceHours['forecastsolar']) > 0) $availableSources[] = 'forecastsolar';
@@ -1387,6 +1425,13 @@ class SmartBatteryOptimizer extends IPSModule
             $day = date('Y-m-d', (int)$ts);
             if ($day === $todayDate) $today += $h['totalKW'];
             if ($day === $tomorrowDate) $tomorrow += $h['totalKW'];
+        }
+
+        // Forecast.Solar-Flächensummen an dieselbe Anlagenkorrektur angleichen.
+        if (isset($surfaceTotalsBySource['forecastsolar']) && is_array($surfaceTotalsBySource['forecastsolar'])) {
+            foreach ($surfaceTotalsBySource['forecastsolar'] as $sn => $sv) {
+                $surfaceTotalsBySource['forecastsolar'][$sn] = (float)$sv * $plantAutoFactor;
+            }
         }
 
         $surfaceTotals = [];
