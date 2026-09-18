@@ -380,7 +380,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.41';
+        $currentModuleVersion = '1.9.42';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -712,10 +712,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RecalculateInternal(false);
     }
 
-    public function RefreshPVCalibration()
+    private function UpdatePVCalibrationState(bool $renderDiagnosis = true): void
     {
-        try {
-            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+
+        $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
             if (!is_array($forecast)) $forecast = [];
             $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
             if (!is_array($calibration)) $calibration = [];
@@ -766,7 +766,13 @@ class SmartBatteryOptimizer extends IPSModule
             $forecast['surfaceCalibration'] = $surfaceCalibration;
             $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
-            SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
+            if ($renderDiagnosis) SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
+    }
+
+    public function RefreshPVCalibration()
+    {
+        try {
+            $this->UpdatePVCalibrationState(true);
         } catch (Throwable $e) {
             $this->DebugLog('PVCalibration', 'Kalibrierungs-Aktualisierung fehlgeschlagen: ' . $e->getMessage(), 0);
         }
@@ -790,6 +796,8 @@ class SmartBatteryOptimizer extends IPSModule
                 }
             }
             if ($refreshPVForecast) {
+                // Zuerst Kalibrierung/Faktoren aktualisieren, erst danach Prognose berechnen und Highcharts rendern.
+                $this->UpdatePVCalibrationState(false);
                 $forecast = $this->FetchPVForecast();
                 $this->DebugLog('PV-Prognose', ['heuteKWh'=>$forecast['todayKWh'] ?? null,'morgenKWh'=>$forecast['tomorrowKWh'] ?? null,'Quellen'=>$forecast['forecastSources'] ?? [],'Gewichte'=>$forecast['forecastSourceWeights'] ?? []]);
                 $this->StorePVForecastHistory($forecast);
@@ -1269,11 +1277,8 @@ class SmartBatteryOptimizer extends IPSModule
                     $ts = $dt->getTimestamp();
                     $gti = max(0.0, (float)$data['hourly']['global_tilted_irradiance'][$i]);
                     $basePowerKW = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
-                    $forecastHour = (int)date('G', $ts);
-                    $hourFactor = $autoEnabled
-                        ? $this->GetPVForecastHourFactor($calibration, $key, $forecastHour, $autoFactor)
-                        : 1.0;
-                    $powerKW = $basePowerKW * $hourFactor;
+                    // Providerlinie bleibt Rohprognose; PV-Auto wird erst nach der Quellengewichtung angewendet.
+                    $powerKW = $basePowerKW;
                     if (!isset($sourceHours['openmeteo'][$ts])) $sourceHours['openmeteo'][$ts] = 0.0;
                     $sourceHours['openmeteo'][$ts] += $powerKW;
                     if ($ts === $nowHour) $currentExpectedBaseW = $basePowerKW * 1000.0;
