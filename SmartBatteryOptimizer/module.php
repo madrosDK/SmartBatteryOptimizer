@@ -379,7 +379,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.37';
+        $currentModuleVersion = '1.9.38';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -1821,7 +1821,7 @@ class SmartBatteryOptimizer extends IPSModule
             if ($ts < $factorCutoff || $exp <= 0.0) continue;
             $learningDays[date('Y-m-d', $ts)] = true;
         }
-        $minimumLearningDays = max(1, $this->ReadPropertyInteger('ForecastWeightLearningDays'));
+        $minimumLearningDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
         $factorReady = count($learningDays) >= $minimumLearningDays && $sumExpected > 0.0;
         // Bis genügend Lerntage vorliegen, darf kein Min-/Max-begrenzter Zwischenfaktor
         // (z.B. 0,750 oder 1,250) in die Prognose eingehen.
@@ -2013,7 +2013,7 @@ class SmartBatteryOptimizer extends IPSModule
             if ($ts < $cutoff || $exp <= 0.0 || $act < 0.0) continue;
             $validDays[date('Y-m-d', $ts)] = true;
         }
-        $requiredDays = max(1, $this->ReadPropertyInteger('ForecastWeightLearningDays'));
+        $requiredDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
         $factorReady = count($validDays) >= $requiredDays && $sumExpected > 0.0;
         return [
             'sampleCount' => $count,
