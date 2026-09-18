@@ -380,7 +380,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.40';
+        $currentModuleVersion = '1.9.41';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -1420,44 +1420,6 @@ class SmartBatteryOptimizer extends IPSModule
 
         $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
 
-        // PV-Auto-Faktor gilt für die kombinierte Anlagenprognose und damit für ALLE
-        // aktivierten Prognosequellen. Aus den Flächenfaktoren wird dafür ein nach kWp
-        // gewichteter Anlagenfaktor gebildet. Solange ein Flächenfaktor noch nicht
-        // freigegeben ist, trägt diese Fläche neutral mit 1,0 bei.
-        $plantAutoWeighted = 0.0;
-        $plantAutoKWp = 0.0;
-        foreach ($surfaces as $idx => $surface) {
-            if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
-            $kwpAuto = max(0.0, (float)($surface['KWp'] ?? 0.0));
-            if ($kwpAuto <= 0.0) continue;
-            $nameAuto = trim((string)($surface['Name'] ?? 'PV'));
-            if ($nameAuto === '') $nameAuto = 'PV ' . ($idx + 1);
-            $keyAuto = $this->SurfaceKey($nameAuto, $idx);
-            $factorAuto = !empty($calibration[$keyAuto]['factorReady'])
-                ? (float)($calibration[$keyAuto]['factor'] ?? 1.0) : 1.0;
-            $factorAuto = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $factorAuto));
-            $plantAutoWeighted += $factorAuto * $kwpAuto;
-            $plantAutoKWp += $kwpAuto;
-        }
-        $plantAutoFactor = $plantAutoKWp > 0.0 ? $plantAutoWeighted / $plantAutoKWp : 1.0;
-
-        // Open-Meteo wurde oben bereits flächenspezifisch korrigiert. Für die gemeinsame
-        // Anlagenkorrektur wird diese Vor-Korrektur entfernt und anschließend derselbe
-        // Anlagenfaktor wie bei Forecast.Solar und pvnode angewendet.
-        if ($useOpenMeteo && count($sourceHours['openmeteo']) > 0) {
-            // Neu aus den bereits korrigierten Werten lässt sich bei unterschiedlichen
-            // Stundenfaktoren kein sauberer Basiswert rekonstruieren. Daher Open-Meteo
-            // hier nicht nochmals multiplizieren; die anderen Quellen werden auf denselben
-            // Anlagen-Autofaktor gebracht.
-        }
-        foreach (['forecastsolar', 'pvnode'] as $autoSource) {
-            if (!isset($sourceHours[$autoSource]) || !is_array($sourceHours[$autoSource])) continue;
-            foreach ($sourceHours[$autoSource] as $autoTs => $autoKW) {
-                $sourceHours[$autoSource][$autoTs] = max(0.0, (float)$autoKW) * $plantAutoFactor;
-            }
-        }
-        $this->DebugLog('PV-Auto-Faktor', 'Anlagenfaktor=' . round($plantAutoFactor, 4) . ' | auf Forecast.Solar/pvnode angewendet; Open-Meteo flächenspezifisch korrigiert');
-
         $availableSources = [];
         if ($useOpenMeteo && count($sourceHours['openmeteo']) > 0) $availableSources[] = 'openmeteo';
         if ($useForecastSolar && count($sourceHours['forecastsolar']) > 0) $availableSources[] = 'forecastsolar';
@@ -1477,24 +1439,40 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeString('PVSourceWeightsJSON', json_encode($weights));
         $this->DebugLog('PV-Gewichtung', array_map(fn($v) => round((float)$v * 100, 2), $weights));
 
+        // Auto-Faktor als letzter Schritt NACH der Quellengewichtung.
+        $plantAutoWeighted = 0.0; $plantAutoKWp = 0.0;
+        foreach ($surfaces as $idx => $surface) {
+            if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
+            $kwpAuto = max(0.0, (float)($surface['KWp'] ?? 0.0));
+            if ($kwpAuto <= 0.0) continue;
+            $nameAuto = trim((string)($surface['Name'] ?? 'PV'));
+            if ($nameAuto === '') $nameAuto = 'PV ' . ($idx + 1);
+            $keyAuto = $this->SurfaceKey($nameAuto, $idx);
+            $factorAuto = !empty($calibration[$keyAuto]['factorReady']) ? (float)($calibration[$keyAuto]['factor'] ?? 1.0) : 1.0;
+            $factorAuto = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $factorAuto));
+            $plantAutoWeighted += $factorAuto * $kwpAuto; $plantAutoKWp += $kwpAuto;
+        }
+        $plantAutoFactor = $plantAutoKWp > 0.0 ? $plantAutoWeighted / $plantAutoKWp : 1.0;
+
         $allTs = [];
         foreach ($availableSources as $source) foreach ($sourceHours[$source] as $ts => $_) $allTs[(int)$ts] = true;
         ksort($allTs);
-        $hours = [];
+        $hours = []; $todayBeforeAuto = 0.0; $tomorrowBeforeAuto = 0.0;
         foreach (array_keys($allTs) as $ts) {
-            $weighted = 0.0;
-            $weightSum = 0.0;
-            $sourceValues = [];
+            $weighted = 0.0; $weightSum = 0.0; $sourceValues = [];
             foreach ($availableSources as $source) {
                 if (!array_key_exists($ts, $sourceHours[$source])) continue;
                 $value = max(0.0, (float)$sourceHours[$source][$ts]);
                 $w = max(0.0, (float)($weights[$source] ?? 0.0));
-                $weighted += $value * $w;
-                $weightSum += $w;
-                $sourceValues[$source] = $value;
+                $weighted += $value * $w; $weightSum += $w;
+                $sourceValues[$source] = $value; // Provider-Debuglinien bleiben unverändert.
             }
             if ($weightSum <= 0.0) continue;
-            $hours[$ts] = ['totalKW' => $weighted / $weightSum, 'surfaces' => [], 'sources' => $sourceValues];
+            $rawCombinedKW = $weighted / $weightSum;
+            $hours[$ts] = ['totalKW' => max(0.0, $rawCombinedKW * $plantAutoFactor), 'totalKWBeforeAuto' => $rawCombinedKW, 'surfaces' => [], 'sources' => $sourceValues];
+            $day = date('Y-m-d', (int)$ts);
+            if ($day === date('Y-m-d')) $todayBeforeAuto += $rawCombinedKW;
+            if ($day === date('Y-m-d', strtotime('tomorrow'))) $tomorrowBeforeAuto += $rawCombinedKW;
         }
 
         $today = 0.0; $tomorrow = 0.0;
@@ -1503,13 +1481,6 @@ class SmartBatteryOptimizer extends IPSModule
             $day = date('Y-m-d', (int)$ts);
             if ($day === $todayDate) $today += $h['totalKW'];
             if ($day === $tomorrowDate) $tomorrow += $h['totalKW'];
-        }
-
-        // Forecast.Solar-Flächensummen an dieselbe Anlagenkorrektur angleichen.
-        if (isset($surfaceTotalsBySource['forecastsolar']) && is_array($surfaceTotalsBySource['forecastsolar'])) {
-            foreach ($surfaceTotalsBySource['forecastsolar'] as $sn => $sv) {
-                $surfaceTotalsBySource['forecastsolar'][$sn] = (float)$sv * $plantAutoFactor;
-            }
         }
 
         $surfaceTotals = [];
@@ -1530,7 +1501,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->DebugLog('DayNight', 'Nachtende morgen=' . date('Y-m-d H:i', $morningTs) . ' | ' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell'));
 
         return [
-            'todayKWh' => $today, 'tomorrowKWh' => $tomorrow, 'morningTs' => $morningTs,
+            'todayKWh' => $today, 'tomorrowKWh' => $tomorrow,
+            'todayKWhBeforeAuto' => $todayBeforeAuto, 'tomorrowKWhBeforeAuto' => $tomorrowBeforeAuto,
+            'plantAutoFactor' => $plantAutoFactor, 'morningTs' => $morningTs,
             'hours' => $hours, 'surfaceTotals' => $surfaceTotals, 'surfaceCalibration' => $surfaceCalibration,
             'forecastSources' => $availableSources, 'forecastSourceWeights' => $weights
         ];
@@ -4355,6 +4328,13 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $html .= '<br>';
         if (count($cal) === 0) return $html . 'Keine aktive PV-Fläche.</div>';
+        $beforeAuto = (float)($forecast['todayKWhBeforeAuto'] ?? $forecast['todayKWh'] ?? 0.0);
+        $afterAuto = (float)($forecast['todayKWh'] ?? 0.0);
+        $plantFactor = (float)($forecast['plantAutoFactor'] ?? 1.0);
+        $html .= '<div style="margin:8px 0;padding:6px;border:1px solid #555"><b>Gesamtprognose / Auto-Korrektur</b><br>'
+            . 'Kombinierte Prognose vor Auto: <b>' . number_format($beforeAuto, 2, ',', '.') . ' kWh</b>'
+            . ' | Anlagen-Auto-Faktor: <b>' . number_format($plantFactor, 3, ',', '.') . '</b>'
+            . ' | Prognose nach Auto: <b>' . number_format($afterAuto, 2, ',', '.') . ' kWh</b></div>';
         $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff">';
         $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist-Erzeugung</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist / Prognose</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Intervalle</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Lernzeitraum</th></tr>';
         foreach ($cal as $name => $c) {
