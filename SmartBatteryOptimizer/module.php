@@ -380,7 +380,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.44';
+        $currentModuleVersion = '1.9.45';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -2642,6 +2642,7 @@ class SmartBatteryOptimizer extends IPSModule
             $key = $p['start'] . ':' . $p['end'];
             $selected[] = [
                 'start' => $slotStart,
+                'priceIntervalStart' => $p['start'],
                 // plannedEnd ist nur die rechnerische Dauer bei Maximalleistung.
                 // Die reale Beendigung steuert Control anhand der gemessenen Netzeinspeisung.
                 'end' => $actualEnd,
@@ -2709,18 +2710,24 @@ class SmartBatteryOptimizer extends IPSModule
 
         usort($selected, fn($a, $b) => $a['start'] <=> $b['start']);
 
-        // Teilfenster unmittelbar VOR einem bereits gewählten, angrenzenden Preisfenster
-        // an dessen Ende schieben. Beispiel: Werden 19:00-20:00 vollständig und aus
-        // 18:00-19:00 nur 2 Minuten benötigt, wird daraus 18:58-20:00 statt
-        // 18:00-18:02 + 19:00-20:00. Energie und Preiszuordnung bleiben unverändert.
+        // Teilfenster so legen, dass unmittelbar angrenzende ausgewählte Preisstunden
+        // als EIN durchgehender Lauf gefahren werden. Entscheidend sind die ORIGINALEN
+        // Preisintervall-Grenzen, nicht die bereits gekürzten Planzeiten.
+        // Beispiel bei 2 Minuten Bedarf aus 18-19 Uhr + gewähltem Slot ab 19 Uhr:
+        // 18:58-19:00 statt 18:15-18:17; anschließend ohne Unterbrechung weiter ab 19:00.
         for ($i = 0; $i < count($selected) - 1; $i++) {
-            $currentEndBoundary = (int)($selected[$i]['priceIntervalEnd'] ?? $selected[$i]['end']);
-            $nextStart = (int)$selected[$i + 1]['start'];
-            $duration = max(1, (int)$selected[$i]['end'] - (int)$selected[$i]['start']);
-            $isPartial = (int)$selected[$i]['end'] < $currentEndBoundary;
-            if ($isPartial && abs($nextStart - $currentEndBoundary) <= 1) {
-                $selected[$i]['start'] = max((int)$selected[$i]['start'], $currentEndBoundary - $duration);
-                $selected[$i]['end'] = $currentEndBoundary;
+            $currentIntervalEnd = (int)($selected[$i]['priceIntervalEnd'] ?? $selected[$i]['end']);
+            $nextIntervalStart = (int)($selected[$i + 1]['priceIntervalStart'] ?? $selected[$i + 1]['start']);
+            $plannedDuration = max(1, (int)$selected[$i]['end'] - (int)$selected[$i]['start']);
+            $fullAvailableDuration = max(1, $currentIntervalEnd - (int)$selected[$i]['start']);
+            $isPartial = $plannedDuration < $fullAvailableDuration;
+
+            if ($isPartial && abs($nextIntervalStart - $currentIntervalEnd) <= 1) {
+                $newStart = $currentIntervalEnd - $plannedDuration;
+                // Niemals in die Vergangenheit verschieben. Falls der benötigte zusammenhängende
+                // Start bereits vorbei wäre, beginnt der Lauf sofort.
+                $selected[$i]['start'] = max(time(), $newStart);
+                $selected[$i]['end'] = $currentIntervalEnd;
             }
         }
 
