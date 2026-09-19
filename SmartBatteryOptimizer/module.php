@@ -380,7 +380,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.46';
+        $currentModuleVersion = '1.9.47';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -780,6 +780,8 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RecalculateInternal(bool $refreshPVForecast)
     {
+        // Execute a due saved window before rebuilding or fetching remote data.
+        $this->Control();
         $this->DebugLog('Recalculate', 'Start | PV-Prognose neu abrufen=' . ($refreshPVForecast ? 'ja' : 'nein'));
         $dayNight = $this->GetCurrentDayNightStatus();
         $this->DebugLog('DayNight', ($dayNight['isNight'] ? 'NACHT' : 'TAG') . ' | Fenster ' . date('Y-m-d H:i', (int)$dayNight['start']) . ' -> ' . date('Y-m-d H:i', (int)$dayNight['end']) . ' | Modus=' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell'));
@@ -991,6 +993,9 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function Control()
     {
+        // Timer and recalculation must not interleave AlphaESS command sequences.
+        $lock = 'SBO_Control_' . $this->InstanceID;
+        if (!IPS_SemaphoreEnter($lock, 1)) return;
         try {
             $now = time();
 
@@ -1124,6 +1129,8 @@ class SmartBatteryOptimizer extends IPSModule
             $this->DebugLog('Control', 'FEHLER: ' . $e->getMessage());
             SetValue($this->GetIDForIdent('StatusText'), 'Steuerfehler: ' . $e->getMessage());
             try { $this->StopFeedIn(); } catch (Throwable $ignored) {}
+        } finally {
+            IPS_SemaphoreLeave($lock);
         }
     }
 
@@ -3540,15 +3547,27 @@ class SmartBatteryOptimizer extends IPSModule
     private function SetFeedIn(bool $enable, float $powerW, int $slotEnd = 0)
     {
         $this->DebugLog('Batterie', ($enable ? 'Einspeisung AN' : 'Einspeisung AUS') . ' | Soll=' . round($powerW) . ' W' . ($slotEnd > 0 ? ' | bis ' . date('H:i:s', $slotEnd) : ''));
-        if ($this->ReadPropertyInteger('BatteryControlMode') === 1) {
+        // Older configurations may still use the default generic mode despite
+        // having configured only AlphaESS. Never silently discard the command.
+        $genericID = $this->ReadPropertyInteger('DischargePowerVariable');
+        $alphaIDs = $this->GetAlphaDispatchIDs();
+        $alphaConfigured = true;
+        foreach ($alphaIDs as $id) {
+            if ($id <= 0 || !@IPS_VariableExists($id)) $alphaConfigured = false;
+        }
+        $useAlpha = $this->ReadPropertyInteger('BatteryControlMode') === 1
+            || (($genericID <= 0 || !@IPS_VariableExists($genericID)) && $alphaConfigured);
+        if ($useAlpha) {
             $this->DebugLog('Batterie', 'Steuerweg=AlphaESS Dispatch');
             $this->SetAlphaESSDispatch($enable, $powerW, $slotEnd);
         } else {
             $powerID = $this->ReadPropertyInteger('DischargePowerVariable');
-            if ($powerID > 0) {
+            if ($powerID > 0 && @IPS_VariableExists($powerID)) {
                 $setpoint = $this->ReadPropertyBoolean('InvertPowerSetpoint') ? -abs($powerW) : abs($powerW);
                 if (!$enable) $setpoint = 0;
                 $this->WriteVariableSmart($powerID, $setpoint);
+            } elseif ($enable) {
+                throw new Exception('Keine gültige Batteriesteuerung konfiguriert.');
             }
         }
         SetValue($this->GetIDForIdent('FeedInActive'), $enable);
@@ -3664,19 +3683,18 @@ class SmartBatteryOptimizer extends IPSModule
             . ' | Time=' . $duration . ' | Start=1'
         );
 
-        // Vor einer neuen Sequenz sicher stoppen. Danach ALLE Parameter setzen
-        // und Start zwingend als letzten Befehl senden.
-        // AlphaESS übernimmt die Dispatchparameter zuverlässig, wenn Dispatch
-        // bereits aktiv ist. Start=1 deshalb zwingend als erster Schreibbefehl.
-        $this->WriteAlphaDispatchValue('Start', $ids['start'], 1);
-        usleep(100000);
-        $this->WriteAlphaDispatchValue('ActivePower', $ids['power'], $activePowerRaw);
-        usleep(100000);
-        $this->WriteAlphaDispatchValue('Mode', $ids['mode'], $dispatchMode);
-        usleep(100000);
-        $this->WriteAlphaDispatchValue('SOC', $ids['soc'], $socTargetRaw);
-        usleep(100000);
+        // Arm the watchdog first; retain it during every subsequent renewal.
+        // Then use the same Start -> Power -> Mode -> SOC order and settling
+        // time as the working diagnostic test. No Time write after that sequence.
         $this->WriteAlphaDispatchValue('Time', $ids['time'], $duration);
+        IPS_Sleep(3000);
+        $this->WriteAlphaDispatchValue('Start', $ids['start'], 1);
+        IPS_Sleep(3000);
+        $this->WriteAlphaDispatchValue('ActivePower', $ids['power'], $activePowerRaw);
+        IPS_Sleep(3000);
+        $this->WriteAlphaDispatchValue('Mode', $ids['mode'], $dispatchMode);
+        IPS_Sleep(3000);
+        $this->WriteAlphaDispatchValue('SOC', $ids['soc'], $socTargetRaw);
 
         $this->WriteAttributeBoolean('AlphaDispatchActive', true);
         $this->WriteAttributeString(
