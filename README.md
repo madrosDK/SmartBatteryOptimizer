@@ -430,3 +430,10 @@ Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig sc
 
 ### Datenexport
 Über **Gespeicherte Modul-Daten als JSON exportieren** werden alle internen Lern-, Kalibrierungs-, Prognose-, Cache-, Preis-, Plan- und Statusattribute sowie die aktuellen Modulvariablen in eine JSON-Datei geschrieben. Die Datei liegt unter `user/SmartBatteryOptimizer/` im IP-Symcon-Kernelverzeichnis. API-Schlüssel werden nicht exportiert. Historische Rohwerte der referenzierten IP-Symcon-Variablen bleiben im normalen IP-Symcon-Archiv und werden nicht dupliziert.
+
+
+## Einspeiseplanung mit Lastprofil (v1.9.48)
+
+Bei der Preis-Einspeisung wird die theoretische Batterie-/Wechselrichterleistung nicht mehr 1:1 als mögliche Netzeinspeisung angesetzt. Für den jeweiligen Zeitpunkt wird das gelernte stündliche Lastprofil abgezogen. Zusätzlich werden die konfigurierte maximale Entladeleistung und die effektive Netzeinspeisegrenze berücksichtigt.
+
+Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und dem Lastprofil eine neue Restlaufzeit berechnet. Die AlphaESS Dispatch Time wird auf diese Restlaufzeit zuzüglich 30 % Sicherheitsreserve gesetzt.
