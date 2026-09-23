@@ -18,6 +18,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyBoolean('UsePVNodeForecast', false);
         $this->RegisterPropertyString('PVNodeAPIKey', '');
         $this->RegisterPropertyString('PVNodeSiteID', '');
+        $this->RegisterPropertyInteger('PVNodeRequestsPerDay', 1);
+        $this->RegisterPropertyInteger('PVNodeRequestStartHour', 3);
+        $this->RegisterPropertyInteger('PVNodeRequestStartMinute', 0);
         $this->RegisterPropertyInteger('ForecastWeightLearningDays', 7);
         $this->RegisterPropertyInteger('PVCalibrationDays', 30);
         $this->RegisterPropertyInteger('UnknownOrientationLearningDays', 30);
@@ -172,6 +175,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('PVNodeConsecutiveRejects', 0);
         $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
         $this->RegisterAttributeString('PVNodeLastError', '');
+        $this->RegisterAttributeString('PVNodeForecastCacheJSON', '{}');
+        $this->RegisterAttributeString('PVNodeLastRequestSlot', '');
+        $this->RegisterAttributeInteger('PVNodeLastRequestTs', 0);
         $this->RegisterAttributeBoolean('LastAppliedDebugMode', false);
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
@@ -196,6 +202,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
         $this->RegisterAttributeInteger('ActiveFeedInLastTs', 0);
         $this->RegisterAttributeFloat('ActiveFeedInLastExportW', 0.0);
+        $this->RegisterAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
+        $this->RegisterAttributeInteger('ActiveFeedInPlannedEndTs', 0);
         $this->RegisterAttributeString('CompletedFeedInPlanKeysJSON', '{}');
         $this->RegisterAttributeBoolean('RuntimePVSettingsInitialized', false);
         $this->RegisterAttributeInteger('ManualTestUntil', 0);
@@ -206,6 +214,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $this->RegisterTimer('RefreshTimer', 0, 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('PVNodeScheduleTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVCalibrationTimer', 0, 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
@@ -316,11 +325,12 @@ class SmartBatteryOptimizer extends IPSModule
         $pvActualRefresh = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes'));
         $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
         $this->SetTimerInterval('PVForecastTimer', $pvForecastRefresh * 60 * 1000);
+        $this->UpdatePVNodeScheduleTimer();
         $this->SetTimerInterval('PVActualTimer', $pvActualRefresh * 60 * 1000);
         $pvCalibrationPollSeconds = max(10, min(120, $this->ReadPropertyInteger('PVCalibrationPollSeconds')));
         $this->SetTimerInterval('PVCalibrationTimer', $pvCalibrationPollSeconds * 1000);
-        $this->SetTimerInterval('ControlTimer', 60 * 1000);
-        $this->DebugLog('ApplyChanges', 'Debug=' . ($this->ReadPropertyBoolean('DebugMode') ? 'AN' : 'AUS') . ' | Timer Preise=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min | Steuerprüfung=1 min');
+        $this->SetTimerInterval('ControlTimer', 15 * 1000);
+        $this->DebugLog('ApplyChanges', 'Debug=' . ($this->ReadPropertyBoolean('DebugMode') ? 'AN' : 'AUS') . ' | Timer Preise=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min | Steuerprüfung=15 s');
 
         if ($this->ReadPropertyInteger('SOCVariable') <= 0 || $this->ReadPropertyInteger('HousePowerVariable') <= 0) {
             $this->SetStatus(200);
@@ -380,7 +390,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.47';
+        $currentModuleVersion = '1.9.49';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -393,16 +403,16 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $stringAttributes = [
             'ForecastJSON','PVForecastHistoryJSON','PVSourceForecastHistoryJSON','ForecastSolarSurfaceCacheJSON',
-            'PVDebugVisibilityJSON','ProviderDebugLogJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
+            'PVDebugVisibilityJSON','ProviderDebugLogJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError','PVNodeForecastCacheJSON','PVNodeLastRequestSlot',
             'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PricesJSON','PlanJSON','NightLearningSource',
             'ConsumptionProfileJSON','ConsumptionLearningSource','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
             'CompletedFeedInPlanKeysJSON','AlphaTestTrace'
         ];
         $integerAttributes = [
-            'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
+            'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVNodeLastRequestTs','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
             'PVCalibrationBlockedFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
-            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs'
+            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs'
         ];
         $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW'];
         $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized'];
@@ -441,7 +451,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.40',
+            'moduleVersion' => '1.9.49',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -762,7 +772,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
             }
 
-            $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
+        $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
             $forecast['surfaceCalibration'] = $surfaceCalibration;
             $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
@@ -978,6 +988,8 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteAttributeFloat('ActiveFeedInTargetKWh', 0.0);
             $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
             $this->WriteAttributeInteger('ActiveFeedInLastTs', 0);
+            $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
+            $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
             $this->StopFeedIn();
             $text = 'Einspeisung sofort gestoppt.';
             SetValue($this->GetIDForIdent('StatusText'), $text);
@@ -1084,11 +1096,41 @@ class SmartBatteryOptimizer extends IPSModule
                     return;
                 }
 
-                $powerW = $plannedSlot !== null ? (float)$plannedSlot['powerW'] : (float)$this->ReadPropertyInteger('MaxDischargePowerW');
-                // AlphaESS-Time ist nur noch ein 120-s-Watchdog. Control erneuert den
-                // Dispatch jede Minute, solange die reale Netzeinspeisemenge fehlt.
-                $this->SetFeedIn(true, $powerW, $now + 120);
-                SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung aktiv: Netz ' . number_format($deliveredKWh, 2, ',', '.') . ' / ' . number_format($targetKWh, 2, ',', '.') . ' kWh | Batterie-Soll ' . round($powerW) . ' W');
+                $consumptionProfile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
+                if (!is_array($consumptionProfile)) $consumptionProfile = ['hourlyKWh'=>array_fill(0,24,0.0)];
+                $powerW = $this->GetPlannedBatteryPowerW($consumptionProfile, $now);
+                $expectedExportW = $this->GetExpectedGridExportPowerW($consumptionProfile, $now);
+                $remainingKWh = max(0.0, $targetKWh - $deliveredKWh);
+
+                // Alle 5 Minuten aus der tatsächlich gemessenen Restenergie ein neues
+                // Fensterende berechnen. Beim Start erfolgt die erste Berechnung sofort.
+                $lastAdjustment = $this->ReadAttributeInteger('ActiveFeedInLastAdjustmentTs');
+                $plannedEnd = $this->ReadAttributeInteger('ActiveFeedInPlannedEndTs');
+                $adjustDue = $lastAdjustment <= 0 || ($now - $lastAdjustment) >= 300 || $plannedEnd <= $now;
+                if ($adjustDue) {
+                    $requiredSeconds = $this->EstimateFeedInDurationSeconds($remainingKWh, $now, $hardEnd, $consumptionProfile);
+                    $plannedEnd = min($hardEnd, $now + max(1, $requiredSeconds));
+                    $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', $plannedEnd);
+                    $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', $now);
+                    $this->UpdateActivePlanWindowEnd($activeKey, $plannedEnd);
+                    $this->DebugLog(
+                        'Einspeisefenster',
+                        '5-min-Korrektur | Rest=' . round($remainingKWh,3) . ' kWh'
+                        . ' | Lastprofil=' . round($this->GetExpectedLoadPowerW($consumptionProfile,$now)) . ' W'
+                        . ' | erwartete Netzeinspeisung=' . round($expectedExportW) . ' W'
+                        . ' | neues Ende=' . date('H:i:s',$plannedEnd)
+                    );
+                }
+
+                // AlphaESS nur beim Start bzw. bei der 5-Minuten-Korrektur neu programmieren.
+                // Dispatch Time erhält innerhalb SetAlphaESSDispatch zusätzlich 30 % Reserve.
+                if (!$this->ReadAttributeBoolean('AlphaDispatchActive') || $adjustDue) {
+                    $this->SetFeedIn(true, $powerW, $plannedEnd);
+                } else {
+                    SetValue($this->GetIDForIdent('FeedInActive'), true);
+                    SetValue($this->GetIDForIdent('PlannedPower'), $powerW);
+                }
+                SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung aktiv: Netz ' . number_format($deliveredKWh, 2, ',', '.') . ' / ' . number_format($targetKWh, 2, ',', '.') . ' kWh | Rest ' . number_format($remainingKWh,2,',','.') . ' kWh | erwartete Netzeinspeisung ' . round($expectedExportW) . ' W | Ende ' . date('H:i',$plannedEnd));
                 return;
             }
 
@@ -1141,6 +1183,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
         $this->WriteAttributeInteger('ActiveFeedInLastTs', time());
         $this->WriteAttributeFloat('ActiveFeedInLastExportW', $this->ReadCurrentGridExportW());
+        $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
+        $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
         SetValue($this->GetIDForIdent('FeedInTargetEnergy'), max(0.0, $targetKWh));
         SetValue($this->GetIDForIdent('FeedInDeliveredEnergy'), 0.0);
         $this->DebugLog('Einspeisemenge', 'Start ' . $key . ' | Ziel=' . round($targetKWh,3) . ' kWh');
@@ -1194,6 +1238,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
         $this->WriteAttributeInteger('ActiveFeedInLastTs', 0);
         $this->WriteAttributeFloat('ActiveFeedInLastExportW', 0.0);
+        $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
+        $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
         SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung beendet: ' . $reason . ' | Netz ' . number_format($delivered,2,',','.') . ' / ' . number_format($target,2,',','.') . ' kWh');
         $this->DebugLog('Einspeisemenge', 'Ende | ' . $reason . ' | ' . round($delivered,3) . '/' . round($target,3) . ' kWh');
     }
@@ -1408,8 +1454,10 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('ForecastSolarStatus'), implode(' | ', $forecastSolarSurfaceStatus));
         }
 
-        // pvnode V2 arbeitet mit einem in pvnode gespeicherten Gesamtstandort
-        // (Site-ID) und liefert deshalb die gesamte Anlage in einer Abfrage.
+        // pvnode V2 arbeitet mit einem in pvnode gespeicherten Gesamtstandort.
+        // Die API-Aufrufe werden strikt auf die konfigurierte Anzahl pro Tag begrenzt.
+        // Zwischen den erlaubten Abruf-Slots wird ausschließlich der letzte erfolgreiche
+        // pvnode-Cache verwendet. Standard: 1 Abruf/Tag, Tageszyklus ab 03:00 Uhr.
         if ($usePVNode) {
             $pvnodeKey = trim($this->ReadPropertyString('PVNodeAPIKey'));
             $pvnodeSiteID = trim($this->ReadPropertyString('PVNodeSiteID'));
@@ -1418,17 +1466,51 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->WriteAttributeString('PVNodeLastError', 'API-Key und Site-ID sind erforderlich.');
                 $this->DebugLog('pvnode', 'Aktiviert, aber API-Key oder Site-ID fehlt. Es wurde keine API-Anfrage gesendet.', 0);
             } else {
-                try {
-                    $sourceHours['pvnode'] = $this->FetchPVNodeForecast($pvnodeKey, $pvnodeSiteID);
-                    $this->DebugLog('pvnode', 'Prognose empfangen | Site-ID=' . $pvnodeSiteID . ' | Stunden=' . count($sourceHours['pvnode']));
-                    $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
-                    $this->WriteAttributeString('PVNodeLastError', '');
-                } catch (Throwable $e) {
-                    $this->WriteAttributeString('PVNodeLastError', $e->getMessage());
-                    $this->DebugLog('pvnode', $e->getMessage(), 0);
+                $cache = $this->GetPVNodeCache($pvnodeSiteID);
+                $schedule = $this->GetPVNodeRequestSchedule();
+                $lastSlot = $this->ReadAttributeString('PVNodeLastRequestSlot');
+                $requestDue = ($lastSlot !== (string)$schedule['slotKey']);
+
+                if ($requestDue) {
+                    // Slot vor dem HTTP-Aufruf verbuchen. Damit kann ein Fehler oder Timeout
+                    // nicht zu wiederholten API-Aufrufen im selben Lizenz-Slot führen.
+                    $this->WriteAttributeString('PVNodeLastRequestSlot', (string)$schedule['slotKey']);
+                    $this->WriteAttributeInteger('PVNodeLastRequestTs', time());
+                    try {
+                        $liveHours = $this->FetchPVNodeForecast($pvnodeKey, $pvnodeSiteID);
+                        $sourceHours['pvnode'] = $liveHours;
+                        $this->WriteAttributeString('PVNodeForecastCacheJSON', json_encode([
+                            'siteID' => $pvnodeSiteID,
+                            'savedAt' => time(),
+                            'slotKey' => (string)$schedule['slotKey'],
+                            'hours' => $liveHours
+                        ]));
+                        $this->DebugLog('pvnode', 'LIVE | Slot=' . $schedule['slotKey'] . ' | ' . $schedule['requestsPerDay'] . ' Abruf(e)/Tag ab ' . $schedule['startText'] . ' | Stunden=' . count($liveHours));
+                        $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
+                        $this->WriteAttributeString('PVNodeLastError', '');
+                    } catch (Throwable $e) {
+                        $this->WriteAttributeString('PVNodeLastError', $e->getMessage());
+                        if (count($cache) > 0) {
+                            $sourceHours['pvnode'] = $cache;
+                            $this->DebugLog('pvnode', 'Live-Abruf fehlgeschlagen; vorhandener Cache wird verwendet: ' . $e->getMessage(), 0);
+                        } else {
+                            $this->DebugLog('pvnode', $e->getMessage(), 0);
+                        }
+                    }
+                } elseif (count($cache) > 0) {
+                    $sourceHours['pvnode'] = $cache;
+                    $lastRequestTs = $this->ReadAttributeInteger('PVNodeLastRequestTs');
+                    $this->DebugLog('pvnode', 'CACHE | kein API-Aufruf | letzter Slot=' . $lastSlot . ($lastRequestTs > 0 ? ' | letzter Versuch=' . date('d.m.Y H:i:s', $lastRequestTs) : ''));
+                } else {
+                    $this->DebugLog('pvnode', 'Kein API-Aufruf: aktueller Lizenz-Slot wurde bereits verwendet und es ist noch kein Cache vorhanden.', 0);
                 }
             }
         }
+
+        // Den separaten pvnode-Timer nach jedem Prognoselauf auf den nächsten
+        // Lizenz-Slot ausrichten. Dadurch findet z. B. der Standardabruf tatsächlich
+        // um 03:00 Uhr statt und hängt nicht vom allgemeinen Forecast-Intervall ab.
+        $this->UpdatePVNodeScheduleTimer();
 
         $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
 
@@ -1642,6 +1724,60 @@ class SmartBatteryOptimizer extends IPSModule
         foreach ($points as $ts => $values) $hours[$ts] = array_sum($values) / max(1, count($values));
         ksort($hours);
         return $hours;
+    }
+
+    private function UpdatePVNodeScheduleTimer(): void
+    {
+        if (!$this->ReadPropertyBoolean('UsePVNodeForecast')) {
+            $this->SetTimerInterval('PVNodeScheduleTimer', 0);
+            return;
+        }
+        $schedule = $this->GetPVNodeRequestSchedule();
+        $seconds = max(1, (int)$schedule['nextSlotTs'] - time());
+        $this->SetTimerInterval('PVNodeScheduleTimer', $seconds * 1000);
+    }
+
+    private function GetPVNodeCache(string $siteID): array
+    {
+        $cache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
+        if (!is_array($cache) || (string)($cache['siteID'] ?? '') !== $siteID || !is_array($cache['hours'] ?? null)) {
+            return [];
+        }
+        return $cache['hours'];
+    }
+
+    private function GetPVNodeRequestSchedule(?int $now = null): array
+    {
+        $now = $now ?? time();
+        $requestsPerDay = max(1, min(144, $this->ReadPropertyInteger('PVNodeRequestsPerDay')));
+        $startHour = max(0, min(23, $this->ReadPropertyInteger('PVNodeRequestStartHour')));
+        $startMinute = max(0, min(59, $this->ReadPropertyInteger('PVNodeRequestStartMinute')));
+
+        $cycleStart = mktime($startHour, $startMinute, 0, (int)date('n', $now), (int)date('j', $now), (int)date('Y', $now));
+        if ($now < $cycleStart) {
+            $cycleStart = strtotime('-1 day', $cycleStart);
+        }
+
+        // Gleichmäßig über 24 Stunden verteilen. Bei 1/Tag ist nur der Startzeitpunkt
+        // relevant; bei 144/Tag entsteht z. B. ein 10-Minuten-Raster.
+        $intervalSeconds = 86400.0 / $requestsPerDay;
+        $elapsed = max(0.0, (float)($now - $cycleStart));
+        $slotIndex = min($requestsPerDay - 1, (int)floor($elapsed / $intervalSeconds));
+        $slotStartTs = (int)round($cycleStart + ($slotIndex * $intervalSeconds));
+        $nextSlotTs = (int)round($cycleStart + (($slotIndex + 1) * $intervalSeconds));
+        if ($slotIndex >= $requestsPerDay - 1) {
+            $nextSlotTs = strtotime('+1 day', $cycleStart);
+        }
+
+        return [
+            'requestsPerDay' => $requestsPerDay,
+            'startText' => sprintf('%02d:%02d', $startHour, $startMinute),
+            'cycleStartTs' => $cycleStart,
+            'slotIndex' => $slotIndex,
+            'slotStartTs' => $slotStartTs,
+            'nextSlotTs' => $nextSlotTs,
+            'slotKey' => date('Y-m-d', $cycleStart) . '#' . $slotIndex
+        ];
     }
 
     private function FetchPVNodeForecast(string $apiKey, string $siteID): array
@@ -2639,18 +2775,20 @@ class SmartBatteryOptimizer extends IPSModule
             $slotAvailability = ($slotStart >= $nightStartToday) ? $availableAtNightStart : $availableNow;
             $slotRemaining = max(0.0, $slotAvailability - $scheduledEnergy);
             if ($slotRemaining <= 0.001) continue;
-            $energy = min($remaining, $slotRemaining, $maxKW * $durationH);
-            // Mit maximaler Entladeleistung fahren und nur den letzten benötigten
-            // Slot zeitlich verkürzen. So entsprechen Energie, Leistung und Dauer:
-            // z.B. 16 kWh / 20 kW = 48 Minuten.
-            $powerKW = $maxKW;
-            $requiredSeconds = (int)ceil(($energy / $powerKW) * 3600.0);
+            $batteryPowerW = $this->GetPlannedBatteryPowerW($consumptionProfile, $slotStart);
+            $expectedExportKW = $this->GetExpectedGridExportPowerW($consumptionProfile, $slotStart) / 1000.0;
+            if ($expectedExportKW <= 0.001 || $batteryPowerW <= 0.0) continue;
+            $energy = min($remaining, $slotRemaining, $expectedExportKW * $durationH);
+            // Die Verkaufsdauer basiert auf der erwartbaren NETZEINSPEISUNG, also
+            // Batterieentladung minus gelerntem Eigenverbrauch. Die Batterie selbst
+            // darf dafür höher fahren, um den zeitgleichen Hausverbrauch mitzuversorgen.
+            $requiredSeconds = (int)ceil(($energy / $expectedExportKW) * 3600.0);
             $actualEnd = min($p['end'], $slotStart + max(1, $requiredSeconds));
             $key = $p['start'] . ':' . $p['end'];
             $selected[] = [
                 'start' => $slotStart,
                 'priceIntervalStart' => $p['start'],
-                // plannedEnd ist nur die rechnerische Dauer bei Maximalleistung.
+                // plannedEnd berücksichtigt bereits das gelernte Lastprofil und die erwartbare Netzeinspeisung.
                 // Die reale Beendigung steuert Control anhand der gemessenen Netzeinspeisung.
                 'end' => $actualEnd,
                 'priceIntervalEnd' => $p['end'],
@@ -2658,7 +2796,9 @@ class SmartBatteryOptimizer extends IPSModule
                 'priceCt' => $p['priceCt'],
                 'marketCt' => $p['marketCt'],
                 'energyKWh' => $energy,
-                'powerW' => $powerKW * 1000.0,
+                'powerW' => $batteryPowerW,
+                'expectedGridExportW' => $expectedExportKW * 1000.0,
+                'expectedLoadW' => $this->GetExpectedLoadPowerW($consumptionProfile, $slotStart),
                 'reason' => 'price'
             ];
             $usedKeys[$key] = true;
@@ -2697,15 +2837,19 @@ class SmartBatteryOptimizer extends IPSModule
                 $slotAvailability = ($slotStart >= $nightStartToday) ? $availableAtNightStart : $availableNow;
                 $slotRemaining = max(0.0, $slotAvailability - $scheduledEnergy);
                 if ($slotRemaining <= 0.001) continue;
-                $energy = min($remaining, $mandatoryMissing, $slotRemaining, $maxKW * $durationH);
-                $powerKW = min($maxKW, $energy / $durationH);
+                $batteryPowerW = $this->GetPlannedBatteryPowerW($consumptionProfile, $slotStart);
+                $expectedExportKW = $this->GetExpectedGridExportPowerW($consumptionProfile, $slotStart) / 1000.0;
+                if ($expectedExportKW <= 0.001 || $batteryPowerW <= 0.0) continue;
+                $energy = min($remaining, $mandatoryMissing, $slotRemaining, $expectedExportKW * $durationH);
                 $selected[] = [
                     'start' => $slotStart,
                     'end' => $p['end'],
                     'priceCt' => $p['priceCt'],
                     'marketCt' => $p['marketCt'],
                     'energyKWh' => $energy,
-                    'powerW' => $powerKW * 1000.0,
+                    'powerW' => $batteryPowerW,
+                    'expectedGridExportW' => $expectedExportKW * 1000.0,
+                    'expectedLoadW' => $this->GetExpectedLoadPowerW($consumptionProfile, $slotStart),
                     'reason' => 'pv_space_required'
                 ];
                 $revenue += $energy * $p['priceCt'] / 100.0;
@@ -2761,7 +2905,8 @@ class SmartBatteryOptimizer extends IPSModule
             $first['planKey'] = $hourStart . ':' . $hourEnd;
             $first['energyKWh'] = $energy;
             if ($energy > 0.0) $first['priceCt'] = $revenueEnergy / $energy;
-            $first['powerW'] = $duration > 0 ? ($energy / ($duration / 3600.0)) * 1000.0 : (float)($first['powerW'] ?? 0.0);
+            $first['powerW'] = max(array_map(static fn($x) => (float)($x['powerW'] ?? 0.0), $hourSlots));
+            $first['expectedGridExportW'] = $duration > 0 ? ($energy / ($duration / 3600.0)) * 1000.0 : 0.0;
             $packedSelected[] = $first;
         }
         $selected = $packedSelected;
@@ -2874,6 +3019,87 @@ class SmartBatteryOptimizer extends IPSModule
             'status' => $status,
             'slots' => $selected
         ];
+    }
+
+    private function GetExpectedLoadPowerW(array $consumptionProfile, int $timestamp): float
+    {
+        $hourly = isset($consumptionProfile['hourlyKWh']) && is_array($consumptionProfile['hourlyKWh'])
+            ? $consumptionProfile['hourlyKWh'] : array_fill(0, 24, 0.0);
+        $hour = max(0, min(23, (int)date('G', $timestamp)));
+        // kWh pro Stunde entspricht der mittleren Leistung in kW für diese Stunde.
+        return max(0.0, (float)($hourly[$hour] ?? 0.0)) * 1000.0;
+    }
+
+    private function GetPlannedBatteryPowerW(array $consumptionProfile, int $timestamp): float
+    {
+        $maxDischargeW = max(0.0, (float)$this->ReadPropertyInteger('MaxDischargePowerW'));
+        $loadW = $this->GetExpectedLoadPowerW($consumptionProfile, $timestamp);
+        $gridLimitW = max(0.0, (float)$this->GetRuntimeInteger('RuntimeGridFeedInLimitW', $this->ReadPropertyInteger('GridFeedInLimitW')));
+        $safetyW = max(0.0, (float)$this->GetRuntimeInteger('RuntimeGridLimitSafetyW', $this->ReadPropertyInteger('GridLimitSafetyW')));
+        $effectiveGridLimitW = $gridLimitW > 0.0 ? max(0.0, $gridLimitW - $safetyW) : $maxDischargeW;
+        // Batterie muss Eigenverbrauch + gewünschte Netzeinspeisung liefern, darf aber weder
+        // ihre Entladegrenze noch die effektive Netzeinspeisegrenze überschreiten.
+        return max(0.0, min($maxDischargeW, $effectiveGridLimitW + $loadW));
+    }
+
+    private function GetExpectedGridExportPowerW(array $consumptionProfile, int $timestamp): float
+    {
+        $batteryW = $this->GetPlannedBatteryPowerW($consumptionProfile, $timestamp);
+        $loadW = $this->GetExpectedLoadPowerW($consumptionProfile, $timestamp);
+        return max(0.0, $batteryW - $loadW);
+    }
+
+    private function EstimateFeedInDurationSeconds(float $remainingKWh, int $startTs, int $hardEndTs, array $consumptionProfile): int
+    {
+        if ($remainingKWh <= 0.0 || $hardEndTs <= $startTs) return 0;
+        $cursor = $startTs;
+        $remaining = $remainingKWh;
+        $seconds = 0;
+        while ($cursor < $hardEndTs && $remaining > 0.0001) {
+            $hourEnd = strtotime(date('Y-m-d H:00:00', $cursor)) + 3600;
+            $segmentEnd = min($hardEndTs, $hourEnd);
+            $segmentSeconds = max(0, $segmentEnd - $cursor);
+            if ($segmentSeconds <= 0) break;
+            $exportW = $this->GetExpectedGridExportPowerW($consumptionProfile, $cursor);
+            if ($exportW > 1.0) {
+                $segmentKWh = $exportW * ($segmentSeconds / 3600.0) / 1000.0;
+                if ($segmentKWh >= $remaining) {
+                    $needSeconds = (int)ceil(($remaining * 1000.0 / $exportW) * 3600.0);
+                    $seconds += min($segmentSeconds, max(1, $needSeconds));
+                    $remaining = 0.0;
+                    break;
+                }
+                $remaining -= $segmentKWh;
+            }
+            $seconds += $segmentSeconds;
+            $cursor = $segmentEnd;
+        }
+        return max(0, $seconds);
+    }
+
+    private function UpdateActivePlanWindowEnd(string $planKey, int $newEnd): void
+    {
+        if ($planKey === '' || $newEnd <= 0) return;
+        $plan = json_decode($this->ReadAttributeString('PlanJSON'), true);
+        if (!is_array($plan) || !isset($plan['slots']) || !is_array($plan['slots'])) return;
+        $changed = false;
+        foreach ($plan['slots'] as &$slot) {
+            $key = (string)($slot['planKey'] ?? ((int)($slot['priceIntervalStart'] ?? $slot['start']) . ':' . (int)($slot['priceIntervalEnd'] ?? $slot['end'])));
+            if ($key !== $planKey) continue;
+            $slot['end'] = $newEnd;
+            $changed = true;
+            break;
+        }
+        unset($slot);
+        if (!$changed) return;
+        $plan['nextWindow'] = date('d.m. H:i', time()) . '–' . date('H:i', $newEnd);
+        $this->WriteAttributeString('PlanJSON', json_encode($plan));
+        SetValue($this->GetIDForIdent('NextFeedInWindow'), $plan['nextWindow']);
+        $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+        if (!is_array($forecast)) $forecast = [];
+        $prices = json_decode($this->ReadAttributeString('PricesJSON'), true);
+        if (!is_array($prices)) $prices = [];
+        SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
     }
 
     private function LearnConsumptionProfileInternal(bool $force = false): array
@@ -3595,13 +3821,14 @@ class SmartBatteryOptimizer extends IPSModule
         $powerW = max(0, min($powerW, $this->ReadPropertyInteger('MaxDischargePowerW')));
         $socRaw = (int)round(max(0.0, min(100.0, $this->GetRuntimeMinimumSOC())) / 0.4);
 
-        $this->AppendAlphaTestTrace('Start Mode-2-Test ' . $powerW . ' W | Start=1 -> Power -> Mode=2 -> SOC');
+        $this->AppendAlphaTestTrace('Start Mode-2-Test ' . $powerW . ' W | Start=1 -> Power -> Mode=2 -> SOC -> Time');
 
         $steps = [
             ['Start', $ids['start'], 1],
             ['ActivePower', $ids['power'], 32000 + $powerW],
             ['Mode', $ids['mode'], 2],
-            ['SOC', $ids['soc'], $socRaw]
+            ['SOC', $ids['soc'], $socRaw],
+            ['Time', $ids['time'], 156]
         ];
 
         foreach ($steps as $index => $step) {
@@ -3611,7 +3838,7 @@ class SmartBatteryOptimizer extends IPSModule
             usleep(250000);
             $after = @GetValue($id);
             $this->AppendAlphaTestTrace(
-                ($index + 1) . '/4 ' . $name
+                ($index + 1) . '/5 ' . $name
                 . ': vorher=' . $before
                 . ' | Soll=' . $value
                 . ' | danach=' . $after
@@ -3673,21 +3900,21 @@ class SmartBatteryOptimizer extends IPSModule
         $activePowerRaw = (int)round(32000 + $powerW);
         $dispatchMode = 2;
         $socTargetRaw = (int)round(max(0.0, min(100.0, $this->GetRuntimeMinimumSOC())) / 0.4);
-        $duration = $slotEnd > time() ? ($slotEnd - time()) : 120;
-        $duration = max(60, min(86400, (int)$duration));
+        $baseDuration = $slotEnd > time() ? ($slotEnd - time()) : 120;
+        // Dispatch Time wird im bestehenden AlphaESS-Register in Sekunden verwendet.
+        // 30 % Reserve verhindert, dass der Inverter vor dem berechneten Fensterende zurücksetzt.
+        $duration = (int)ceil(max(60, $baseDuration) * 1.30);
+        $duration = max(60, min(86400, $duration));
 
         $this->DebugLog(
             'AlphaESS Dispatch',
             'VOLLE SEQUENZ | Power=' . $activePowerRaw
             . ' | Mode=2 | SOC=' . $socTargetRaw
-            . ' | Time=' . $duration . ' | Start=1'
+            . ' | Time=' . $duration . ' s (+30%) | Start=1'
         );
 
-        // Arm the watchdog first; retain it during every subsequent renewal.
-        // Then use the same Start -> Power -> Mode -> SOC order and settling
-        // time as the working diagnostic test. No Time write after that sequence.
-        $this->WriteAlphaDispatchValue('Time', $ids['time'], $duration);
-        IPS_Sleep(3000);
+        // Vom Nutzer bestätigte Reihenfolge:
+        // Start -> ActivePower -> Mode=2 -> SOC -> Dispatch Time.
         $this->WriteAlphaDispatchValue('Start', $ids['start'], 1);
         IPS_Sleep(3000);
         $this->WriteAlphaDispatchValue('ActivePower', $ids['power'], $activePowerRaw);
@@ -3695,6 +3922,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAlphaDispatchValue('Mode', $ids['mode'], $dispatchMode);
         IPS_Sleep(3000);
         $this->WriteAlphaDispatchValue('SOC', $ids['soc'], $socTargetRaw);
+        IPS_Sleep(3000);
+        $this->WriteAlphaDispatchValue('Time', $ids['time'], $duration);
 
         $this->WriteAttributeBoolean('AlphaDispatchActive', true);
         $this->WriteAttributeString(
