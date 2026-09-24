@@ -389,7 +389,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.60';
+        $currentModuleVersion = '1.9.61';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -450,7 +450,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.60',
+            'moduleVersion' => '1.9.61',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1586,10 +1586,11 @@ class SmartBatteryOptimizer extends IPSModule
             if (empty($diagAuto['factorReady'])) continue;
             $expectedAuto = max(0.0, (float)($diagAuto['sumExpectedKWh'] ?? 0.0));
             if ($expectedAuto <= 0.0) continue;
-            $seasonalAuto = $this->GetSeasonalPVFactor($calibration, $keyAuto, time(), (int)date('G'));
+            // Der aktuelle, über identische Ist-/Prognoseintervalle gemessene Faktor ist maßgeblich.
+            // Saisonwerte sind Langzeitwissen und dürfen einen belastbaren aktuellen Faktor nicht ersetzen.
             $factorAuto = max(
                 $this->ReadPropertyFloat('PVCalibrationMinFactor'),
-                min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $seasonalAuto !== null ? $seasonalAuto : (float)($diagAuto['ratio'] ?? 1.0))
+                min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diagAuto['ratio'] ?? 1.0))
             );
             $plantExpectedKWh += $expectedAuto;
             $plantCorrectedKWh += $expectedAuto * $factorAuto;
@@ -2270,12 +2271,11 @@ class SmartBatteryOptimizer extends IPSModule
         if (empty($calibration[$key]['factorReady'])) {
             return 1.0;
         }
-        $seasonal = $this->GetSeasonalPVFactor($calibration, $key, time(), $hour);
-        if ($seasonal !== null) return max($minFactor, min($maxFactor, $seasonal));
         $hourly = isset($calibration[$key]['hourlyFactors']) && is_array($calibration[$key]['hourlyFactors'])
             ? $calibration[$key]['hourlyFactors'] : [];
 
-        // 1. Bevorzugt den echten, für diese Stunde gelernten Faktor verwenden.
+        // 1. Bevorzugt den aktuellen, für diese Stunde gelernten Faktor verwenden.
+        // Saisonwerte bleiben als Langzeitarchiv erhalten, übersteuern aktuelle Messdaten aber nicht.
         if (isset($hourly[$hourKey]['factor'])) {
             return max($minFactor, min($maxFactor, (float)$hourly[$hourKey]['factor']));
         }
@@ -2294,9 +2294,16 @@ class SmartBatteryOptimizer extends IPSModule
             return max($minFactor, min($maxFactor, array_sum($validFactors) / count($validFactors)));
         }
 
-        // 3. Solange noch keine Stundenfaktoren vorhanden sind, bleibt der
-        // langfristige Gesamtfaktor die letzte Rückfallebene.
-        return max($minFactor, min($maxFactor, $overallFactor));
+        // 3. Fehlen aktuelle Stundenfaktoren, gilt zunächst der aktuelle Gesamtfaktor.
+        if (is_finite($overallFactor) && $overallFactor > 0.0) {
+            return max($minFactor, min($maxFactor, $overallFactor));
+        }
+
+        // 4. Nur wenn noch kein brauchbarer aktueller Faktor existiert, dient das
+        // saisonale Langzeitprofil als Rückfallebene.
+        $seasonal = $this->GetSeasonalPVFactor($calibration, $key, time(), $hour);
+        if ($seasonal !== null) return max($minFactor, min($maxFactor, $seasonal));
+        return 1.0;
     }
 
     private function AddPVCalibrationEnergySample(array $calibration, string $key, float $expectedW, float $actualW): array
@@ -2433,12 +2440,40 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
         $requiredDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
-        $factorReady = count($validDays) >= $requiredDays && ($sumExpected > 0.0 || count($archive) > 0);
+
+        // Verdichtete ältere Daten dürfen bei der Faktorberechnung nicht verloren gehen.
+        // energySamples enthält nur den kompakten aktuellen Zeitraum; ältere Stundenblöcke
+        // liegen im saisonalen Archiv. Für den Auto-Faktor werden beide Energiemengen
+        // energiegewichtet zusammengeführt. Dadurch ändert eine Verdichtung das Verhältnis
+        // Ist/Prognose nicht künstlich nur deshalb, weil Rohpunkte ins Archiv gewandert sind.
+        $currentSeason = $this->PVSeasonForTimestamp(time());
+        $archiveExpected = 0.0;
+        $archiveActual = 0.0;
+        $archiveIntervals = 0;
+        if (isset($archive[$currentSeason]) && is_array($archive[$currentSeason])) {
+            foreach ($archive[$currentSeason] as $entry) {
+                if (!is_array($entry)) continue;
+                $exp = (float)($entry['expectedKWh'] ?? 0.0);
+                $act = (float)($entry['actualKWh'] ?? 0.0);
+                if ($exp <= 0.0 || $act < 0.0) continue;
+                $archiveExpected += $exp;
+                $archiveActual += $act;
+                $archiveIntervals += max(1, (int)($entry['intervals'] ?? 1));
+            }
+        }
+        $factorExpected = $sumExpected + $archiveExpected;
+        $factorActual = $sumActual + $archiveActual;
+        $factorReady = count($validDays) >= $requiredDays && $factorExpected > 0.0;
         return [
             'sampleCount' => $count,
-            'sumExpectedKWh' => $sumExpected,
-            'sumActualKWh' => $sumActual,
-            'ratio' => ($factorReady && $sumExpected > 0.0) ? $sumActual / $sumExpected : ($factorReady ? ($this->GetSeasonalPVFactor($calibration, $key, time(), (int)date('G')) ?? 1.0) : null),
+            'sumExpectedKWh' => $factorExpected,
+            'sumActualKWh' => $factorActual,
+            'recentExpectedKWh' => $sumExpected,
+            'recentActualKWh' => $sumActual,
+            'archiveExpectedKWh' => $archiveExpected,
+            'archiveActualKWh' => $archiveActual,
+            'archiveIntervalCount' => $archiveIntervals,
+            'ratio' => $factorReady ? $factorActual / $factorExpected : null,
             'factorReady' => $factorReady,
             'learningDayCount' => count($validDays),
             'firstSampleTs' => $firstTs,
@@ -4192,7 +4227,7 @@ class SmartBatteryOptimizer extends IPSModule
         if ($diagRows) {
             $html .= '<div style="margin:8px 0;padding:8px;background:#101010;border:1px solid #555;max-height:420px;overflow:auto">';
             $html .= '<div style="font-weight:bold;margin-bottom:5px">DIAG – Ablaufprotokoll</div>';
-            foreach ($diagRows as $row) {
+            foreach (array_reverse($diagRows) as $row) {
                 $step = (string)($row['request'] ?? $row['response'] ?? '');
                 $html .= '<div style="font-family:Consolas,monospace;white-space:pre-wrap;padding:2px 0;border-bottom:1px solid #292929">'
                     .$e(date('H:i:s',(int)($row['time'] ?? 0))).' | '.$e($step).'</div>';
