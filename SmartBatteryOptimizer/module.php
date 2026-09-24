@@ -213,8 +213,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('AlphaTestTrace', '');
 
         $this->RegisterTimer('RefreshTimer', 0, 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('PVNodeScheduleTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('PVForecastTimer', 0, 'SBO_RefreshPVForecast($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('PVNodeScheduleTimer', 0, 'SBO_RefreshPVForecast($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVCalibrationTimer', 0, 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
@@ -712,6 +712,18 @@ class SmartBatteryOptimizer extends IPSModule
     public function RefreshOptimization()
     {
         $this->RecalculateInternal(false);
+    }
+
+    public function RefreshPVForecast()
+    {
+        // Eigener Timerpfad für automatische Provider-Aktualisierungen.
+        // Nicht über den manuellen 1-s-Worker routen, damit Forecast.Solar/pvnode
+        // auch ohne Benutzeraktion zuverlässig zum vorgesehenen Zeitpunkt laufen.
+        try {
+            $this->RecalculateInternal(true);
+        } catch (Throwable $e) {
+            $this->DebugLog('PVForecastTimer', 'Automatische Prognose-Aktualisierung fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
     }
 
     public function RefreshPVActual()
@@ -1782,7 +1794,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function FetchPVNodeForecast(string $apiKey, string $siteID): array
     {
-        $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc';
+        $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?timezone=utc';
 
         try {
             $data = $this->HttpGetJsonWithHeaders($url, [
@@ -4529,14 +4541,13 @@ class SmartBatteryOptimizer extends IPSModule
             if ($runtimeVisibility !== '' && $runtimeVisibility !== '{}') $storedVisibility = $runtimeVisibility;
             if ($storedVisibility === '') $storedVisibility = '{}';
             $html .= 'var serverVisibility=' . $storedVisibility . ';';
-            $html .= 'function loadVisibility(){var out={};var hasServer=false;for(var k in serverVisibility){if(Object.prototype.hasOwnProperty.call(serverVisibility,k)){out[k]=!!serverVisibility[k];hasServer=true;}}try{var v=localStorage.getItem(visibilityKey);if(v){var l=JSON.parse(v);for(var k2 in l){if(Object.prototype.hasOwnProperty.call(l,k2)&&!Object.prototype.hasOwnProperty.call(out,k2)){out[k2]=!!l[k2];}}}}catch(e){}return out;}';
+            $html .= 'function loadVisibility(){var out={};try{var v=localStorage.getItem(visibilityKey);if(v){var l=JSON.parse(v);if(l&&typeof l==="object"){for(var k in l){if(Object.prototype.hasOwnProperty.call(l,k)){out[k]=!!l[k];}}return out;}}}catch(e){}for(var k2 in serverVisibility){if(Object.prototype.hasOwnProperty.call(serverVisibility,k2)){out[k2]=!!serverVisibility[k2];}}return out;}';
             $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}try{if(typeof IPS!=="undefined"&&IPS.requestAction){IPS.requestAction(' . $this->InstanceID . ',"PVDebugVisibilityState",JSON.stringify(v));}}catch(e){}}';
             $html .= 'var debugVisibility=loadVisibility();';
             $html .= 'var chart=null;';
             $html .= 'var idx=0;var savedDay=null;try{savedDay=localStorage.getItem(selectedDayKey);}catch(e){}var i,found=false;for(i=0;i<days.length;i++){if(savedDay&&days[i].date===savedDay){idx=i;found=true;break;}}if(!found){for(i=0;i<days.length;i++){if(days[i].date===today){idx=i;break;}}}';
             $html .= 'function el(s){return document.getElementById(chartId+s);}';
             $html .= 'function draw(){';
-            $html .= 'if(typeof chart!=="undefined"&&chart){try{chart.series.forEach(function(sr){var k=sr.options.custom&&sr.options.custom.sourceKey;if(k){debugVisibility[k]=sr.visible;}});}catch(e){}}';
             $html .= 'if(!days.length||typeof Highcharts==="undefined"){return;}';
             $html .= 'var d=days[idx];try{localStorage.setItem(selectedDayKey,d.date);}catch(e){}var categories=[];var forecastData=[];var actualData=[];var sourceData={};';
             $html .= 'for(var src in d.sourceLabels){if(Object.prototype.hasOwnProperty.call(d.sourceLabels,src)){sourceData[src]=[];}}';
