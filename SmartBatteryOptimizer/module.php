@@ -382,7 +382,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.48';
+        $currentModuleVersion = '1.9.56';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -443,7 +443,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.48',
+            'moduleVersion' => '1.9.56',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -788,9 +788,13 @@ class SmartBatteryOptimizer extends IPSModule
         $dayNight = $this->GetCurrentDayNightStatus();
         $this->DebugLog('DayNight', ($dayNight['isNight'] ? 'NACHT' : 'TAG') . ' | Fenster ' . date('Y-m-d H:i', (int)$dayNight['start']) . ' -> ' . date('Y-m-d H:i', (int)$dayNight['end']) . ' | Modus=' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell'));
         try {
+            $this->ForecastDiagnosticStep('01 Nachtverbrauch START');
             $night = $this->LearnNightConsumptionInternal();
+            $this->ForecastDiagnosticStep('02 Nachtverbrauch ENDE');
             $this->DebugLog('Nachtverbrauch', 'Ergebnis ' . round($night, 3) . ' kWh | ' . $this->ReadAttributeString('NightLearningSource'));
+            $this->ForecastDiagnosticStep('03 Verbrauchsprofil START');
             $consumptionProfile = $this->LearnConsumptionProfileInternal(false);
+            $this->ForecastDiagnosticStep('04 Verbrauchsprofil ENDE');
             $this->DebugLog('Verbrauchsprofil', ['Quelle'=>$this->ReadAttributeString('ConsumptionLearningSource'),'dailyKWh'=>$consumptionProfile['dailyKWh'] ?? null,'validDays'=>$consumptionProfile['validDays'] ?? null]);
             $forecast = [];
             if (!$refreshPVForecast) {
@@ -801,8 +805,12 @@ class SmartBatteryOptimizer extends IPSModule
             }
             if ($refreshPVForecast) {
                 // Zuerst Kalibrierung/Faktoren aktualisieren, erst danach Prognose berechnen und Highcharts rendern.
+                $this->ForecastDiagnosticStep('05 PV-Kalibrierung START');
                 $this->UpdatePVCalibrationState(false);
+                $this->ForecastDiagnosticStep('06 PV-Kalibrierung ENDE');
+                $this->ForecastDiagnosticStep('07 FetchPVForecast START');
                 $forecast = $this->FetchPVForecast();
+                $this->ForecastDiagnosticStep('08 FetchPVForecast ENDE');
                 $this->DebugLog('PV-Prognose', ['heuteKWh'=>$forecast['todayKWh'] ?? null,'morgenKWh'=>$forecast['tomorrowKWh'] ?? null,'Quellen'=>$forecast['forecastSources'] ?? [],'Gewichte'=>$forecast['forecastSourceWeights'] ?? []]);
                 $this->StorePVForecastHistory($forecast);
             }
@@ -810,10 +818,14 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
             $gate = $this->GetAutomaticLearningGateStatus();
             SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
+            $this->ForecastDiagnosticStep('09 Preise START');
             $prices = $this->FetchPrices();
+            $this->ForecastDiagnosticStep('10 Preise ENDE');
             $this->DebugLog('Preise', 'Geladene interne Preis-Slots: ' . count($prices));
             $nightForPlan = (float)($forecast['nightConsumptionTomorrowKWh'] ?? $night);
+            $this->ForecastDiagnosticStep('11 Einspeiseplan START');
             $plan = $this->BuildPlan($forecast, $prices, $nightForPlan, $consumptionProfile);
+            $this->ForecastDiagnosticStep('12 Einspeiseplan ENDE');
             $this->DebugLog('Einspeiseplan', ['SoC'=>$plan['soc'] ?? null,'gespeichertKWh'=>$plan['storedKWh'] ?? null,'ReserveKWh'=>$plan['reserveKWh'] ?? null,'verfuegbarKWh'=>$plan['availableKWh'] ?? null,'PVSpeicherKWh'=>$plan['pvSpaceRequiredKWh'] ?? null,'Slots'=>count($plan['slots'] ?? []),'ErloesEUR'=>$plan['expectedRevenueEUR'] ?? null,'Status'=>$plan['status'] ?? '']);
 
             $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
@@ -1241,6 +1253,17 @@ class SmartBatteryOptimizer extends IPSModule
         $this->SetFeedIn(false, 0.0);
     }
 
+    private function ForecastDiagnosticStep(string $step): void
+    {
+        $text = 'DIAG: ' . $step;
+        $this->DebugLog('Forecast-Diagnose', $text);
+        try {
+            SetValue($this->GetIDForIdent('StatusText'), date('d.m.Y H:i:s') . ' | ' . $text);
+        } catch (Throwable $e) {
+        }
+        $this->AddProviderDebug('DIAG', $step, [], $text, 0, 0.0);
+    }
+
     private function FetchPVForecast(): array
     {
         $lat = $this->ReadPropertyFloat('Latitude');
@@ -1309,7 +1332,9 @@ class SmartBatteryOptimizer extends IPSModule
                     'timezone' => 'Europe/Vienna',
                     'forecast_days' => 3
                 ]);
+                $this->ForecastDiagnosticStep('Open-Meteo START | ' . $name);
                 $data = $this->HttpGetJson($url, 'Open-Meteo', ['Fläche'=>$name,'kWp'=>$kwp,'Azimut'=>$azimuth,'Neigung'=>$tilt,'AutoFaktor'=>$autoFactor,'Zeitzone'=>'Europe/Vienna']);
+                $this->ForecastDiagnosticStep('Open-Meteo ENDE | ' . $name);
                 if (!isset($data['hourly']['time'], $data['hourly']['global_tilted_irradiance'])) {
                     throw new Exception('Ungültige Open-Meteo-Antwort für Fläche ' . $name);
                 }
@@ -1357,7 +1382,9 @@ class SmartBatteryOptimizer extends IPSModule
                             throw new Exception('Forecast.Solar Rate-Limit aktiv bis ' . date('d.m.Y H:i:s', $retryAfterTs) . '; kein Flächen-Cache vorhanden.');
                         }
                     } else {
-                        $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp, $name);
+                        $this->ForecastDiagnosticStep('Forecast.Solar START | ' . $name);
+                            $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp, $name);
+                            $this->ForecastDiagnosticStep('Forecast.Solar ENDE | ' . $name);
                     }
                     $forecastSolarCache[$key] = [
                         'savedAt' => time(),
@@ -1590,8 +1617,8 @@ class SmartBatteryOptimizer extends IPSModule
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_FOLLOWLOCATION => true,
                 CURLOPT_MAXREDIRS => 3,
-                CURLOPT_CONNECTTIMEOUT => 8,
-                CURLOPT_TIMEOUT => 15,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 8,
                 CURLOPT_USERAGENT => 'IP-Symcon-SmartBatteryOptimizer/1.9.20',
                 CURLOPT_HTTPHEADER => ['Accept: application/json'],
                 CURLOPT_HEADER => true
@@ -1636,7 +1663,7 @@ class SmartBatteryOptimizer extends IPSModule
             }
         } else {
             $opts = ['http' => [
-                'timeout' => 15,
+                'timeout' => 8,
                 'ignore_errors' => true,
                 'follow_location' => 1,
                 'max_redirects' => 3,
@@ -3939,7 +3966,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $opts = [
             'http' => [
-                'timeout' => 12,
+                'timeout' => 8,
                 'ignore_errors' => true,
                 'header' => implode("\r\n", $allHeaders) . "\r\n"
             ]
@@ -3982,7 +4009,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function HttpGetJson(string $url, string $debugProvider = '', array $debugMeta = []): array
     {
-        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.7\r\n"]];
+        $opts = ['http' => ['timeout' => 8, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.7\r\n"]];
         $ctx = stream_context_create($opts);
         $debugStart = microtime(true);
         $raw = @file_get_contents($url, false, $ctx);
