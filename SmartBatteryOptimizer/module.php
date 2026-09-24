@@ -1602,6 +1602,34 @@ class SmartBatteryOptimizer extends IPSModule
             ? ($plantCorrectedKWh / $plantExpectedKWh)
             : 1.0;
 
+        // Die Tagesprognose wird nicht mehr mit einem einzigen Faktor korrigiert.
+        // Für jede Stunde wird je PV-Fläche der gelernte Stundenfaktor bestimmt.
+        // Die Flächen werden mit ihrer für diese Stunde historisch verglichenen
+        // Prognoseenergie gewichtet. Dadurch wirken unterschiedliche Dachausrichtungen
+        // morgens/mittags/abends unterschiedlich auf die Anlagenkorrektur.
+        $plantHourlyFactors = [];
+        $surfaceHourlyFactors = [];
+        for ($hour = 0; $hour < 24; $hour++) {
+            $weightedFactor = 0.0; $weight = 0.0; $fallbackFactors = [];
+            foreach ($surfaces as $idx => $surface) {
+                if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
+                $nameH = trim((string)($surface['Name'] ?? 'PV'));
+                if ($nameH === '') $nameH = 'PV ' . ($idx + 1);
+                $keyH = $this->SurfaceKey($nameH, $idx);
+                $diagH = $this->GetPVCalibrationDiagnostics($calibration, $keyH);
+                if (empty($diagH['factorReady'])) continue;
+                $overallH = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diagH['ratio'] ?? 1.0)));
+                $factorH = $this->GetPVForecastHourFactor($calibration, $keyH, $hour, $overallH, true);
+                $hourWeight = $this->GetPVForecastHourWeight($calibration, $keyH, $hour);
+                $surfaceHourlyFactors[$nameH][(string)$hour] = $factorH;
+                $fallbackFactors[] = $factorH;
+                if ($hourWeight > 0.0) { $weightedFactor += $factorH * $hourWeight; $weight += $hourWeight; }
+            }
+            if ($weight > 0.0) $plantHourlyFactors[(string)$hour] = $weightedFactor / $weight;
+            elseif (count($fallbackFactors) > 0) $plantHourlyFactors[(string)$hour] = array_sum($fallbackFactors) / count($fallbackFactors);
+            else $plantHourlyFactors[(string)$hour] = 1.0;
+        }
+
         $allTs = [];
         foreach ($availableSources as $source) foreach ($sourceHours[$source] as $ts => $_) $allTs[(int)$ts] = true;
         ksort($allTs);
@@ -1617,7 +1645,8 @@ class SmartBatteryOptimizer extends IPSModule
             }
             if ($weightSum <= 0.0) continue;
             $rawCombinedKW = $weighted / $weightSum;
-            $hours[$ts] = ['totalKW' => max(0.0, $rawCombinedKW * $plantAutoFactor), 'totalKWBeforeAuto' => $rawCombinedKW, 'surfaces' => [], 'sources' => $sourceValues];
+            $hourAutoFactor = (float)($plantHourlyFactors[(string)((int)date('G', (int)$ts))] ?? $plantAutoFactor);
+            $hours[$ts] = ['totalKW' => max(0.0, $rawCombinedKW * $hourAutoFactor), 'totalKWBeforeAuto' => $rawCombinedKW, 'autoFactor' => $hourAutoFactor, 'surfaces' => [], 'sources' => $sourceValues];
             $day = date('Y-m-d', (int)$ts);
             if ($day === date('Y-m-d')) $todayBeforeAuto += $rawCombinedKW;
             if ($day === date('Y-m-d', strtotime('tomorrow'))) $tomorrowBeforeAuto += $rawCombinedKW;
@@ -1651,7 +1680,7 @@ class SmartBatteryOptimizer extends IPSModule
         return [
             'todayKWh' => $today, 'tomorrowKWh' => $tomorrow,
             'todayKWhBeforeAuto' => $todayBeforeAuto, 'tomorrowKWhBeforeAuto' => $tomorrowBeforeAuto,
-            'plantAutoFactor' => $plantAutoFactor, 'morningTs' => $morningTs,
+            'plantAutoFactor' => $plantAutoFactor, 'plantHourlyFactors' => $plantHourlyFactors, 'surfaceHourlyFactors' => $surfaceHourlyFactors, 'morningTs' => $morningTs,
             'hours' => $hours, 'surfaceTotals' => $surfaceTotals, 'surfaceCalibration' => $surfaceCalibration,
             'forecastSources' => $availableSources, 'forecastSourceWeights' => $weights
         ];
@@ -2322,19 +2351,20 @@ class SmartBatteryOptimizer extends IPSModule
                 if($sh!==$hour) continue;
                 $he+=(float)$sample['expectedKWh']; $ha+=(float)$sample['actualKWh']; $hc++;
             }
-            if($he>0) $hourly[(string)$hour]=['factor'=>max($min,min($max,$ha/$he)),'samples'=>$hc];
+            if($he>0) $hourly[(string)$hour]=['factor'=>max($min,min($max,$ha/$he)),'samples'=>$hc,'expectedKWh'=>$he,'actualKWh'=>$ha];
         }
         $calibration[$key]['hourlyFactors']=$hourly;
         $calibration[$key]['updated']=$now;
         return $calibration;
     }
 
-    private function GetPVForecastHourFactor(array $calibration, string $key, int $hour, float $overallFactor): float
+    private function GetPVForecastHourFactor(array $calibration, string $key, int $hour, float $overallFactor, ?bool $factorReadyOverride = null): float
     {
         $minFactor = $this->ReadPropertyFloat('PVCalibrationMinFactor');
         $maxFactor = $this->ReadPropertyFloat('PVCalibrationMaxFactor');
         $hourKey = (string)max(0, min(23, $hour));
-        if (empty($calibration[$key]['factorReady'])) {
+        $factorReady = $factorReadyOverride ?? !empty($calibration[$key]['factorReady']);
+        if (!$factorReady) {
             return 1.0;
         }
         $hourly = isset($calibration[$key]['hourlyFactors']) && is_array($calibration[$key]['hourlyFactors'])
@@ -2370,6 +2400,29 @@ class SmartBatteryOptimizer extends IPSModule
         $seasonal = $this->GetSeasonalPVFactor($calibration, $key, time(), $hour);
         if ($seasonal !== null) return max($minFactor, min($maxFactor, $seasonal));
         return 1.0;
+    }
+
+    private function GetPVForecastHourWeight(array $calibration, string $key, int $hour): float
+    {
+        if (!isset($calibration[$key]) || !is_array($calibration[$key])) return 0.0;
+        $hour = max(0, min(23, $hour));
+        $weight = 0.0;
+        $cutoff = time() - max(1, $this->ReadPropertyInteger('PVCalibrationDays')) * 86400;
+        foreach (($calibration[$key]['energySamples'] ?? []) as $sample) {
+            $ts = (int)($sample['ts'] ?? 0);
+            if ($ts < $cutoff) continue;
+            $h = isset($sample['hour']) ? (int)$sample['hour'] : (int)date('G', $ts);
+            if ($h !== $hour) continue;
+            $weight += max(0.0, (float)($sample['expectedKWh'] ?? 0.0));
+        }
+        // Falls im aktuellen Fenster für diese Stunde noch nichts vorhanden ist,
+        // dient das saisonale Stundenarchiv als Gewicht (nicht als zusätzlicher Messwert).
+        if ($weight <= 0.0) {
+            $season = $this->PVSeasonForTimestamp(time());
+            $entry = $calibration[$key]['seasonalArchive'][$season][(string)$hour] ?? null;
+            if (is_array($entry)) $weight = max(0.0, (float)($entry['expectedKWh'] ?? 0.0));
+        }
+        return $weight;
     }
 
     private function AddPVCalibrationEnergySample(array $calibration, string $key, float $expectedW, float $actualW): array
@@ -2459,7 +2512,7 @@ class SmartBatteryOptimizer extends IPSModule
         $hourlyFactors = [];
         foreach ($hourSums as $h => $v) {
             if ($v['e'] <= 0.0) continue;
-            $hourlyFactors[(string)$h] = ['factor'=>max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $v['a']/$v['e'])),'samples'=>$v['c']];
+            $hourlyFactors[(string)$h] = ['factor'=>max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $v['a']/$v['e'])),'samples'=>$v['c'],'expectedKWh'=>$v['e'],'actualKWh'=>$v['a']];
         }
         $calibration[$key]['hourlyFactors'] = $hourlyFactors;
         $calibration[$key]['updated'] = $now;
@@ -4918,7 +4971,7 @@ class SmartBatteryOptimizer extends IPSModule
         $plantFactor = (float)($forecast['plantAutoFactor'] ?? 1.0);
         $html .= '<div style="margin:8px 0;padding:6px;border:1px solid #555"><b>Gesamtprognose / Auto-Korrektur</b><br>'
             . 'Kombinierte Prognose vor Auto: <b>' . number_format($beforeAuto, 2, ',', '.') . ' kWh</b>'
-            . ' | Anlagen-Auto-Faktor (energiegewichtet): <b>' . number_format($plantFactor, 3, ',', '.') . '</b>'
+            . ' | Referenz-Gesamtfaktor (energiegewichtet): <b>' . number_format($plantFactor, 3, ',', '.') . '</b>'
             . ' | Prognose nach Auto: <b>' . number_format($afterAuto, 2, ',', '.') . ' kWh</b></div>';
         $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff">';
         $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist-Erzeugung</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist / Prognose</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Intervalle</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Lernzeitraum</th></tr>';
@@ -4950,6 +5003,24 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '</tr>';
         }
         $html .= '</table></div>';
+        $hourFactors = is_array($forecast['plantHourlyFactors'] ?? null) ? $forecast['plantHourlyFactors'] : [];
+        $surfaceHourFactors = is_array($forecast['surfaceHourlyFactors'] ?? null) ? $forecast['surfaceHourlyFactors'] : [];
+        if (count($hourFactors) > 0) {
+            $html .= '<div style="margin-top:8px;padding:6px;border:1px solid #555"><b>Auto-Faktor je Stunde (tatsächlich angewandt)</b><br>';
+            $html .= '<table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff;margin-top:4px"><tr><th style="text-align:left">Stunde</th>';
+            foreach ($surfaceHourFactors as $surfaceName => $_) $html .= '<th style="text-align:right">' . htmlspecialchars((string)$surfaceName) . '</th>';
+            $html .= '<th style="text-align:right">Anlage</th></tr>';
+            for ($h=6; $h<=22; $h++) {
+                $html .= '<tr><td style="padding:2px 4px;border-top:1px solid rgba(128,128,128,.2)">' . sprintf('%02d:00', $h) . '</td>';
+                foreach ($surfaceHourFactors as $surfaceName => $values) {
+                    $v = is_array($values) && isset($values[(string)$h]) ? (float)$values[(string)$h] : null;
+                    $html .= '<td style="text-align:right;padding:2px 4px;border-top:1px solid rgba(128,128,128,.2)">' . ($v === null ? '-' : number_format($v,3,',','.')) . '</td>';
+                }
+                $pf = isset($hourFactors[(string)$h]) ? (float)$hourFactors[(string)$h] : 1.0;
+                $html .= '<td style="text-align:right;padding:2px 4px;border-top:1px solid rgba(128,128,128,.2)"><b>' . number_format($pf,3,',','.') . '</b></td></tr>';
+            }
+            $html .= '</table><span style="font-size:10px;opacity:.75">Die blaue Prognose wird je Stunde mit dem Anlagenwert dieser Zeile korrigiert. Fehlende Stunden verwenden die vorhandene Fallback-Logik.</span></div>';
+        }
         $html .= '<div style="margin-top:8px;padding:6px;border:1px solid #555"><b>Kontrolle Verdichtung</b><br>';
         foreach ($cal as $name => $c) {
             $a = isset($c['compactionAudit']) && is_array($c['compactionAudit']) ? $c['compactionAudit'] : [];
