@@ -18,6 +18,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyBoolean('UsePVNodeForecast', false);
         $this->RegisterPropertyString('PVNodeAPIKey', '');
         $this->RegisterPropertyString('PVNodeSiteID', '');
+        $this->RegisterPropertyInteger('PVNodeMaxRequestsPerDay', 1);
         $this->RegisterPropertyInteger('ForecastWeightLearningDays', 7);
         $this->RegisterPropertyInteger('PVCalibrationDays', 30);
         $this->RegisterPropertyInteger('UnknownOrientationLearningDays', 30);
@@ -172,6 +173,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('PVNodeConsecutiveRejects', 0);
         $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
         $this->RegisterAttributeString('PVNodeLastError', '');
+        $this->RegisterAttributeString('PVNodeForecastCacheJSON', '{}');
+        $this->RegisterAttributeInteger('PVNodeNextPollTs', 0);
+        $this->RegisterAttributeString('PVNodeRequestDay', '');
+        $this->RegisterAttributeInteger('PVNodeRequestCount', 0);
         $this->RegisterAttributeBoolean('LastAppliedDebugMode', false);
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
@@ -384,7 +389,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.56';
+        $currentModuleVersion = '1.9.60';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -445,7 +450,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.56',
+            'moduleVersion' => '1.9.60',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1535,10 +1540,8 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->DebugLog('pvnode', 'Aktiviert, aber API-Key oder Site-ID fehlt. Es wurde keine API-Anfrage gesendet.', 0);
             } else {
                 try {
-                    $sourceHours['pvnode'] = $this->FetchPVNodeForecast($pvnodeKey, $pvnodeSiteID);
-                    $this->DebugLog('pvnode', 'Prognose empfangen | Site-ID=' . $pvnodeSiteID . ' | Stunden=' . count($sourceHours['pvnode']));
-                    $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
-                    $this->WriteAttributeString('PVNodeLastError', '');
+                    $sourceHours['pvnode'] = $this->GetPVNodeForecastLimited($pvnodeKey, $pvnodeSiteID);
+                    $this->DebugLog('pvnode', 'Prognose bereit | Site-ID=' . $pvnodeSiteID . ' | Stunden=' . count($sourceHours['pvnode']));
                 } catch (Throwable $e) {
                     $this->WriteAttributeString('PVNodeLastError', $e->getMessage());
                     $this->DebugLog('pvnode', $e->getMessage(), 0);
@@ -1761,7 +1764,74 @@ class SmartBatteryOptimizer extends IPSModule
         return $hours;
     }
 
-    private function FetchPVNodeForecast(string $apiKey, string $siteID): array
+    private function GetPVNodeForecastLimited(string $apiKey, string $siteID): array
+    {
+        $maxPerDay = max(1, min(144, $this->ReadPropertyInteger('PVNodeMaxRequestsPerDay')));
+        $today = date('Y-m-d');
+        $storedDay = $this->ReadAttributeString('PVNodeRequestDay');
+        $count = $this->ReadAttributeInteger('PVNodeRequestCount');
+        if ($storedDay !== $today) {
+            $storedDay = $today;
+            $count = 0;
+            $this->WriteAttributeString('PVNodeRequestDay', $today);
+            $this->WriteAttributeInteger('PVNodeRequestCount', 0);
+        }
+
+        $cache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
+        if (!is_array($cache)) $cache = [];
+        $cachedHours = (($cache['siteID'] ?? '') === $siteID && isset($cache['hours']) && is_array($cache['hours'])) ? $cache['hours'] : [];
+        $normalizedCache = [];
+        foreach ($cachedHours as $ts => $value) $normalizedCache[(int)$ts] = (float)$value;
+        ksort($normalizedCache);
+
+        $nextPollTs = $this->ReadAttributeInteger('PVNodeNextPollTs');
+        $now = time();
+        $reason = '';
+        if ($count >= $maxPerDay) {
+            $reason = 'Tageslimit erreicht (' . $count . '/' . $maxPerDay . ')';
+        } elseif ($nextPollTs > $now && count($normalizedCache) > 0) {
+            $reason = 'neue Daten erst ab ' . date('d.m.Y H:i:s', $nextPollTs);
+        }
+
+        if ($reason !== '' && count($normalizedCache) > 0) {
+            $this->DebugLog('pvnode', 'CACHE | ' . $reason . ' | Stunden=' . count($normalizedCache));
+            return $normalizedCache;
+        }
+        if ($reason !== '' && count($normalizedCache) === 0) {
+            $this->DebugLog('pvnode', 'Kein Cache vorhanden, obwohl ' . $reason . '. Kein zusätzlicher API-Abruf.', 0);
+            return [];
+        }
+
+        // Der Zähler wird direkt vor dem HTTP-Aufruf erhöht. So kann ein Timeout oder
+        // Serverfehler nicht zu mehreren automatischen Wiederholungen im selben Lauf führen.
+        $count++;
+        $this->WriteAttributeString('PVNodeRequestDay', $today);
+        $this->WriteAttributeInteger('PVNodeRequestCount', $count);
+        $this->DebugLog('pvnode', 'LIVE | API-Abruf ' . $count . '/' . $maxPerDay . ' START');
+
+        try {
+            $result = $this->FetchPVNodeForecastLive($apiKey, $siteID);
+            $hours = $result['hours'];
+            $next = (int)$result['nextPollTs'];
+            $this->WriteAttributeString('PVNodeForecastCacheJSON', json_encode([
+                'siteID' => $siteID,
+                'fetchedAt' => $now,
+                'hours' => $hours
+            ]));
+            $this->WriteAttributeInteger('PVNodeNextPollTs', $next);
+            $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
+            $this->WriteAttributeString('PVNodeLastError', '');
+            $this->DebugLog('pvnode', 'LIVE | API-Abruf ' . $count . '/' . $maxPerDay . ' ENDE | Stunden=' . count($hours) . ($next > 0 ? ' | next_poll_at=' . date('d.m.Y H:i:s', $next) : ''));
+            return $hours;
+        } catch (Throwable $e) {
+            $this->WriteAttributeString('PVNodeLastError', $e->getMessage());
+            $this->DebugLog('pvnode', 'LIVE fehlgeschlagen | ' . $e->getMessage() . (count($normalizedCache) > 0 ? ' | verwende Cache' : ''), 0);
+            if (count($normalizedCache) > 0) return $normalizedCache;
+            throw $e;
+        }
+    }
+
+    private function FetchPVNodeForecastLive(string $apiKey, string $siteID): array
     {
         $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc';
 
@@ -1771,10 +1841,6 @@ class SmartBatteryOptimizer extends IPSModule
             ], 'pvnode', ['Site-ID'=>$siteID,'Zeitzone'=>'utc']);
         } catch (Throwable $e) {
             $status = (int)$e->getCode();
-
-            // Nur echte Ablehnungen wegen Authentifizierung / ungültiger Site-Konfiguration
-            // zählen gegen die 3-Fehlversuche-Sperre. Rate-Limits, Server- und
-            // Verbindungsfehler dürfen den Benutzer nicht aussperren.
             if (in_array($status, [400, 401, 403, 404, 422], true)) {
                 $this->RegisterPVNodeRejection($status, $e->getMessage());
             }
@@ -1785,16 +1851,11 @@ class SmartBatteryOptimizer extends IPSModule
             throw new Exception('pvnode: Antwort enthält keine Prognosewerte.');
         }
 
-        // pvnode liefert 15-Minuten-Leistungswerte in Watt. Für unsere gemeinsame
-        // Prognose werden diese zu einem mittleren kW-Stundenwert zusammengefasst.
-        // Dieser Stundenwert entspricht bei einer vollen Stunde zugleich den kWh.
         $quarterValues = [];
         foreach ($data['values'] as $row) {
             if (!is_array($row) || !isset($row['timestamp'], $row['pv_power'])) continue;
             $ts = strtotime((string)$row['timestamp']);
             if ($ts === false) continue;
-
-            // UTC-Zeitstempel in lokale IP-Symcon/PHP-Zeit auf volle Stunde abbilden.
             $hourTs = strtotime(date('Y-m-d H:00:00', $ts));
             if (!isset($quarterValues[$hourTs])) $quarterValues[$hourTs] = [];
             $quarterValues[$hourTs][] = max(0.0, (float)$row['pv_power']) / 1000.0;
@@ -1806,12 +1867,19 @@ class SmartBatteryOptimizer extends IPSModule
             $hours[(int)$hourTs] = array_sum($values) / count($values);
         }
         ksort($hours);
+        if (count($hours) === 0) throw new Exception('pvnode: Keine verwertbaren PV-Leistungswerte erhalten.');
 
-        if (count($hours) === 0) {
-            throw new Exception('pvnode: Keine verwertbaren PV-Leistungswerte erhalten.');
+        $nextPollRaw = $data['next_poll_at'] ?? ($data['meta']['next_poll_at'] ?? ($data['metadata']['next_poll_at'] ?? null));
+        $nextPollTs = 0;
+        if (is_numeric($nextPollRaw)) {
+            $n = (int)$nextPollRaw;
+            $nextPollTs = $n > 20000000000 ? (int)floor($n / 1000) : $n;
+        } elseif (is_string($nextPollRaw) && trim($nextPollRaw) !== '') {
+            $parsed = strtotime($nextPollRaw);
+            if ($parsed !== false) $nextPollTs = $parsed;
         }
 
-        return $hours;
+        return ['hours' => $hours, 'nextPollTs' => $nextPollTs];
     }
 
     private function RegisterPVNodeRejection(int $status, string $message): void
