@@ -716,59 +716,86 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function UpdatePVCalibrationState(bool $renderDiagnosis = true): void
     {
-
+        $this->ForecastDiagnosticStep('05.01 PV-Kalibrierung ForecastJSON lesen START');
         $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
-            if (!is_array($forecast)) $forecast = [];
-            $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
-            if (!is_array($calibration)) $calibration = [];
-            $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
-            if (!is_array($surfaces)) $surfaces = [];
+        if (!is_array($forecast)) $forecast = [];
+        $this->ForecastDiagnosticStep('05.02 PV-Kalibrierung ForecastJSON lesen ENDE');
 
-            // Gate bei jedem 30-s-Takt aktualisieren. Ein einmal erkannter Zustand bleibt
-            // verriegelt und wird erst nach 5 Minuten DURCHGEHEND unter derselben Schwelle frei.
-            $gate = $this->GetPVCalibrationFeedInGate();
-            $surfaceCalibration = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
+        $this->ForecastDiagnosticStep('05.03 PV-Kalibrierung PVCalibrationJSON lesen START');
+        $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
+        if (!is_array($calibration)) $calibration = [];
+        $this->ForecastDiagnosticStep('05.04 PV-Kalibrierung PVCalibrationJSON lesen ENDE | Oberflächen=' . count($calibration));
 
-            foreach ($surfaces as $idx => $surface) {
-                if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
-                $name = trim((string)($surface['Name'] ?? 'PV'));
-                if ($name === '') $name = 'PV ' . ($idx + 1);
-                $key = $this->SurfaceKey($name, $idx);
-                $actualW = $this->ReadSurfaceActualPower($surface);
-                $expectedW = isset($surfaceCalibration[$name]['expectedBaseW'])
-                    ? (float)$surfaceCalibration[$name]['expectedBaseW'] : 0.0;
+        $this->ForecastDiagnosticStep('05.05 PV-Kalibrierung PVSurfaces lesen START');
+        $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+        if (!is_array($surfaces)) $surfaces = [];
+        $this->ForecastDiagnosticStep('05.06 PV-Kalibrierung PVSurfaces lesen ENDE | Anzahl=' . count($surfaces));
 
-                if ($gate['blocked']) {
-                    if (isset($calibration[$key])) {
-                        $blockedFromTs = (int)($gate['blockedFromTs'] ?? time());
-                        $calibration = $this->InvalidatePVCalibrationFrom(
-                            $calibration, $key, max(0, $blockedFromTs)
-                        );
-                    }
-                } elseif ($actualW !== null && $expectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
-                    $calibration = $this->AddPVCalibrationEnergySample($calibration, $key, $expectedW, $actualW);
+        $this->ForecastDiagnosticStep('05.07 Feed-In-Gate START');
+        $gate = $this->GetPVCalibrationFeedInGate();
+        $this->ForecastDiagnosticStep('05.08 Feed-In-Gate ENDE | blockiert=' . (!empty($gate['blocked']) ? 'ja' : 'nein'));
+        $surfaceCalibration = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
+
+        foreach ($surfaces as $idx => $surface) {
+            if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
+            $name = trim((string)($surface['Name'] ?? 'PV'));
+            if ($name === '') $name = 'PV ' . ($idx + 1);
+            $key = $this->SurfaceKey($name, $idx);
+            $prefix = '05.S' . ($idx + 1) . ' ' . $name . ' | ';
+
+            $this->ForecastDiagnosticStep($prefix . 'Istleistung lesen START');
+            $actualW = $this->ReadSurfaceActualPower($surface);
+            $this->ForecastDiagnosticStep($prefix . 'Istleistung lesen ENDE | W=' . ($actualW === null ? 'n/a' : round($actualW, 1)));
+            $expectedW = isset($surfaceCalibration[$name]['expectedBaseW'])
+                ? (float)$surfaceCalibration[$name]['expectedBaseW'] : 0.0;
+
+            if ($gate['blocked']) {
+                if (isset($calibration[$key])) {
+                    $blockedFromTs = (int)($gate['blockedFromTs'] ?? time());
+                    $this->ForecastDiagnosticStep($prefix . 'Sperrbereich entfernen START');
+                    $calibration = $this->InvalidatePVCalibrationFrom($calibration, $key, max(0, $blockedFromTs));
+                    $this->ForecastDiagnosticStep($prefix . 'Sperrbereich entfernen ENDE');
                 }
-
-                $diag = $this->GetPVCalibrationDiagnostics($calibration, $key);
-                if (!isset($surfaceCalibration[$name]) || !is_array($surfaceCalibration[$name])) $surfaceCalibration[$name] = [];
-                $surfaceCalibration[$name]['autoFactor'] = !empty($diag['factorReady'])
-                    ? max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diag['learnedRatio'] ?? $diag['ratio'] ?? 1.0)))
-                    : 1.0;
-                $surfaceCalibration[$name]['sumExpectedKWh'] = (float)($diag['sumExpectedKWh'] ?? 0.0);
-                $surfaceCalibration[$name]['sumActualKWh'] = (float)($diag['sumActualKWh'] ?? 0.0);
-                $surfaceCalibration[$name]['learnedRatio'] = $diag['ratio'] ?? null;
-                $surfaceCalibration[$name]['sampleCount'] = (int)($diag['sampleCount'] ?? 0);
-                $surfaceCalibration[$name]['firstSampleTs'] = (int)($diag['firstSampleTs'] ?? 0);
-                $surfaceCalibration[$name]['lastSampleTs'] = (int)($diag['lastSampleTs'] ?? 0);
-                $surfaceCalibration[$name]['calibrationBlocked'] = (bool)$gate['blocked'];
-                $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
+            } elseif ($actualW !== null && $expectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
+                $sampleCountBefore = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? count($calibration[$key]['energySamples']) : 0;
+                $this->ForecastDiagnosticStep($prefix . 'Energiesample START | Samples=' . $sampleCountBefore);
+                $calibration = $this->AddPVCalibrationEnergySample($calibration, $key, $expectedW, $actualW);
+                $sampleCountAfter = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? count($calibration[$key]['energySamples']) : 0;
+                $this->ForecastDiagnosticStep($prefix . 'Energiesample ENDE | Samples=' . $sampleCountAfter);
             }
 
-            $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
-            $forecast['surfaceCalibration'] = $surfaceCalibration;
-            $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
-            SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
-            if ($renderDiagnosis) SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
+            $this->ForecastDiagnosticStep($prefix . 'Diagnose berechnen START');
+            $diag = $this->GetPVCalibrationDiagnostics($calibration, $key);
+            $this->ForecastDiagnosticStep($prefix . 'Diagnose berechnen ENDE | Samples=' . (int)($diag['sampleCount'] ?? 0));
+            if (!isset($surfaceCalibration[$name]) || !is_array($surfaceCalibration[$name])) $surfaceCalibration[$name] = [];
+            $surfaceCalibration[$name]['autoFactor'] = !empty($diag['factorReady'])
+                ? max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diag['learnedRatio'] ?? $diag['ratio'] ?? 1.0)))
+                : 1.0;
+            $surfaceCalibration[$name]['sumExpectedKWh'] = (float)($diag['sumExpectedKWh'] ?? 0.0);
+            $surfaceCalibration[$name]['sumActualKWh'] = (float)($diag['sumActualKWh'] ?? 0.0);
+            $surfaceCalibration[$name]['learnedRatio'] = $diag['ratio'] ?? null;
+            $surfaceCalibration[$name]['sampleCount'] = (int)($diag['sampleCount'] ?? 0);
+            $surfaceCalibration[$name]['firstSampleTs'] = (int)($diag['firstSampleTs'] ?? 0);
+            $surfaceCalibration[$name]['lastSampleTs'] = (int)($diag['lastSampleTs'] ?? 0);
+            $surfaceCalibration[$name]['calibrationBlocked'] = (bool)$gate['blocked'];
+            $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
+        }
+
+        $this->ForecastDiagnosticStep('05.90 PVCalibrationJSON schreiben START');
+        $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
+        $this->ForecastDiagnosticStep('05.91 PVCalibrationJSON schreiben ENDE');
+        $forecast['surfaceCalibration'] = $surfaceCalibration;
+        $this->ForecastDiagnosticStep('05.92 ForecastJSON schreiben START');
+        $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
+        $this->ForecastDiagnosticStep('05.93 ForecastJSON schreiben ENDE');
+        $this->ForecastDiagnosticStep('05.94 Kalibrierungsstatus rendern START');
+        SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
+        $this->ForecastDiagnosticStep('05.95 Kalibrierungsstatus rendern ENDE');
+        if ($renderDiagnosis) {
+            $this->ForecastDiagnosticStep('05.96 Diagnose-HTML rendern START');
+            SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
+            $this->ForecastDiagnosticStep('05.97 Diagnose-HTML rendern ENDE');
+        }
     }
 
     public function RefreshPVCalibration()
