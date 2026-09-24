@@ -2370,35 +2370,18 @@ class SmartBatteryOptimizer extends IPSModule
         $hourly = isset($calibration[$key]['hourlyFactors']) && is_array($calibration[$key]['hourlyFactors'])
             ? $calibration[$key]['hourlyFactors'] : [];
 
-        // 1. Bevorzugt den aktuellen, für diese Stunde gelernten Faktor verwenden.
-        // Saisonwerte bleiben als Langzeitarchiv erhalten, übersteuern aktuelle Messdaten aber nicht.
+        // Nur ein tatsächlich für genau diese Stunde gelernter Faktor darf die
+        // Stundenprognose korrigieren. Fehlt für diese Stunde eine belastbare
+        // Datengrundlage, bleibt die Prognose unverändert (Faktor 1,000).
+        // Gesamt- und Saisonfaktoren bleiben Diagnose-/Langzeitinformationen und
+        // werden ausdrücklich nicht als Ersatz für eine unbekannte Stunde benutzt.
         if (isset($hourly[$hourKey]['factor'])) {
-            return max($minFactor, min($maxFactor, (float)$hourly[$hourKey]['factor']));
+            $factor = (float)$hourly[$hourKey]['factor'];
+            if (is_finite($factor) && $factor > 0.0) {
+                return max($minFactor, min($maxFactor, $factor));
+            }
         }
 
-        // 2. Fehlt die Stunde (typisch wegen PV-Abregelung / Lernsperre), den
-        // Mittelwert der übrigen gültigen Stundenfaktoren verwenden. Die Ersatzwerte
-        // werden nur für die Prognose benutzt und nicht als Lernwerte gespeichert.
-        $validFactors = [];
-        foreach ($hourly as $entry) {
-            if (!is_array($entry) || !isset($entry['factor'])) continue;
-            $factor = (float)$entry['factor'];
-            if (!is_finite($factor)) continue;
-            $validFactors[] = max($minFactor, min($maxFactor, $factor));
-        }
-        if (count($validFactors) > 0) {
-            return max($minFactor, min($maxFactor, array_sum($validFactors) / count($validFactors)));
-        }
-
-        // 3. Fehlen aktuelle Stundenfaktoren, gilt zunächst der aktuelle Gesamtfaktor.
-        if (is_finite($overallFactor) && $overallFactor > 0.0) {
-            return max($minFactor, min($maxFactor, $overallFactor));
-        }
-
-        // 4. Nur wenn noch kein brauchbarer aktueller Faktor existiert, dient das
-        // saisonale Langzeitprofil als Rückfallebene.
-        $seasonal = $this->GetSeasonalPVFactor($calibration, $key, time(), $hour);
-        if ($seasonal !== null) return max($minFactor, min($maxFactor, $seasonal));
         return 1.0;
     }
 
