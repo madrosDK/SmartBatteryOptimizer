@@ -437,11 +437,3 @@ Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig sc
 Bei der Preis-Einspeisung wird die theoretische Batterie-/Wechselrichterleistung nicht mehr 1:1 als mögliche Netzeinspeisung angesetzt. Für den jeweiligen Zeitpunkt wird das gelernte stündliche Lastprofil abgezogen. Zusätzlich werden die konfigurierte maximale Entladeleistung und die effektive Netzeinspeisegrenze berücksichtigt.
 
 Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und dem Lastprofil eine neue Restlaufzeit berechnet. Die AlphaESS Dispatch Time wird auf diese Restlaufzeit zuzüglich 30 % Sicherheitsreserve gesetzt.
-
-
-## pvnode Abruflimit (v1.9.54)
-Das Feld **pvnode maximale API-Abrufe pro Tag** begrenzt ausschließlich Live-Aufrufe an pvnode (1–144, Standard 1). Das allgemeine PV-Prognoseintervall wird dadurch nicht verändert. Bis zum von pvnode gemeldeten `next_poll_at` sowie nach Erreichen des Tageslimits verwendet das Modul den internen pvnode-Cache.
-
-
-## pvnode Timeout-Fallback (v1.9.55)
-Ein erlaubter pvnode-Liveabruf hat einen kurzen eigenen Timeout. Bei Timeout oder Verbindungsfehler wird sofort der vorhandene Cache verwendet, damit der gesamte Prognoselauf nicht an pvnode hängen bleibt.

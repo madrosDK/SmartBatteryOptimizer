@@ -18,7 +18,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyBoolean('UsePVNodeForecast', false);
         $this->RegisterPropertyString('PVNodeAPIKey', '');
         $this->RegisterPropertyString('PVNodeSiteID', '');
-        $this->RegisterPropertyInteger('PVNodeMaxRequestsPerDay', 1);
         $this->RegisterPropertyInteger('ForecastWeightLearningDays', 7);
         $this->RegisterPropertyInteger('PVCalibrationDays', 30);
         $this->RegisterPropertyInteger('UnknownOrientationLearningDays', 30);
@@ -173,10 +172,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('PVNodeConsecutiveRejects', 0);
         $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
         $this->RegisterAttributeString('PVNodeLastError', '');
-        $this->RegisterAttributeString('PVNodeForecastCacheJSON', '{}');
-        $this->RegisterAttributeString('PVNodeRequestDay', '');
-        $this->RegisterAttributeInteger('PVNodeRequestCountToday', 0);
-        $this->RegisterAttributeInteger('PVNodeNextPollAt', 0);
         $this->RegisterAttributeBoolean('LastAppliedDebugMode', false);
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
@@ -387,7 +382,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.55';
+        $currentModuleVersion = '1.9.48';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -448,7 +443,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.55',
+            'moduleVersion' => '1.9.48',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1462,8 +1457,8 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->DebugLog('pvnode', 'Aktiviert, aber API-Key oder Site-ID fehlt. Es wurde keine API-Anfrage gesendet.', 0);
             } else {
                 try {
-                    $sourceHours['pvnode'] = $this->GetPVNodeForecastLimited($pvnodeKey, $pvnodeSiteID);
-                    $this->DebugLog('pvnode', 'Prognose bereit | Site-ID=' . $pvnodeSiteID . ' | Stunden=' . count($sourceHours['pvnode']));
+                    $sourceHours['pvnode'] = $this->FetchPVNodeForecast($pvnodeKey, $pvnodeSiteID);
+                    $this->DebugLog('pvnode', 'Prognose empfangen | Site-ID=' . $pvnodeSiteID . ' | Stunden=' . count($sourceHours['pvnode']));
                     $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
                     $this->WriteAttributeString('PVNodeLastError', '');
                 } catch (Throwable $e) {
@@ -1687,74 +1682,14 @@ class SmartBatteryOptimizer extends IPSModule
         return $hours;
     }
 
-    private function GetPVNodeForecastLimited(string $apiKey, string $siteID): array
-    {
-        $today = date('Y-m-d');
-        $storedDay = $this->ReadAttributeString('PVNodeRequestDay');
-        $count = $this->ReadAttributeInteger('PVNodeRequestCountToday');
-        if ($storedDay !== $today) {
-            $storedDay = $today;
-            $count = 0;
-            $this->WriteAttributeString('PVNodeRequestDay', $today);
-            $this->WriteAttributeInteger('PVNodeRequestCountToday', 0);
-        }
-
-        $maxRequests = max(1, min(144, $this->ReadPropertyInteger('PVNodeMaxRequestsPerDay')));
-        $nextPollAt = $this->ReadAttributeInteger('PVNodeNextPollAt');
-        $cache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
-        if (!is_array($cache)) $cache = [];
-        $cachedHours = isset($cache['hours']) && is_array($cache['hours']) ? $cache['hours'] : [];
-
-        // pvnode selbst teilt mit next_poll_at mit, wann eine neue Modellprognose
-        // verfügbar sein kann. Bis dahin bringt ein erneuter Request keine neuen Daten.
-        $beforeNextPoll = ($nextPollAt > time());
-        $dailyLimitReached = ($count >= $maxRequests);
-        if (($beforeNextPoll || $dailyLimitReached) && count($cachedHours) > 0) {
-            $reason = $beforeNextPoll
-                ? 'neue Daten laut pvnode erst ab ' . date('d.m.Y H:i:s', $nextPollAt)
-                : 'Tageslimit ' . $count . '/' . $maxRequests . ' erreicht';
-            $this->DebugLog('pvnode', 'CACHE | ' . $reason . ' | kein API-Aufruf');
-            return array_map('floatval', $cachedHours);
-        }
-
-        // Ohne Cache müssen wir einmalig abrufen, damit next_poll_at und die Prognose
-        // überhaupt bekannt sind. Danach gelten next_poll_at und das Tageslimit.
-        if ($dailyLimitReached && count($cachedHours) === 0) {
-            throw new Exception('pvnode: Tageslimit ' . $count . '/' . $maxRequests . ' erreicht und kein Cache vorhanden.');
-        }
-
-        $this->WriteAttributeString('PVNodeRequestDay', $today);
-        $this->WriteAttributeInteger('PVNodeRequestCountToday', $count + 1);
-        try {
-            $hours = $this->FetchPVNodeForecast($apiKey, $siteID);
-            $this->WriteAttributeString('PVNodeForecastCacheJSON', json_encode([
-                'savedAt' => time(),
-                'siteID' => $siteID,
-                'hours' => $hours
-            ]));
-            $next = $this->ReadAttributeInteger('PVNodeNextPollAt');
-            $this->DebugLog('pvnode', 'LIVE ' . ($count + 1) . '/' . $maxRequests . ' heute' . ($next > 0 ? ' | nächste neue Daten ab ' . date('d.m.Y H:i:s', $next) : ''));
-            return $hours;
-        } catch (Throwable $e) {
-            if (count($cachedHours) > 0) {
-                $this->DebugLog('pvnode', 'LIVE fehlgeschlagen, CACHE verwendet | ' . $e->getMessage(), 0);
-                return array_map('floatval', $cachedHours);
-            }
-            throw $e;
-        }
-    }
-
     private function FetchPVNodeForecast(string $apiKey, string $siteID): array
     {
         $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc';
 
         try {
-            // pvnode darf den gesamten Prognoselauf niemals blockieren. Der Live-Abruf
-            // verwendet deshalb bewusst einen kurzen, eigenen Timeout. Bei Fehler/Timeout
-            // übernimmt GetPVNodeForecastLimited() unmittelbar den vorhandenen Cache.
-            $data = $this->HttpGetJsonWithHeadersTimeout($url, [
+            $data = $this->HttpGetJsonWithHeaders($url, [
                 'Authorization: Bearer ' . $apiKey
-            ], 'pvnode', ['Site-ID'=>$siteID,'Zeitzone'=>'utc'], 8);
+            ], 'pvnode', ['Site-ID'=>$siteID,'Zeitzone'=>'utc']);
         } catch (Throwable $e) {
             $status = (int)$e->getCode();
 
@@ -1765,11 +1700,6 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->RegisterPVNodeRejection($status, $e->getMessage());
             }
             throw $e;
-        }
-
-        $nextPollAt = $this->ExtractPVNodeNextPollAt($data);
-        if ($nextPollAt > 0) {
-            $this->WriteAttributeInteger('PVNodeNextPollAt', $nextPollAt);
         }
 
         if (!isset($data['values']) || !is_array($data['values'])) {
@@ -1803,31 +1733,6 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         return $hours;
-    }
-
-    private function ExtractPVNodeNextPollAt(array $data): int
-    {
-        $candidates = [];
-        $walk = function ($value) use (&$walk, &$candidates): void {
-            if (!is_array($value)) return;
-            foreach ($value as $key => $item) {
-                if (is_string($key) && strtolower($key) === 'next_poll_at') $candidates[] = $item;
-                if (is_array($item)) $walk($item);
-            }
-        };
-        $walk($data);
-        foreach ($candidates as $value) {
-            if (is_numeric($value)) {
-                $ts = (int)$value;
-                if ($ts > 20000000000) $ts = (int)floor($ts / 1000);
-                if ($ts > 0) return $ts;
-            }
-            if (is_string($value) && trim($value) !== '') {
-                $ts = strtotime($value);
-                if ($ts !== false) return (int)$ts;
-            }
-        }
-        return 0;
     }
 
     private function RegisterPVNodeRejection(int $status, string $message): void
@@ -4023,59 +3928,6 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<details><summary style="cursor:pointer">Antwort anzeigen</summary><pre style="white-space:pre-wrap;word-break:break-word;background:#101010;padding:6px;max-height:500px;overflow:auto">'.$e($raw).'</pre></details></details>';
         }
         return $html.'</div></details></div>';
-    }
-
-    private function HttpGetJsonWithHeadersTimeout(string $url, array $headers = [], string $debugProvider = '', array $debugMeta = [], int $timeoutSeconds = 8): array
-    {
-        $timeoutSeconds = max(3, min(15, $timeoutSeconds));
-        $allHeaders = array_merge(['User-Agent: IP-Symcon-SmartBatteryOptimizer/1.5.6'], $headers);
-        $debugStart = microtime(true);
-        $raw = false;
-        $status = 0;
-        $errorText = '';
-
-        if (function_exists('curl_init')) {
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_HTTPHEADER => $allHeaders,
-                CURLOPT_CONNECTTIMEOUT => min(4, $timeoutSeconds),
-                CURLOPT_TIMEOUT => $timeoutSeconds,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_MAXREDIRS => 3
-            ]);
-            $raw = curl_exec($ch);
-            $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            if ($raw === false) $errorText = curl_error($ch);
-            curl_close($ch);
-        } else {
-            $opts = ['http' => [
-                'timeout' => $timeoutSeconds,
-                'ignore_errors' => true,
-                'header' => implode("\r\n", $allHeaders) . "\r\n"
-            ]];
-            $ctx = stream_context_create($opts);
-            $raw = @file_get_contents($url, false, $ctx);
-            if (isset($http_response_header) && is_array($http_response_header)) {
-                foreach ($http_response_header as $line) {
-                    if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $line, $m)) $status = (int)$m[1];
-                }
-            }
-            if ($raw === false) $errorText = 'Timeout oder Verbindungsfehler';
-        }
-
-        if ($debugProvider !== '') {
-            $this->AddProviderDebug($debugProvider, $url, $debugMeta + ['Timeout'=>$timeoutSeconds.' s'], $raw === false ? ('HTTP-Abruf fehlgeschlagen: '.$errorText) : $raw, $status, (microtime(true)-$debugStart)*1000.0);
-        }
-        if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen' . ($errorText !== '' ? ': ' . $errorText : ''), $status);
-
-        $data = json_decode($raw, true);
-        if ($status >= 400) {
-            $detail = is_array($data) ? (string)($data['detail'] ?? $data['message'] ?? $data['error'] ?? '') : '';
-            throw new Exception('HTTP ' . $status . ($detail !== '' ? ' – ' . $detail : ''), $status);
-        }
-        if (!is_array($data)) throw new Exception('Antwort ist kein gültiges JSON.', $status);
-        return $data;
     }
 
     private function HttpGetJsonWithHeaders(string $url, array $headers = [], string $debugProvider = '', array $debugMeta = []): array
