@@ -181,6 +181,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('PVCalibrationAboveThresholdCount', 0);
         $this->RegisterAttributeInteger('PVCalibrationBlockedFromTs', 0);
         $this->RegisterAttributeString('PVCalibrationCurtailmentSamplesJSON', '[]');
+        $this->RegisterAttributeInteger('PVCalibrationLockUntil', 0);
+        $this->RegisterAttributeInteger('CalculationLockUntil', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeString('PlanJSON', '[]');
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
@@ -716,6 +718,14 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function UpdatePVCalibrationState(bool $renderDiagnosis = true): void
     {
+        $nowLock = time();
+        $lockUntil = $this->ReadAttributeInteger('PVCalibrationLockUntil');
+        if ($lockUntil > $nowLock) {
+            $this->ForecastDiagnosticStep('05 PV-Kalibrierung übersprungen | anderer Lauf aktiv');
+            return;
+        }
+        $this->WriteAttributeInteger('PVCalibrationLockUntil', $nowLock + 300);
+        try {
         $this->ForecastDiagnosticStep('05.01 PV-Kalibrierung ForecastJSON lesen START');
         $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
         if (!is_array($forecast)) $forecast = [];
@@ -741,6 +751,7 @@ class SmartBatteryOptimizer extends IPSModule
             $name = trim((string)($surface['Name'] ?? 'PV'));
             if ($name === '') $name = 'PV ' . ($idx + 1);
             $key = $this->SurfaceKey($name, $idx);
+            $calibration = $this->CompactPVCalibrationData($calibration, $key);
             $prefix = '05.S' . ($idx + 1) . ' ' . $name . ' | ';
 
             $this->ForecastDiagnosticStep($prefix . 'Istleistung lesen START');
@@ -779,6 +790,8 @@ class SmartBatteryOptimizer extends IPSModule
             $surfaceCalibration[$name]['lastSampleTs'] = (int)($diag['lastSampleTs'] ?? 0);
             $surfaceCalibration[$name]['calibrationBlocked'] = (bool)$gate['blocked'];
             $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
+            $surfaceCalibration[$name]['seasonalFactor'] = $this->GetSeasonalPVFactor($calibration, $key, time(), (int)date('G'));
+            $surfaceCalibration[$name]['storageMode'] = (string)($calibration[$key]['storageMode'] ?? 'raw');
         }
 
         $this->ForecastDiagnosticStep('05.90 PVCalibrationJSON schreiben START');
@@ -796,6 +809,9 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
             $this->ForecastDiagnosticStep('05.97 Diagnose-HTML rendern ENDE');
         }
+        } finally {
+            $this->WriteAttributeInteger('PVCalibrationLockUntil', 0);
+        }
     }
 
     public function RefreshPVCalibration()
@@ -809,6 +825,13 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RecalculateInternal(bool $refreshPVForecast)
     {
+        $nowCalcLock = time();
+        $calcLockUntil = $this->ReadAttributeInteger('CalculationLockUntil');
+        if ($calcLockUntil > $nowCalcLock) {
+            $this->DebugLog('Recalculate', 'Übersprungen: anderer Berechnungslauf ist noch aktiv');
+            return;
+        }
+        $this->WriteAttributeInteger('CalculationLockUntil', $nowCalcLock + 900);
         // Execute a due saved window before rebuilding or fetching remote data.
         $this->Control();
         $this->DebugLog('Recalculate', 'Start | PV-Prognose neu abrufen=' . ($refreshPVForecast ? 'ja' : 'nein'));
@@ -892,6 +915,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetStatus(201);
             $this->StopFeedIn();
         }
+        $this->WriteAttributeInteger('CalculationLockUntil', 0);
     }
 
     public function LearnNightConsumption()
@@ -1559,9 +1583,10 @@ class SmartBatteryOptimizer extends IPSModule
             if (empty($diagAuto['factorReady'])) continue;
             $expectedAuto = max(0.0, (float)($diagAuto['sumExpectedKWh'] ?? 0.0));
             if ($expectedAuto <= 0.0) continue;
+            $seasonalAuto = $this->GetSeasonalPVFactor($calibration, $keyAuto, time(), (int)date('G'));
             $factorAuto = max(
                 $this->ReadPropertyFloat('PVCalibrationMinFactor'),
-                min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diagAuto['ratio'] ?? 1.0))
+                min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $seasonalAuto !== null ? $seasonalAuto : (float)($diagAuto['ratio'] ?? 1.0))
             );
             $plantExpectedKWh += $expectedAuto;
             $plantCorrectedKWh += $expectedAuto * $factorAuto;
@@ -1998,6 +2023,117 @@ class SmartBatteryOptimizer extends IPSModule
         ];
     }
 
+    private function PVSeasonForTimestamp(int $ts): string
+    {
+        $month = (int)date('n', $ts);
+        if ($month >= 3 && $month <= 5) return 'spring';
+        if ($month >= 6 && $month <= 8) return 'summer';
+        if ($month >= 9 && $month <= 11) return 'autumn';
+        return 'winter';
+    }
+
+    private function MergePVSeasonArchive(array $archive, array $sample): array
+    {
+        $ts = (int)($sample['ts'] ?? 0);
+        $exp = (float)($sample['expectedKWh'] ?? 0.0);
+        $act = (float)($sample['actualKWh'] ?? 0.0);
+        if ($ts <= 0 || $exp <= 0.0 || $act < 0.0) return $archive;
+        $season = $this->PVSeasonForTimestamp($ts);
+        $hour = (string)(isset($sample['hour']) ? (int)$sample['hour'] : (int)date('G', $ts));
+        if (!isset($archive[$season]) || !is_array($archive[$season])) $archive[$season] = [];
+        if (!isset($archive[$season][$hour]) || !is_array($archive[$season][$hour])) {
+            $archive[$season][$hour] = ['expectedKWh'=>0.0,'actualKWh'=>0.0,'intervals'=>0,'days'=>[]];
+        }
+        $archive[$season][$hour]['expectedKWh'] += $exp;
+        $archive[$season][$hour]['actualKWh'] += $act;
+        $archive[$season][$hour]['intervals'] += max(1, (int)($sample['intervals'] ?? 1));
+        if (!isset($archive[$season][$hour]['days']) || !is_array($archive[$season][$hour]['days'])) $archive[$season][$hour]['days'] = [];
+        $archive[$season][$hour]['days'][date('Y-m-d', $ts)] = true;
+        return $archive;
+    }
+
+    private function CompactPVCalibrationData(array $calibration, string $key): array
+    {
+        if (!isset($calibration[$key]) || !is_array($calibration[$key])) return $calibration;
+        $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
+        if (count($samples) === 0) return $calibration;
+
+        // Rohmessungen werden pro Stunde zusammengefasst. Damit bleiben Energie und
+        // Tages-/Stundenstruktur exakt erhalten, die JSON-Menge sinkt aber typischerweise
+        // von zehntausenden Punkten auf höchstens 24 * Lerntage.
+        $buckets = [];
+        foreach ($samples as $sample) {
+            $ts = (int)($sample['ts'] ?? 0);
+            $exp = (float)($sample['expectedKWh'] ?? 0.0);
+            $act = (float)($sample['actualKWh'] ?? 0.0);
+            if ($ts <= 0 || $exp <= 0.0 || $act < 0.0) continue;
+            $hourStart = strtotime(date('Y-m-d H:00:00', $ts));
+            $bucketKey = (string)$hourStart;
+            if (!isset($buckets[$bucketKey])) {
+                $buckets[$bucketKey] = ['ts'=>$hourStart,'endTs'=>(int)($sample['endTs'] ?? $ts),'expectedKWh'=>0.0,'actualKWh'=>0.0,'hour'=>(int)date('G',$ts),'intervals'=>0];
+            }
+            $buckets[$bucketKey]['expectedKWh'] += $exp;
+            $buckets[$bucketKey]['actualKWh'] += $act;
+            $buckets[$bucketKey]['endTs'] = max((int)$buckets[$bucketKey]['endTs'], (int)($sample['endTs'] ?? $ts));
+            $buckets[$bucketKey]['intervals'] += max(1, (int)($sample['intervals'] ?? 1));
+        }
+        ksort($buckets, SORT_NUMERIC);
+
+        $retentionDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'), $this->ReadPropertyInteger('UnknownOrientationLearningDays'));
+        $cutoff = time() - $retentionDays * 86400;
+        $archive = isset($calibration[$key]['seasonalArchive']) && is_array($calibration[$key]['seasonalArchive']) ? $calibration[$key]['seasonalArchive'] : [];
+        $recent = [];
+        foreach ($buckets as $bucket) {
+            if ((int)$bucket['ts'] < $cutoff) $archive = $this->MergePVSeasonArchive($archive, $bucket);
+            else $recent[] = $bucket;
+        }
+        $calibration[$key]['energySamples'] = $recent;
+        $calibration[$key]['seasonalArchive'] = $archive;
+        $calibration[$key]['storageMode'] = 'hourly+seasonal';
+        $calibration[$key]['compactedAt'] = time();
+        return $calibration;
+    }
+
+    private function GetSeasonalPVFactor(array $calibration, string $key, int $ts, ?int $hour = null): ?float
+    {
+        if (!isset($calibration[$key]) || !is_array($calibration[$key])) return null;
+        $min = $this->ReadPropertyFloat('PVCalibrationMinFactor');
+        $max = $this->ReadPropertyFloat('PVCalibrationMaxFactor');
+        $hour = $hour === null ? (int)date('G', $ts) : max(0, min(23, $hour));
+
+        // Saisonzentren: 15.04 / 15.07 / 15.10 / 15.01. Zwischen zwei Zentren wird
+        // linear überblendet, damit es an Monatsgrenzen keinen Faktorsprung gibt.
+        $year = (int)date('Y', $ts);
+        $centers = [
+            ['winter', strtotime(($year-1).'-01-15 12:00:00')],
+            ['spring', strtotime($year.'-04-15 12:00:00')],
+            ['summer', strtotime($year.'-07-15 12:00:00')],
+            ['autumn', strtotime($year.'-10-15 12:00:00')],
+            ['winter', strtotime(($year+1).'-01-15 12:00:00')],
+            ['spring', strtotime(($year+1).'-04-15 12:00:00')]
+        ];
+        if ($ts < $centers[1][1]) { $centers[0][1] = strtotime(($year-1).'-10-15 12:00:00'); $centers[0][0]='autumn'; $centers[1]=['winter',strtotime($year.'-01-15 12:00:00')]; $centers[2]=['spring',strtotime($year.'-04-15 12:00:00')]; }
+        $left = $centers[0]; $right = $centers[1];
+        for ($i=0; $i<count($centers)-1; $i++) {
+            if ($ts >= $centers[$i][1] && $ts <= $centers[$i+1][1]) { $left=$centers[$i]; $right=$centers[$i+1]; break; }
+        }
+        $span = max(1, $right[1]-$left[1]);
+        $wr = max(0.0, min(1.0, ($ts-$left[1])/$span));
+        $wl = 1.0-$wr;
+
+        $archive = isset($calibration[$key]['seasonalArchive']) && is_array($calibration[$key]['seasonalArchive']) ? $calibration[$key]['seasonalArchive'] : [];
+        // Auch die aktuellen kompakten Lerndaten fließen saisonal ein.
+        foreach (($calibration[$key]['energySamples'] ?? []) as $sample) $archive = $this->MergePVSeasonArchive($archive, $sample);
+        $get = function(string $season) use ($archive, $hour, $min, $max) {
+            $entry = $archive[$season][(string)$hour] ?? null;
+            if (!is_array($entry) || (float)($entry['expectedKWh'] ?? 0.0) <= 0.0) return null;
+            return max($min, min($max, (float)$entry['actualKWh'] / (float)$entry['expectedKWh']));
+        };
+        $fl=$get($left[0]); $fr=$get($right[0]);
+        if ($fl !== null && $fr !== null) return $fl*$wl + $fr*$wr;
+        return $fl ?? $fr;
+    }
+
     private function InvalidatePVCalibrationFrom(array $calibration, string $key, int $fromTs): array
     {
         if (!isset($calibration[$key]) || !is_array($calibration[$key])) return $calibration;
@@ -2066,6 +2202,8 @@ class SmartBatteryOptimizer extends IPSModule
         if (empty($calibration[$key]['factorReady'])) {
             return 1.0;
         }
+        $seasonal = $this->GetSeasonalPVFactor($calibration, $key, time(), $hour);
+        if ($seasonal !== null) return max($minFactor, min($maxFactor, $seasonal));
         $hourly = isset($calibration[$key]['hourlyFactors']) && is_array($calibration[$key]['hourlyFactors'])
             ? $calibration[$key]['hourlyFactors'] : [];
 
@@ -2102,6 +2240,7 @@ class SmartBatteryOptimizer extends IPSModule
             $calibration[$key]['energySamples'] = [];
         }
 
+        $calibration = $this->CompactPVCalibrationData($calibration, $key);
         $now = time();
         $lastTs = (int)($calibration[$key]['lastPointTs'] ?? 0);
         $lastExpectedW = (float)($calibration[$key]['lastPointExpectedW'] ?? 0.0);
@@ -2166,30 +2305,20 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $calibration[$key]['factorSampleCount'] = $count;
 
-        // Zusätzlich für jede Tagesstunde einen eigenen Korrekturfaktor lernen.
-        // Dadurch können z.B. systematische Morgen-/Abendabweichungen separat
-        // von der Mittagsprognose korrigiert werden.
+        // Stundenfaktoren in einem einzigen Durchlauf bilden (O(n) statt 24*n).
+        $hourSums = [];
+        foreach ($samples as $sample) {
+            if ((int)$sample['ts'] < $factorCutoff) continue;
+            $h = isset($sample['hour']) ? (int)$sample['hour'] : (int)date('G', (int)$sample['ts']);
+            if (!isset($hourSums[$h])) $hourSums[$h] = ['e'=>0.0,'a'=>0.0,'c'=>0];
+            $hourSums[$h]['e'] += (float)$sample['expectedKWh'];
+            $hourSums[$h]['a'] += (float)$sample['actualKWh'];
+            $hourSums[$h]['c'] += max(1, (int)($sample['intervals'] ?? 1));
+        }
         $hourlyFactors = [];
-        for ($hour = 0; $hour < 24; $hour++) {
-            $hourExpected = 0.0;
-            $hourActual = 0.0;
-            $hourCount = 0;
-            foreach ($samples as $sample) {
-                if ((int)$sample['ts'] < $factorCutoff) continue;
-                $sampleHour = isset($sample['hour']) ? (int)$sample['hour'] : (int)date('G', (int)$sample['ts']);
-                if ($sampleHour !== $hour) continue;
-                $hourExpected += (float)$sample['expectedKWh'];
-                $hourActual += (float)$sample['actualKWh'];
-                $hourCount++;
-            }
-            if ($hourExpected > 0.0) {
-                $hourFactor = $hourActual / $hourExpected;
-                $hourFactor = max(
-                    $this->ReadPropertyFloat('PVCalibrationMinFactor'),
-                    min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $hourFactor)
-                );
-                $hourlyFactors[(string)$hour] = ['factor' => $hourFactor, 'samples' => $hourCount];
-            }
+        foreach ($hourSums as $h => $v) {
+            if ($v['e'] <= 0.0) continue;
+            $hourlyFactors[(string)$h] = ['factor'=>max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $v['a']/$v['e'])),'samples'=>$v['c']];
         }
         $calibration[$key]['hourlyFactors'] = $hourlyFactors;
         $calibration[$key]['updated'] = $now;
@@ -2198,6 +2327,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function GetPVCalibrationDiagnostics(array $calibration, string $key): array
     {
+        $calibration = $this->CompactPVCalibrationData($calibration, $key);
         $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
         $factorDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
         $cutoff = time() - $factorDays * 86400;
@@ -2226,13 +2356,21 @@ class SmartBatteryOptimizer extends IPSModule
             if ($ts < $cutoff || $exp <= 0.0 || $act < 0.0) continue;
             $validDays[date('Y-m-d', $ts)] = true;
         }
+        $archive = isset($calibration[$key]['seasonalArchive']) && is_array($calibration[$key]['seasonalArchive']) ? $calibration[$key]['seasonalArchive'] : [];
+        foreach ($archive as $seasonEntries) {
+            if (!is_array($seasonEntries)) continue;
+            foreach ($seasonEntries as $entry) {
+                if (!is_array($entry) || !isset($entry['days']) || !is_array($entry['days'])) continue;
+                foreach ($entry['days'] as $day => $_) $validDays[(string)$day] = true;
+            }
+        }
         $requiredDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
-        $factorReady = count($validDays) >= $requiredDays && $sumExpected > 0.0;
+        $factorReady = count($validDays) >= $requiredDays && ($sumExpected > 0.0 || count($archive) > 0);
         return [
             'sampleCount' => $count,
             'sumExpectedKWh' => $sumExpected,
             'sumActualKWh' => $sumActual,
-            'ratio' => $factorReady ? $sumActual / $sumExpected : null,
+            'ratio' => ($factorReady && $sumExpected > 0.0) ? $sumActual / $sumExpected : ($factorReady ? ($this->GetSeasonalPVFactor($calibration, $key, time(), (int)date('G')) ?? 1.0) : null),
             'factorReady' => $factorReady,
             'learningDayCount' => count($validDays),
             'firstSampleTs' => $firstTs,
@@ -4628,7 +4766,7 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumE, 2, ',', '.') . ' kWh</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumA, 2, ',', '.') . ' kWh</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '-' : number_format((float)$ratio, 3, ',', '.')) . '</td>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . number_format($factor, 3, ',', '.') . '</b></td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . number_format($factor, 3, ',', '.') . '</b>' . (isset($c['seasonalFactor']) && $c['seasonalFactor'] !== null ? '<br><span style="opacity:.75">Saison ' . number_format((float)$c['seasonalFactor'], 3, ',', '.') . '</span>' : '') . '</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . (int)($c['sampleCount'] ?? 0) . '</td>';
             $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($first > 0 ? date('d.m. H:i', $first) : '-') . ' – ' . ($last > 0 ? date('d.m. H:i', $last) : '-') . '</td>';
             $html .= '</tr>';
