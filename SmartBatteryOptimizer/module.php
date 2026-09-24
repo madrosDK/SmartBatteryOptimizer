@@ -1003,11 +1003,27 @@ class SmartBatteryOptimizer extends IPSModule
             $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
             if (is_array($forecast) && count($forecast) > 0) {
                 $forecast['forecastSourceWeights'] = $neutralWeights;
+                $forecast['plantAutoFactor'] = 1.0;
+                // Nach einem Kalibrierungs-Reset dürfen auch Diagnosewerte aus dem
+                // Forecast-Cache keine alten Faktoren mehr anzeigen.
+                if (isset($forecast['surfaceCalibration']) && is_array($forecast['surfaceCalibration'])) {
+                    foreach ($forecast['surfaceCalibration'] as &$surfaceCalReset) {
+                        if (!is_array($surfaceCalReset)) continue;
+                        $surfaceCalReset['autoFactor'] = 1.0;
+                        $surfaceCalReset['ratio'] = null;
+                        $surfaceCalReset['learnedRatio'] = null;
+                        $surfaceCalReset['factorReady'] = false;
+                        $surfaceCalReset['sampleCount'] = 0;
+                        $surfaceCalReset['sumExpectedKWh'] = 0.0;
+                        $surfaceCalReset['sumActualKWh'] = 0.0;
+                    }
+                    unset($surfaceCalReset);
+                }
 
                 // Alle im Forecast-Cache mitgeführten Kalibrierwerte sofort neutralisieren.
                 // Dadurch zeigen Chart und Diagnose direkt nach dem Tastendruck 1,000 bzw.
                 // die neutrale Anbietergewichtung und warten nicht auf den nächsten Zyklus.
-                foreach (['surfaceFactors', 'surfaceAutoFactors', 'hourlyCalibrationFactors', 'calibrationFactors'] as $factorKey) {
+                foreach (['surfaceFactors', 'surfaceAutoFactors', 'hourlyCalibrationFactors', 'calibrationFactors', 'surfaceHourlyFactors', 'plantHourlyFactors'] as $factorKey) {
                     if (isset($forecast[$factorKey]) && is_array($forecast[$factorKey])) {
                         array_walk_recursive($forecast[$factorKey], function (&$value) {
                             if (is_numeric($value)) $value = 1.0;
@@ -4990,8 +5006,16 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . htmlspecialchars((string)$name) . '</b>' . $status . '</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumE, 2, ',', '.') . ' kWh</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumA, 2, ',', '.') . ' kWh</td>';
-            $currentFactor = isset($surfaceHourFactors[(string)$name][(string)$currentHour]) ? (float)$surfaceHourFactors[(string)$name][(string)$currentHour] : null;
-            $nextFactor = isset($surfaceHourFactors[(string)$name][(string)$nextHour]) ? (float)$surfaceHourFactors[(string)$name][(string)$nextHour] : null;
+            // Ohne gültige Kalibrierungsdaten ist der Stundenfaktor definitionsgemäß 1,000.
+            // Damit können alte Forecast-Cache-Werte nach einem Reset niemals 0,750 o.ä. anzeigen.
+            $hasCalibrationData = !empty($c['factorReady']) && (int)($c['sampleCount'] ?? 0) > 0;
+            if ($hasCalibrationData) {
+                $currentFactor = isset($surfaceHourFactors[(string)$name][(string)$currentHour]) ? (float)$surfaceHourFactors[(string)$name][(string)$currentHour] : 1.0;
+                $nextFactor = isset($surfaceHourFactors[(string)$name][(string)$nextHour]) ? (float)$surfaceHourFactors[(string)$name][(string)$nextHour] : 1.0;
+            } else {
+                $currentFactor = 1.0;
+                $nextFactor = 1.0;
+            }
             $hourInfo = '<br><span style="opacity:.75;white-space:nowrap">Aktuell ' . sprintf('%02d:00', $currentHour) . ': ' . ($currentFactor === null ? '-' : number_format($currentFactor, 3, ',', '.'))
                 . ' | Nächste ' . sprintf('%02d:00', $nextHour) . ': ' . ($nextFactor === null ? '-' : number_format($nextFactor, 3, ',', '.')) . '</span>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '-' : number_format((float)$ratio, 3, ',', '.')) . $hourInfo . '</td>';
