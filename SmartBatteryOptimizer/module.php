@@ -796,6 +796,8 @@ class SmartBatteryOptimizer extends IPSModule
             $surfaceCalibration[$name]['calibrationBlocked'] = (bool)$gate['blocked'];
             $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
             $surfaceCalibration[$name]['seasonalFactor'] = $this->GetSeasonalPVFactor($calibration, $key, time(), (int)date('G'));
+            $surfaceCalibration[$name]['seasonStats'] = $this->GetPVSeasonStats($calibration, $key, time());
+            $surfaceCalibration[$name]['compactionAudit'] = isset($calibration[$key]['lastCompactionAudit']) && is_array($calibration[$key]['lastCompactionAudit']) ? $calibration[$key]['lastCompactionAudit'] : [];
             $surfaceCalibration[$name]['storageMode'] = (string)($calibration[$key]['storageMode'] ?? 'raw');
         }
 
@@ -2131,11 +2133,17 @@ class SmartBatteryOptimizer extends IPSModule
         // Tages-/Stundenstruktur exakt erhalten, die JSON-Menge sinkt aber typischerweise
         // von zehntausenden Punkten auf höchstens 24 * Lerntage.
         $buckets = [];
+        $auditRawExpected = 0.0;
+        $auditRawActual = 0.0;
+        $auditRawCount = 0;
         foreach ($samples as $sample) {
             $ts = (int)($sample['ts'] ?? 0);
             $exp = (float)($sample['expectedKWh'] ?? 0.0);
             $act = (float)($sample['actualKWh'] ?? 0.0);
             if ($ts <= 0 || $exp <= 0.0 || $act < 0.0) continue;
+            $auditRawExpected += $exp;
+            $auditRawActual += $act;
+            $auditRawCount++;
             $hourStart = strtotime(date('Y-m-d H:00:00', $ts));
             $bucketKey = (string)$hourStart;
             if (!isset($buckets[$bucketKey])) {
@@ -2147,6 +2155,12 @@ class SmartBatteryOptimizer extends IPSModule
             $buckets[$bucketKey]['intervals'] += max(1, (int)($sample['intervals'] ?? 1));
         }
         ksort($buckets, SORT_NUMERIC);
+        $auditBucketExpected = 0.0;
+        $auditBucketActual = 0.0;
+        foreach ($buckets as $bucket) {
+            $auditBucketExpected += (float)($bucket['expectedKWh'] ?? 0.0);
+            $auditBucketActual += (float)($bucket['actualKWh'] ?? 0.0);
+        }
 
         $retentionDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'), $this->ReadPropertyInteger('UnknownOrientationLearningDays'));
         $cutoff = time() - $retentionDays * 86400;
@@ -2160,7 +2174,59 @@ class SmartBatteryOptimizer extends IPSModule
         $calibration[$key]['seasonalArchive'] = $archive;
         $calibration[$key]['storageMode'] = 'hourly+seasonal';
         $calibration[$key]['compactedAt'] = time();
+        $beforeFactor = $auditRawExpected > 0.0 ? $auditRawActual / $auditRawExpected : null;
+        $afterFactor = $auditBucketExpected > 0.0 ? $auditBucketActual / $auditBucketExpected : null;
+        $calibration[$key]['lastCompactionAudit'] = [
+            'ts' => time(),
+            'rawCount' => $auditRawCount,
+            'bucketCount' => count($buckets),
+            'expectedBeforeKWh' => $auditRawExpected,
+            'expectedAfterKWh' => $auditBucketExpected,
+            'actualBeforeKWh' => $auditRawActual,
+            'actualAfterKWh' => $auditBucketActual,
+            'factorBefore' => $beforeFactor,
+            'factorAfter' => $afterFactor,
+            'expectedDeltaKWh' => $auditBucketExpected - $auditRawExpected,
+            'actualDeltaKWh' => $auditBucketActual - $auditRawActual
+        ];
         return $calibration;
+    }
+
+    private function GetPVSeasonLabel(string $season): string
+    {
+        $labels = ['spring'=>'Frühling','summer'=>'Sommer','autumn'=>'Herbst','winter'=>'Winter'];
+        return $labels[$season] ?? $season;
+    }
+
+    private function GetPVSeasonStats(array $calibration, string $key, int $ts): array
+    {
+        $season = $this->PVSeasonForTimestamp($ts);
+        $expected = 0.0; $actual = 0.0; $intervals = 0; $days = [];
+        $archive = isset($calibration[$key]['seasonalArchive']) && is_array($calibration[$key]['seasonalArchive']) ? $calibration[$key]['seasonalArchive'] : [];
+        if (isset($archive[$season]) && is_array($archive[$season])) {
+            foreach ($archive[$season] as $entry) {
+                if (!is_array($entry)) continue;
+                $expected += max(0.0, (float)($entry['expectedKWh'] ?? 0.0));
+                $actual += max(0.0, (float)($entry['actualKWh'] ?? 0.0));
+                $intervals += max(0, (int)($entry['intervals'] ?? 0));
+                if (isset($entry['days']) && is_array($entry['days'])) foreach ($entry['days'] as $day => $_) $days[(string)$day] = true;
+            }
+        }
+        foreach (($calibration[$key]['energySamples'] ?? []) as $sample) {
+            $sampleTs = (int)($sample['ts'] ?? 0);
+            if ($sampleTs <= 0 || $this->PVSeasonForTimestamp($sampleTs) !== $season) continue;
+            $exp = (float)($sample['expectedKWh'] ?? 0.0); $act = (float)($sample['actualKWh'] ?? 0.0);
+            if ($exp <= 0.0 || $act < 0.0) continue;
+            $expected += $exp; $actual += $act;
+            $intervals += max(1, (int)($sample['intervals'] ?? 1));
+            $days[date('Y-m-d', $sampleTs)] = true;
+        }
+        return [
+            'season'=>$season, 'label'=>$this->GetPVSeasonLabel($season),
+            'expectedKWh'=>$expected, 'actualKWh'=>$actual,
+            'factor'=>$expected > 0.0 ? $actual / $expected : null,
+            'intervals'=>$intervals, 'days'=>count($days)
+        ];
     }
 
     private function GetSeasonalPVFactor(array $calibration, string $key, int $ts, ?int $hour = null): ?float
@@ -4869,12 +4935,35 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumE, 2, ',', '.') . ' kWh</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumA, 2, ',', '.') . ' kWh</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '-' : number_format((float)$ratio, 3, ',', '.')) . '</td>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . number_format($factor, 3, ',', '.') . '</b>' . (isset($c['seasonalFactor']) && $c['seasonalFactor'] !== null ? '<br><span style="opacity:.75">Saison ' . number_format((float)$c['seasonalFactor'], 3, ',', '.') . '</span>' : '') . '</td>';
+            $seasonInfo = '';
+            if (isset($c['seasonStats']) && is_array($c['seasonStats'])) {
+                $ss = $c['seasonStats'];
+                $sf = $ss['factor'] ?? null;
+                $seasonInfo = '<br><span style="opacity:.75">Saison ' . htmlspecialchars((string)($ss['label'] ?? '')) . ': ' . ($sf === null ? '-' : number_format((float)$sf, 3, ',', '.'))
+                    . ' | ' . number_format((float)($ss['expectedKWh'] ?? 0.0), 1, ',', '.') . ' kWh Prognose'
+                    . ' | ' . number_format((float)($ss['actualKWh'] ?? 0.0), 1, ',', '.') . ' kWh Ist'
+                    . ' | ' . (int)($ss['days'] ?? 0) . ' Tage</span>';
+            }
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . number_format($factor, 3, ',', '.') . '</b>' . $seasonInfo . '</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . (int)($c['sampleCount'] ?? 0) . '</td>';
             $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($first > 0 ? date('d.m. H:i', $first) : '-') . ' – ' . ($last > 0 ? date('d.m. H:i', $last) : '-') . '</td>';
             $html .= '</tr>';
         }
-        $html .= '</table></div><br><span style="font-size:11px"><b>Beispiel:</b> Prognose vor Auto-Faktor 100,0 kWh, tatsächliche Erzeugung 118,0 kWh ⇒ Verhältnis 1,180 ⇒ Auto-Faktor 1,180 (begrenzt durch die eingestellten Min-/Max-Werte). Alte Watt-Samples aus Versionen vor 1.5.0 werden automatisch verworfen.</span>';
+        $html .= '</table></div>';
+        $html .= '<div style="margin-top:8px;padding:6px;border:1px solid #555"><b>Kontrolle Verdichtung</b><br>';
+        foreach ($cal as $name => $c) {
+            $a = isset($c['compactionAudit']) && is_array($c['compactionAudit']) ? $c['compactionAudit'] : [];
+            if (count($a) === 0) continue;
+            $fb = $a['factorBefore'] ?? null; $fa = $a['factorAfter'] ?? null;
+            $ok = abs((float)($a['expectedDeltaKWh'] ?? 0.0)) < 0.0001 && abs((float)($a['actualDeltaKWh'] ?? 0.0)) < 0.0001;
+            $html .= '<div style="margin-top:3px"><b>' . htmlspecialchars((string)$name) . ':</b> '
+                . (int)($a['rawCount'] ?? 0) . ' → ' . (int)($a['bucketCount'] ?? 0) . ' Intervalle'
+                . ' | Prognose ' . number_format((float)($a['expectedBeforeKWh'] ?? 0.0), 3, ',', '.') . ' → ' . number_format((float)($a['expectedAfterKWh'] ?? 0.0), 3, ',', '.') . ' kWh'
+                . ' | Ist ' . number_format((float)($a['actualBeforeKWh'] ?? 0.0), 3, ',', '.') . ' → ' . number_format((float)($a['actualAfterKWh'] ?? 0.0), 3, ',', '.') . ' kWh'
+                . ' | Faktor ' . ($fb === null ? '-' : number_format((float)$fb, 3, ',', '.')) . ' → ' . ($fa === null ? '-' : number_format((float)$fa, 3, ',', '.'))
+                . ' | <b>' . ($ok ? 'verlustfrei' : 'ABWEICHUNG') . '</b></div>';
+        }
+        $html .= '</div><br><span style="font-size:11px"><b>Beispiel:</b> Prognose vor Auto-Faktor 100,0 kWh, tatsächliche Erzeugung 118,0 kWh ⇒ Verhältnis 1,180 ⇒ Auto-Faktor 1,180 (begrenzt durch die eingestellten Min-/Max-Werte). Alte Watt-Samples aus Versionen vor 1.5.0 werden automatisch verworfen.</span>';
         return $html . '</div>';
     }
 
