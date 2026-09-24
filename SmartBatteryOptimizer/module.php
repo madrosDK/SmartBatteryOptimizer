@@ -2344,14 +2344,32 @@ class SmartBatteryOptimizer extends IPSModule
         $calibration[$key]['factorSampleCount']=$count;
         $hourly=[];
         for($hour=0;$hour<24;$hour++) {
-            $he=0.0;$ha=0.0;$hc=0;
+            $he=0.0;$ha=0.0;$hc=0;$hourLearningDays=[];
             foreach($samples as $sample) {
-                if ((int)($sample['ts'] ?? 0) < $factorCutoff) continue;
-                $sh=isset($sample['hour'])?(int)$sample['hour']:(int)date('G',(int)$sample['ts']);
+                $sampleTs=(int)($sample['ts'] ?? 0);
+                if ($sampleTs < $factorCutoff) continue;
+                $sh=isset($sample['hour'])?(int)$sample['hour']:(int)date('G',$sampleTs);
                 if($sh!==$hour) continue;
-                $he+=(float)$sample['expectedKWh']; $ha+=(float)$sample['actualKWh']; $hc++;
+                $exp=(float)($sample['expectedKWh'] ?? 0.0);
+                $act=(float)($sample['actualKWh'] ?? 0.0);
+                if ($exp <= 0.0 || $act < 0.0) continue;
+                $he+=$exp; $ha+=$act; $hc++;
+                $hourLearningDays[date('Y-m-d',$sampleTs)]=true;
             }
-            if($he>0) $hourly[(string)$hour]=['factor'=>max($min,min($max,$ha/$he)),'samples'=>$hc,'expectedKWh'=>$he,'actualKWh'=>$ha];
+            // Ein Stundenfaktor gilt erst dann als bekannt, wenn fuer GENAU diese
+            // Stunde der konfigurierte Lernzeitraum erreicht ist. Vorher existiert
+            // absichtlich kein hourlyFactors-Eintrag; GetPVForecastHourFactor()
+            // liefert dann 1,000, ohne Min-/Max-Clamping.
+            $hourReady=(count($hourLearningDays) >= $minimumLearningDays && $he > 0.0);
+            if($hourReady) {
+                $hourly[(string)$hour]=[
+                    'factor'=>max($min,min($max,$ha/$he)),
+                    'samples'=>$hc,
+                    'learningDays'=>count($hourLearningDays),
+                    'expectedKWh'=>$he,
+                    'actualKWh'=>$ha
+                ];
+            }
         }
         $calibration[$key]['hourlyFactors']=$hourly;
         $calibration[$key]['updated']=$now;
@@ -4845,6 +4863,11 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'var selectedDayKey="sbo_pv_selected_day_' . $this->InstanceID . '";';
             $html .= 'function loadVisibility(){var out={};try{var v=localStorage.getItem(visibilityKey);if(v){var l=JSON.parse(v);for(var k in l){if(Object.prototype.hasOwnProperty.call(l,k)){out[k]=!!l[k];}}}}catch(e){}return out;}';
             $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}}';
+            // Fehlende Eintraege bedeuten sichtbar. Damit werden neu aktivierte
+            // Provider (Open-Meteo, Forecast.Solar, pvnode) beim ersten Aufbau
+            // nicht stillschweigend ausgeblendet. Danach wird der tatsaechlich
+            // eingetretene Highcharts show/hide-Zustand gespeichert.
+
             $html .= 'var debugVisibility=loadVisibility();';
             $html .= 'var chart=null;';
             $html .= 'var idx=0;var savedDay=null;try{savedDay=localStorage.getItem(selectedDayKey);}catch(e){}var i,found=false;for(i=0;i<days.length;i++){if(savedDay&&days[i].date===savedDay){idx=i;found=true;break;}}if(!found){for(i=0;i<days.length;i++){if(days[i].date===today){idx=i;break;}}}';
@@ -4855,7 +4878,7 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'for(var src in d.sourceLabels){if(Object.prototype.hasOwnProperty.call(d.sourceLabels,src)){sourceData[src]=[];}}';
             $html .= 'for(var j=0;j<d.rows.length;j++){var r=d.rows[j];categories.push(r.label);forecastData.push({y:r.forecastKWh,custom:r});actualData.push(r.actualKWh===null?null:{y:r.actualKWh,custom:r});for(var src2 in sourceData){var sv=(r.sourceKWh&&Object.prototype.hasOwnProperty.call(r.sourceKWh,src2))?r.sourceKWh[src2]:null;sourceData[src2].push(sv===null?null:{y:sv,custom:r});}}';
             $html .= 'var chartSeries=[{name:"PV-Prognose kombiniert",data:forecastData,zIndex:1,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},{name:"Ist-Produktion",data:actualData,color:"rgba(255,213,79,0.38)",zIndex:3,pointPadding:0.20,dataLabels:{enabled:false}}];';
-            $html .= 'for(var src3 in sourceData){if(Object.prototype.hasOwnProperty.call(sourceData,src3)){var vis=Object.prototype.hasOwnProperty.call(debugVisibility,src3)?!!debugVisibility[src3]:false;chartSeries.push({name:d.sourceLabels[src3],type:"line",data:sourceData[src3],visible:vis,zIndex:5,lineWidth:2,marker:{enabled:true,radius:2},custom:{sourceKey:src3},events:{legendItemClick:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){var nextVisible=!this.visible;debugVisibility[key]=nextVisible;saveVisibility(debugVisibility);}}},dataLabels:{enabled:false}});}}';
+            $html .= 'for(var src3 in sourceData){if(Object.prototype.hasOwnProperty.call(sourceData,src3)){var vis=Object.prototype.hasOwnProperty.call(debugVisibility,src3)?!!debugVisibility[src3]:true;chartSeries.push({name:d.sourceLabels[src3],type:"line",data:sourceData[src3],visible:vis,zIndex:5,lineWidth:2,marker:{enabled:true,radius:2},custom:{sourceKey:src3},events:{show:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){debugVisibility[key]=true;saveVisibility(debugVisibility);}},hide:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){debugVisibility[key]=false;saveVisibility(debugVisibility);}}},dataLabels:{enabled:false}});}}';
             $html .= 'chart=chart=Highcharts.chart(chartId,{';
             $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
             $html .= 'title:{text:null},credits:{enabled:false},';
