@@ -18,6 +18,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyBoolean('UsePVNodeForecast', false);
         $this->RegisterPropertyString('PVNodeAPIKey', '');
         $this->RegisterPropertyString('PVNodeSiteID', '');
+        $this->RegisterPropertyInteger('PVNodeMaxRequestsPerDay', 1);
         $this->RegisterPropertyInteger('ForecastWeightLearningDays', 7);
         $this->RegisterPropertyInteger('PVCalibrationDays', 30);
         $this->RegisterPropertyInteger('UnknownOrientationLearningDays', 30);
@@ -173,9 +174,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
         $this->RegisterAttributeString('PVNodeLastError', '');
         $this->RegisterAttributeString('PVNodeForecastCacheJSON', '{}');
-        $this->RegisterAttributeInteger('PVNodeNextPollTs', 0);
-        $this->RegisterAttributeString('PVNodeLastRequestSlot', '');
-        $this->RegisterAttributeInteger('PVNodeLastRequestTs', 0);
+        $this->RegisterAttributeString('PVNodeRequestDay', '');
+        $this->RegisterAttributeInteger('PVNodeRequestCountToday', 0);
+        $this->RegisterAttributeInteger('PVNodeNextPollAt', 0);
         $this->RegisterAttributeBoolean('LastAppliedDebugMode', false);
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
@@ -211,7 +212,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('AlphaTestTrace', '');
 
         $this->RegisterTimer('RefreshTimer', 0, 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('PVForecastTimer', 0, 'SBO_RefreshPVForecast($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVCalibrationTimer', 0, 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
@@ -386,7 +387,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.53';
+        $currentModuleVersion = '1.9.54';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -399,13 +400,13 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $stringAttributes = [
             'ForecastJSON','PVForecastHistoryJSON','PVSourceForecastHistoryJSON','ForecastSolarSurfaceCacheJSON',
-            'PVDebugVisibilityJSON','ProviderDebugLogJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError','PVNodeForecastCacheJSON','PVNodeLastRequestSlot',
+            'PVDebugVisibilityJSON','ProviderDebugLogJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
             'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PricesJSON','PlanJSON','NightLearningSource',
             'ConsumptionProfileJSON','ConsumptionLearningSource','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
             'CompletedFeedInPlanKeysJSON','AlphaTestTrace'
         ];
         $integerAttributes = [
-            'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVNodeLastRequestTs','PVCalibrationEnergyVersion',
+            'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
             'PVCalibrationBlockedFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
             'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs'
@@ -447,7 +448,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.50',
+            'moduleVersion' => '1.9.54',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -672,8 +673,7 @@ class SmartBatteryOptimizer extends IPSModule
             // Verbrauchsprofile bleiben unverändert. RecalculateInternal(true) holt
             // nur die aktuellen externen Daten/Preise, berechnet die aktuelle Planung
             // und rendert alle davon abhängigen Werte, HTMLBoxen und Highcharts neu.
-            $this->FetchAndStorePVForecast();
-            $this->RecalculateInternal(false);
+            $this->RecalculateInternal(true);
 
             $status = (string)GetValue($this->GetIDForIdent('StatusText'));
             $this->SetActionFeedback('Alle Anzeigen und Diagramme aktualisiert. ' . $status);
@@ -686,23 +686,9 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function Recalculate()
     {
-        // Manuelle Aktion bewusst direkt ausführen. Die Provider werden zuerst abgefragt,
-        // damit ein Fehler in einer nachgelagerten Lern-/Planungsfunktion den Forecast-
-        // Abruf nicht mehr verhindern kann. pvnode entscheidet in FetchPVForecast()
-        // anhand next_poll_at selbst zwischen LIVE und vorhandenem Cache.
-        $this->SetActionFeedback('Prognose & Plan: Prognosequellen werden abgefragt ...');
-        try {
-            $this->FetchAndStorePVForecast();
-            $this->RecalculateInternal(false);
-            $status = (string)GetValue($this->GetIDForIdent('StatusText'));
-            $this->SetActionFeedback('Prognose & Plan fertig. ' . $status);
-            echo "Prognosequellen wurden aktualisiert und der Plan neu berechnet.";
-        } catch (Throwable $e) {
-            $text = 'Prognose & Plan FEHLER: ' . $e->getMessage();
-            SetValue($this->GetIDForIdent('StatusText'), $text);
-            $this->SetActionFeedback($text);
-            echo $text;
-        }
+        $this->SetActionFeedback('Prognose & Plan: Auftrag angenommen – Berechnung startet ...');
+        $this->SetTimerInterval('ManualRecalculateWorker', 1000);
+        echo "Berechnung wurde gestartet. Der Fortschritt steht in „Letzte manuelle Aktion“.";
     }
 
     public function RunManualRecalculate()
@@ -710,8 +696,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->SetTimerInterval('ManualRecalculateWorker', 0);
         $this->SetActionFeedback('Prognose & Plan: Berechnung läuft – Prognosequellen werden abgefragt ...');
         try {
-            $this->FetchAndStorePVForecast();
-            $this->RecalculateInternal(false);
+            $this->RecalculateInternal(true);
             $status = (string)GetValue($this->GetIDForIdent('StatusText'));
             $this->SetActionFeedback('Prognose & Plan fertig. ' . $status);
         } catch (Throwable $e) {
@@ -724,35 +709,6 @@ class SmartBatteryOptimizer extends IPSModule
     public function RefreshOptimization()
     {
         $this->RecalculateInternal(false);
-    }
-
-    public function RefreshPVForecast()
-    {
-        // Das konfigurierte PV-Prognoseintervall bleibt unverändert. Provider zuerst
-        // abrufen, danach mit den gespeicherten Forecastdaten Planung/HTML aktualisieren.
-        // So kann keine vorgelagerte Archiv-/Planungsfunktion den HTTP-Abruf blockieren.
-        try {
-            $this->FetchAndStorePVForecast();
-            $this->RecalculateInternal(false);
-        } catch (Throwable $e) {
-            $this->DebugLog('PVForecastTimer', 'Automatische Prognose-Aktualisierung fehlgeschlagen: ' . $e->getMessage(), 0);
-        }
-    }
-
-    private function FetchAndStorePVForecast(): array
-    {
-        $this->DebugLog('PV-Prognose', 'Provider-Abruf startet direkt.');
-        $this->UpdatePVCalibrationState(false);
-        $forecast = $this->FetchPVForecast();
-        $this->StorePVForecastHistory($forecast);
-        $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
-        $this->DebugLog('PV-Prognose', [
-            'Provider-Abruf' => 'abgeschlossen',
-            'heuteKWh' => $forecast['todayKWh'] ?? null,
-            'morgenKWh' => $forecast['tomorrowKWh'] ?? null,
-            'Quellen' => $forecast['forecastSources'] ?? []
-        ]);
-        return $forecast;
     }
 
     public function RefreshPVActual()
@@ -813,7 +769,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
             }
 
-        $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
+            $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
             $forecast['surfaceCalibration'] = $surfaceCalibration;
             $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
@@ -1495,9 +1451,8 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('ForecastSolarStatus'), implode(' | ', $forecastSolarSurfaceStatus));
         }
 
-        // pvnode V2: Das normale PV-Prognoseintervall bleibt unverändert.
-        // next_poll_at aus der API steuert ausschließlich, ob ein neuer pvnode-HTTP-Abruf
-        // sinnvoll ist. Bis dahin wird der letzte erfolgreiche pvnode-Cache verwendet.
+        // pvnode V2 arbeitet mit einem in pvnode gespeicherten Gesamtstandort
+        // (Site-ID) und liefert deshalb die gesamte Anlage in einer Abfrage.
         if ($usePVNode) {
             $pvnodeKey = trim($this->ReadPropertyString('PVNodeAPIKey'));
             $pvnodeSiteID = trim($this->ReadPropertyString('PVNodeSiteID'));
@@ -1506,39 +1461,14 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->WriteAttributeString('PVNodeLastError', 'API-Key und Site-ID sind erforderlich.');
                 $this->DebugLog('pvnode', 'Aktiviert, aber API-Key oder Site-ID fehlt. Es wurde keine API-Anfrage gesendet.', 0);
             } else {
-                $cache = $this->GetPVNodeCache($pvnodeSiteID);
-                $nextPollTs = $this->ReadAttributeInteger('PVNodeNextPollTs');
-                $requestDue = ($nextPollTs <= 0 || time() >= $nextPollTs || count($cache) === 0);
-
-                if ($requestDue) {
-                    $this->WriteAttributeInteger('PVNodeLastRequestTs', time());
-                    try {
-                        $result = $this->FetchPVNodeForecast($pvnodeKey, $pvnodeSiteID);
-                        $liveHours = $result['hours'];
-                        $newNextPollTs = (int)($result['nextPollTs'] ?? 0);
-                        $sourceHours['pvnode'] = $liveHours;
-                        $this->WriteAttributeInteger('PVNodeNextPollTs', $newNextPollTs);
-                        $this->WriteAttributeString('PVNodeForecastCacheJSON', json_encode([
-                            'siteID' => $pvnodeSiteID,
-                            'savedAt' => time(),
-                            'nextPollTs' => $newNextPollTs,
-                            'hours' => $liveHours
-                        ]));
-                        $this->DebugLog('pvnode', 'LIVE | Stunden=' . count($liveHours) . ($newNextPollTs > 0 ? ' | nächste neue Daten laut API ab ' . date('d.m.Y H:i:s', $newNextPollTs) : ' | next_poll_at nicht geliefert'));
-                        $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
-                        $this->WriteAttributeString('PVNodeLastError', '');
-                    } catch (Throwable $e) {
-                        $this->WriteAttributeString('PVNodeLastError', $e->getMessage());
-                        if (count($cache) > 0) {
-                            $sourceHours['pvnode'] = $cache;
-                            $this->DebugLog('pvnode', 'Live-Abruf fehlgeschlagen; vorhandener Cache wird verwendet: ' . $e->getMessage(), 0);
-                        } else {
-                            $this->DebugLog('pvnode', $e->getMessage(), 0);
-                        }
-                    }
-                } elseif (count($cache) > 0) {
-                    $sourceHours['pvnode'] = $cache;
-                    $this->DebugLog('pvnode', 'CACHE | kein unnötiger API-Aufruf | neue Daten laut API erst ab ' . date('d.m.Y H:i:s', $nextPollTs));
+                try {
+                    $sourceHours['pvnode'] = $this->GetPVNodeForecastLimited($pvnodeKey, $pvnodeSiteID);
+                    $this->DebugLog('pvnode', 'Prognose bereit | Site-ID=' . $pvnodeSiteID . ' | Stunden=' . count($sourceHours['pvnode']));
+                    $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
+                    $this->WriteAttributeString('PVNodeLastError', '');
+                } catch (Throwable $e) {
+                    $this->WriteAttributeString('PVNodeLastError', $e->getMessage());
+                    $this->DebugLog('pvnode', $e->getMessage(), 0);
                 }
             }
         }
@@ -1757,18 +1687,66 @@ class SmartBatteryOptimizer extends IPSModule
         return $hours;
     }
 
-    private function GetPVNodeCache(string $siteID): array
+    private function GetPVNodeForecastLimited(string $apiKey, string $siteID): array
     {
-        $cache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
-        if (!is_array($cache) || (string)($cache['siteID'] ?? '') !== $siteID || !is_array($cache['hours'] ?? null)) {
-            return [];
+        $today = date('Y-m-d');
+        $storedDay = $this->ReadAttributeString('PVNodeRequestDay');
+        $count = $this->ReadAttributeInteger('PVNodeRequestCountToday');
+        if ($storedDay !== $today) {
+            $storedDay = $today;
+            $count = 0;
+            $this->WriteAttributeString('PVNodeRequestDay', $today);
+            $this->WriteAttributeInteger('PVNodeRequestCountToday', 0);
         }
-        return $cache['hours'];
+
+        $maxRequests = max(1, min(144, $this->ReadPropertyInteger('PVNodeMaxRequestsPerDay')));
+        $nextPollAt = $this->ReadAttributeInteger('PVNodeNextPollAt');
+        $cache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
+        if (!is_array($cache)) $cache = [];
+        $cachedHours = isset($cache['hours']) && is_array($cache['hours']) ? $cache['hours'] : [];
+
+        // pvnode selbst teilt mit next_poll_at mit, wann eine neue Modellprognose
+        // verfügbar sein kann. Bis dahin bringt ein erneuter Request keine neuen Daten.
+        $beforeNextPoll = ($nextPollAt > time());
+        $dailyLimitReached = ($count >= $maxRequests);
+        if (($beforeNextPoll || $dailyLimitReached) && count($cachedHours) > 0) {
+            $reason = $beforeNextPoll
+                ? 'neue Daten laut pvnode erst ab ' . date('d.m.Y H:i:s', $nextPollAt)
+                : 'Tageslimit ' . $count . '/' . $maxRequests . ' erreicht';
+            $this->DebugLog('pvnode', 'CACHE | ' . $reason . ' | kein API-Aufruf');
+            return array_map('floatval', $cachedHours);
+        }
+
+        // Ohne Cache müssen wir einmalig abrufen, damit next_poll_at und die Prognose
+        // überhaupt bekannt sind. Danach gelten next_poll_at und das Tageslimit.
+        if ($dailyLimitReached && count($cachedHours) === 0) {
+            throw new Exception('pvnode: Tageslimit ' . $count . '/' . $maxRequests . ' erreicht und kein Cache vorhanden.');
+        }
+
+        $this->WriteAttributeString('PVNodeRequestDay', $today);
+        $this->WriteAttributeInteger('PVNodeRequestCountToday', $count + 1);
+        try {
+            $hours = $this->FetchPVNodeForecast($apiKey, $siteID);
+            $this->WriteAttributeString('PVNodeForecastCacheJSON', json_encode([
+                'savedAt' => time(),
+                'siteID' => $siteID,
+                'hours' => $hours
+            ]));
+            $next = $this->ReadAttributeInteger('PVNodeNextPollAt');
+            $this->DebugLog('pvnode', 'LIVE ' . ($count + 1) . '/' . $maxRequests . ' heute' . ($next > 0 ? ' | nächste neue Daten ab ' . date('d.m.Y H:i:s', $next) : ''));
+            return $hours;
+        } catch (Throwable $e) {
+            if (count($cachedHours) > 0) {
+                $this->DebugLog('pvnode', 'LIVE fehlgeschlagen, CACHE verwendet | ' . $e->getMessage(), 0);
+                return array_map('floatval', $cachedHours);
+            }
+            throw $e;
+        }
     }
 
     private function FetchPVNodeForecast(string $apiKey, string $siteID): array
     {
-        $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?timezone=utc';
+        $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc';
 
         try {
             $data = $this->HttpGetJsonWithHeaders($url, [
@@ -1784,6 +1762,11 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->RegisterPVNodeRejection($status, $e->getMessage());
             }
             throw $e;
+        }
+
+        $nextPollAt = $this->ExtractPVNodeNextPollAt($data);
+        if ($nextPollAt > 0) {
+            $this->WriteAttributeInteger('PVNodeNextPollAt', $nextPollAt);
         }
 
         if (!isset($data['values']) || !is_array($data['values'])) {
@@ -1816,13 +1799,32 @@ class SmartBatteryOptimizer extends IPSModule
             throw new Exception('pvnode: Keine verwertbaren PV-Leistungswerte erhalten.');
         }
 
-        $nextPollTs = 0;
-        if (isset($data['next_poll_at']) && is_string($data['next_poll_at'])) {
-            $parsedNextPoll = strtotime($data['next_poll_at']);
-            if ($parsedNextPoll !== false) $nextPollTs = (int)$parsedNextPoll;
-        }
+        return $hours;
+    }
 
-        return ['hours' => $hours, 'nextPollTs' => $nextPollTs];
+    private function ExtractPVNodeNextPollAt(array $data): int
+    {
+        $candidates = [];
+        $walk = function ($value) use (&$walk, &$candidates): void {
+            if (!is_array($value)) return;
+            foreach ($value as $key => $item) {
+                if (is_string($key) && strtolower($key) === 'next_poll_at') $candidates[] = $item;
+                if (is_array($item)) $walk($item);
+            }
+        };
+        $walk($data);
+        foreach ($candidates as $value) {
+            if (is_numeric($value)) {
+                $ts = (int)$value;
+                if ($ts > 20000000000) $ts = (int)floor($ts / 1000);
+                if ($ts > 0) return $ts;
+            }
+            if (is_string($value) && trim($value) !== '') {
+                $ts = strtotime($value);
+                if ($ts !== false) return (int)$ts;
+            }
+        }
+        return 0;
     }
 
     private function RegisterPVNodeRejection(int $status, string $message): void
@@ -4516,20 +4518,26 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'var chartId=' . json_encode($chartId) . ';';
             $html .= 'var visibilityKey="sbo_pv_debug_visibility_' . $this->InstanceID . '";';
             $html .= 'var selectedDayKey="sbo_pv_selected_day_' . $this->InstanceID . '";';
-            $html .= 'function loadVisibility(){var out={};try{var v=localStorage.getItem(visibilityKey);if(v){var l=JSON.parse(v);if(l&&typeof l==="object"){for(var k in l){if(Object.prototype.hasOwnProperty.call(l,k)){out[k]=!!l[k];}}}}}catch(e){}return out;}';
-            $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}}';
+            $storedVisibility = $this->ReadAttributeString('PVDebugVisibilityJSON');
+            $runtimeVisibility = (string)GetValue($this->GetIDForIdent('PVDebugVisibilityState'));
+            if ($runtimeVisibility !== '' && $runtimeVisibility !== '{}') $storedVisibility = $runtimeVisibility;
+            if ($storedVisibility === '') $storedVisibility = '{}';
+            $html .= 'var serverVisibility=' . $storedVisibility . ';';
+            $html .= 'function loadVisibility(){var out={};for(var k in serverVisibility){if(Object.prototype.hasOwnProperty.call(serverVisibility,k)){out[k]=!!serverVisibility[k];}}try{var v=localStorage.getItem(visibilityKey);if(v){var l=JSON.parse(v);for(var k2 in l){if(Object.prototype.hasOwnProperty.call(l,k2)){out[k2]=!!l[k2];}}}}catch(e){}return out;}';
+            $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}try{if(typeof IPS!=="undefined"&&IPS.requestAction){IPS.requestAction(' . $this->InstanceID . ',"PVDebugVisibilityState",JSON.stringify(v));}}catch(e){}}';
             $html .= 'var debugVisibility=loadVisibility();';
             $html .= 'var chart=null;';
             $html .= 'var idx=0;var savedDay=null;try{savedDay=localStorage.getItem(selectedDayKey);}catch(e){}var i,found=false;for(i=0;i<days.length;i++){if(savedDay&&days[i].date===savedDay){idx=i;found=true;break;}}if(!found){for(i=0;i<days.length;i++){if(days[i].date===today){idx=i;break;}}}';
             $html .= 'function el(s){return document.getElementById(chartId+s);}';
             $html .= 'function draw(){';
+            $html .= 'if(typeof chart!=="undefined"&&chart){try{chart.series.forEach(function(sr){var k=sr.options.custom&&sr.options.custom.sourceKey;if(k){debugVisibility[k]=sr.visible;}});}catch(e){}}';
             $html .= 'if(!days.length||typeof Highcharts==="undefined"){return;}';
             $html .= 'var d=days[idx];try{localStorage.setItem(selectedDayKey,d.date);}catch(e){}var categories=[];var forecastData=[];var actualData=[];var sourceData={};';
             $html .= 'for(var src in d.sourceLabels){if(Object.prototype.hasOwnProperty.call(d.sourceLabels,src)){sourceData[src]=[];}}';
             $html .= 'for(var j=0;j<d.rows.length;j++){var r=d.rows[j];categories.push(r.label);forecastData.push({y:r.forecastKWh,custom:r});actualData.push(r.actualKWh===null?null:{y:r.actualKWh,custom:r});for(var src2 in sourceData){var sv=(r.sourceKWh&&Object.prototype.hasOwnProperty.call(r.sourceKWh,src2))?r.sourceKWh[src2]:null;sourceData[src2].push(sv===null?null:{y:sv,custom:r});}}';
             $html .= 'var chartSeries=[{name:"PV-Prognose kombiniert",data:forecastData,zIndex:1,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},{name:"Ist-Produktion",data:actualData,color:"rgba(255,213,79,0.38)",zIndex:3,pointPadding:0.20,dataLabels:{enabled:false}}];';
             $html .= 'for(var src3 in sourceData){if(Object.prototype.hasOwnProperty.call(sourceData,src3)){var vis=Object.prototype.hasOwnProperty.call(debugVisibility,src3)?!!debugVisibility[src3]:false;chartSeries.push({name:d.sourceLabels[src3],type:"line",data:sourceData[src3],visible:vis,zIndex:5,lineWidth:2,marker:{enabled:true,radius:2},custom:{sourceKey:src3},events:{legendItemClick:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){var nextVisible=!this.visible;debugVisibility[key]=nextVisible;saveVisibility(debugVisibility);}}},dataLabels:{enabled:false}});}}';
-            $html .= 'chart=Highcharts.chart(chartId,{';
+            $html .= 'chart=chart=Highcharts.chart(chartId,{';
             $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
             $html .= 'title:{text:null},credits:{enabled:false},';
             $html .= 'legend:{enabled:true,itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff",fontWeight:"normal"},itemHoverStyle:{color:"#ffffff"}},';

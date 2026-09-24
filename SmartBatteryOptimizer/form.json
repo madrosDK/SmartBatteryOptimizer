@@ -59,8 +59,13 @@
                     "caption": "pvnode API-Key"
                 },
                 {
-                    "type": "Label",
-                    "caption": "pvnode wird im normalen PV-Prognoseintervall berücksichtigt. Das Modul wertet next_poll_at aus der pvnode-Antwort aus und verwendet bis zur nächsten verfügbaren Modellaktualisierung den vorhandenen Cache, statt unnötige API-Abrufe zu erzeugen."
+                    "type": "NumberSpinner",
+                    "name": "PVNodeMaxRequestsPerDay",
+                    "caption": "pvnode maximale API-Abrufe pro Tag",
+                    "digits": 0,
+                    "minimum": 1,
+                    "maximum": 144,
+                    "suffix": " Abrufe/Tag"
                 },
                 {
                     "type": "Label",

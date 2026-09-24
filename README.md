@@ -439,6 +439,5 @@ Bei der Preis-Einspeisung wird die theoretische Batterie-/Wechselrichterleistung
 Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und dem Lastprofil eine neue Restlaufzeit berechnet. Die AlphaESS Dispatch Time wird auf diese Restlaufzeit zuzüglich 30 % Sicherheitsreserve gesetzt.
 
 
-## pvnode-Abruflimit und Cache (v1.9.49)
-
-Für pvnode kann die zur Lizenz passende Anzahl der API-Abrufe pro Tag eingestellt werden (1 bis 144, Standard 1). Der erste tägliche Abruf startet standardmäßig um 03:00 Uhr; Stunde und Minute sind konfigurierbar. Bei mehr als einem Abruf pro Tag verteilt das Modul die erlaubten Abrufe gleichmäßig über 24 Stunden ab diesem Startzeitpunkt. Zwischen den erlaubten Abruf-Slots wird keine pvnode-API-Anfrage gesendet, sondern ausschließlich die zuletzt erfolgreich gespeicherte pvnode-Prognose aus dem internen Cache verwendet. Auch bei häufigeren Modul- oder Prognose-Aktualisierungen wird dadurch kein zusätzlicher pvnode-Aufruf ausgelöst.
+## pvnode Abruflimit (v1.9.54)
+Das Feld **pvnode maximale API-Abrufe pro Tag** begrenzt ausschließlich Live-Aufrufe an pvnode (1–144, Standard 1). Das allgemeine PV-Prognoseintervall wird dadurch nicht verändert. Bis zum von pvnode gemeldeten `next_poll_at` sowie nach Erreichen des Tageslimits verwendet das Modul den internen pvnode-Cache.
