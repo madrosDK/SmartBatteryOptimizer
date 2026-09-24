@@ -441,3 +441,7 @@ Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss geme
 
 ## pvnode Abruflimit (v1.9.54)
 Das Feld **pvnode maximale API-Abrufe pro Tag** begrenzt ausschließlich Live-Aufrufe an pvnode (1–144, Standard 1). Das allgemeine PV-Prognoseintervall wird dadurch nicht verändert. Bis zum von pvnode gemeldeten `next_poll_at` sowie nach Erreichen des Tageslimits verwendet das Modul den internen pvnode-Cache.
+
+
+## pvnode Timeout-Fallback (v1.9.55)
+Ein erlaubter pvnode-Liveabruf hat einen kurzen eigenen Timeout. Bei Timeout oder Verbindungsfehler wird sofort der vorhandene Cache verwendet, damit der gesamte Prognoselauf nicht an pvnode hängen bleibt.

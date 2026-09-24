@@ -387,7 +387,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.54';
+        $currentModuleVersion = '1.9.55';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -448,7 +448,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.54',
+            'moduleVersion' => '1.9.55',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1749,9 +1749,12 @@ class SmartBatteryOptimizer extends IPSModule
         $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc';
 
         try {
-            $data = $this->HttpGetJsonWithHeaders($url, [
+            // pvnode darf den gesamten Prognoselauf niemals blockieren. Der Live-Abruf
+            // verwendet deshalb bewusst einen kurzen, eigenen Timeout. Bei Fehler/Timeout
+            // übernimmt GetPVNodeForecastLimited() unmittelbar den vorhandenen Cache.
+            $data = $this->HttpGetJsonWithHeadersTimeout($url, [
                 'Authorization: Bearer ' . $apiKey
-            ], 'pvnode', ['Site-ID'=>$siteID,'Zeitzone'=>'utc']);
+            ], 'pvnode', ['Site-ID'=>$siteID,'Zeitzone'=>'utc'], 8);
         } catch (Throwable $e) {
             $status = (int)$e->getCode();
 
@@ -4020,6 +4023,59 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<details><summary style="cursor:pointer">Antwort anzeigen</summary><pre style="white-space:pre-wrap;word-break:break-word;background:#101010;padding:6px;max-height:500px;overflow:auto">'.$e($raw).'</pre></details></details>';
         }
         return $html.'</div></details></div>';
+    }
+
+    private function HttpGetJsonWithHeadersTimeout(string $url, array $headers = [], string $debugProvider = '', array $debugMeta = [], int $timeoutSeconds = 8): array
+    {
+        $timeoutSeconds = max(3, min(15, $timeoutSeconds));
+        $allHeaders = array_merge(['User-Agent: IP-Symcon-SmartBatteryOptimizer/1.5.6'], $headers);
+        $debugStart = microtime(true);
+        $raw = false;
+        $status = 0;
+        $errorText = '';
+
+        if (function_exists('curl_init')) {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => $allHeaders,
+                CURLOPT_CONNECTTIMEOUT => min(4, $timeoutSeconds),
+                CURLOPT_TIMEOUT => $timeoutSeconds,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_MAXREDIRS => 3
+            ]);
+            $raw = curl_exec($ch);
+            $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if ($raw === false) $errorText = curl_error($ch);
+            curl_close($ch);
+        } else {
+            $opts = ['http' => [
+                'timeout' => $timeoutSeconds,
+                'ignore_errors' => true,
+                'header' => implode("\r\n", $allHeaders) . "\r\n"
+            ]];
+            $ctx = stream_context_create($opts);
+            $raw = @file_get_contents($url, false, $ctx);
+            if (isset($http_response_header) && is_array($http_response_header)) {
+                foreach ($http_response_header as $line) {
+                    if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $line, $m)) $status = (int)$m[1];
+                }
+            }
+            if ($raw === false) $errorText = 'Timeout oder Verbindungsfehler';
+        }
+
+        if ($debugProvider !== '') {
+            $this->AddProviderDebug($debugProvider, $url, $debugMeta + ['Timeout'=>$timeoutSeconds.' s'], $raw === false ? ('HTTP-Abruf fehlgeschlagen: '.$errorText) : $raw, $status, (microtime(true)-$debugStart)*1000.0);
+        }
+        if ($raw === false) throw new Exception('HTTP-Abruf fehlgeschlagen' . ($errorText !== '' ? ': ' . $errorText : ''), $status);
+
+        $data = json_decode($raw, true);
+        if ($status >= 400) {
+            $detail = is_array($data) ? (string)($data['detail'] ?? $data['message'] ?? $data['error'] ?? '') : '';
+            throw new Exception('HTTP ' . $status . ($detail !== '' ? ' – ' . $detail : ''), $status);
+        }
+        if (!is_array($data)) throw new Exception('Antwort ist kein gültiges JSON.', $status);
+        return $data;
     }
 
     private function HttpGetJsonWithHeaders(string $url, array $headers = [], string $debugProvider = '', array $debugMeta = []): array
