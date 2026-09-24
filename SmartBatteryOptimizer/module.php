@@ -3973,7 +3973,27 @@ class SmartBatteryOptimizer extends IPSModule
         $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff;background:#181818;padding:8px">';
         $html .= '<details open><summary style="cursor:pointer;font-family:Tahoma;font-size:14px;font-weight:bold;padding:4px 0">Prognose Provider Debug</summary>';
         $html .= '<div style="margin-top:3px"><span style="opacity:.75">Neueste Abfrage oben | Rohantworten aufklappbar</span>';
-        foreach (array_reverse($entries) as $row) {
+        // Diagnosezeilen direkt sichtbar darstellen. Provider-Rohantworten bleiben aufklappbar.
+        $diagRows = [];
+        $providerRows = [];
+        foreach ($entries as $row) {
+            if (($row['provider'] ?? '') === 'DIAG') {
+                $diagRows[] = $row;
+            } else {
+                $providerRows[] = $row;
+            }
+        }
+        if ($diagRows) {
+            $html .= '<div style="margin:8px 0;padding:8px;background:#101010;border:1px solid #555;max-height:420px;overflow:auto">';
+            $html .= '<div style="font-weight:bold;margin-bottom:5px">DIAG – Ablaufprotokoll</div>';
+            foreach ($diagRows as $row) {
+                $step = (string)($row['request'] ?? $row['response'] ?? '');
+                $html .= '<div style="font-family:Consolas,monospace;white-space:pre-wrap;padding:2px 0;border-bottom:1px solid #292929">'
+                    .$e(date('H:i:s',(int)($row['time'] ?? 0))).' | '.$e($step).'</div>';
+            }
+            $html .= '</div>';
+        }
+        foreach (array_reverse($providerRows) as $row) {
             $meta = is_array($row['meta'] ?? null) ? $row['meta'] : [];
             $html .= '<details style="margin-top:8px;border-top:1px solid #555;padding-top:6px"><summary style="cursor:pointer"><b>'.$e($row['provider'] ?? '').'</b> | '.$e(date('d.m.Y H:i:s',(int)($row['time'] ?? 0))).' | HTTP '.$e($row['status'] ?? '').' | '.$e($row['durationMs'] ?? 0).' ms</summary>';
             if ($meta) $html .= '<div style="margin:5px 0"><b>Parameter:</b> '.$e(implode(' | ', array_map(static fn($k,$v)=>$k.'='.$v,array_keys($meta),array_values($meta)))).'</div>';
