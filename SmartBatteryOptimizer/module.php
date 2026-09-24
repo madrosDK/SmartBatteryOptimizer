@@ -386,7 +386,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.50';
+        $currentModuleVersion = '1.9.53';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -672,7 +672,8 @@ class SmartBatteryOptimizer extends IPSModule
             // Verbrauchsprofile bleiben unverändert. RecalculateInternal(true) holt
             // nur die aktuellen externen Daten/Preise, berechnet die aktuelle Planung
             // und rendert alle davon abhängigen Werte, HTMLBoxen und Highcharts neu.
-            $this->RecalculateInternal(true);
+            $this->FetchAndStorePVForecast();
+            $this->RecalculateInternal(false);
 
             $status = (string)GetValue($this->GetIDForIdent('StatusText'));
             $this->SetActionFeedback('Alle Anzeigen und Diagramme aktualisiert. ' . $status);
@@ -685,9 +686,23 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function Recalculate()
     {
-        $this->SetActionFeedback('Prognose & Plan: Auftrag angenommen – Berechnung startet ...');
-        $this->SetTimerInterval('ManualRecalculateWorker', 1000);
-        echo "Berechnung wurde gestartet. Der Fortschritt steht in „Letzte manuelle Aktion“.";
+        // Manuelle Aktion bewusst direkt ausführen. Die Provider werden zuerst abgefragt,
+        // damit ein Fehler in einer nachgelagerten Lern-/Planungsfunktion den Forecast-
+        // Abruf nicht mehr verhindern kann. pvnode entscheidet in FetchPVForecast()
+        // anhand next_poll_at selbst zwischen LIVE und vorhandenem Cache.
+        $this->SetActionFeedback('Prognose & Plan: Prognosequellen werden abgefragt ...');
+        try {
+            $this->FetchAndStorePVForecast();
+            $this->RecalculateInternal(false);
+            $status = (string)GetValue($this->GetIDForIdent('StatusText'));
+            $this->SetActionFeedback('Prognose & Plan fertig. ' . $status);
+            echo "Prognosequellen wurden aktualisiert und der Plan neu berechnet.";
+        } catch (Throwable $e) {
+            $text = 'Prognose & Plan FEHLER: ' . $e->getMessage();
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
+        }
     }
 
     public function RunManualRecalculate()
@@ -695,7 +710,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->SetTimerInterval('ManualRecalculateWorker', 0);
         $this->SetActionFeedback('Prognose & Plan: Berechnung läuft – Prognosequellen werden abgefragt ...');
         try {
-            $this->RecalculateInternal(true);
+            $this->FetchAndStorePVForecast();
+            $this->RecalculateInternal(false);
             $status = (string)GetValue($this->GetIDForIdent('StatusText'));
             $this->SetActionFeedback('Prognose & Plan fertig. ' . $status);
         } catch (Throwable $e) {
@@ -712,14 +728,31 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function RefreshPVForecast()
     {
-        // Eigener Timerpfad für automatische Provider-Aktualisierungen.
-        // Nicht über den manuellen 1-s-Worker routen, damit Forecast.Solar/pvnode
-        // auch ohne Benutzeraktion zuverlässig zum vorgesehenen Zeitpunkt laufen.
+        // Das konfigurierte PV-Prognoseintervall bleibt unverändert. Provider zuerst
+        // abrufen, danach mit den gespeicherten Forecastdaten Planung/HTML aktualisieren.
+        // So kann keine vorgelagerte Archiv-/Planungsfunktion den HTTP-Abruf blockieren.
         try {
-            $this->RecalculateInternal(true);
+            $this->FetchAndStorePVForecast();
+            $this->RecalculateInternal(false);
         } catch (Throwable $e) {
             $this->DebugLog('PVForecastTimer', 'Automatische Prognose-Aktualisierung fehlgeschlagen: ' . $e->getMessage(), 0);
         }
+    }
+
+    private function FetchAndStorePVForecast(): array
+    {
+        $this->DebugLog('PV-Prognose', 'Provider-Abruf startet direkt.');
+        $this->UpdatePVCalibrationState(false);
+        $forecast = $this->FetchPVForecast();
+        $this->StorePVForecastHistory($forecast);
+        $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
+        $this->DebugLog('PV-Prognose', [
+            'Provider-Abruf' => 'abgeschlossen',
+            'heuteKWh' => $forecast['todayKWh'] ?? null,
+            'morgenKWh' => $forecast['tomorrowKWh'] ?? null,
+            'Quellen' => $forecast['forecastSources'] ?? []
+        ]);
+        return $forecast;
     }
 
     public function RefreshPVActual()
