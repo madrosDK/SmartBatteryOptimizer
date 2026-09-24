@@ -4860,19 +4860,13 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'var chartId=' . json_encode($chartId) . ';';
             $html .= 'var visibilityKey="sbo_pv_debug_visibility_' . $this->InstanceID . '";';
             $html .= 'var selectedDayKey="sbo_pv_selected_day_' . $this->InstanceID . '";';
-            $storedVisibility = $this->ReadAttributeString('PVDebugVisibilityJSON');
-            $runtimeVisibility = (string)GetValue($this->GetIDForIdent('PVDebugVisibilityState'));
-            if ($runtimeVisibility !== '' && $runtimeVisibility !== '{}') $storedVisibility = $runtimeVisibility;
-            if ($storedVisibility === '') $storedVisibility = '{}';
-            $html .= 'var serverVisibility=' . $storedVisibility . ';';
-            $html .= 'function loadVisibility(){var out={};for(var k in serverVisibility){if(Object.prototype.hasOwnProperty.call(serverVisibility,k)){out[k]=!!serverVisibility[k];}}try{var v=localStorage.getItem(visibilityKey);if(v){var l=JSON.parse(v);for(var k2 in l){if(Object.prototype.hasOwnProperty.call(l,k2)){out[k2]=!!l[k2];}}}}catch(e){}return out;}';
-            $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}try{if(typeof IPS!=="undefined"&&IPS.requestAction){IPS.requestAction(' . $this->InstanceID . ',"PVDebugVisibilityState",JSON.stringify(v));}}catch(e){}}';
+            $html .= 'function loadVisibility(){var out={};try{var v=localStorage.getItem(visibilityKey);if(v){var l=JSON.parse(v);for(var k in l){if(Object.prototype.hasOwnProperty.call(l,k)){out[k]=!!l[k];}}}}catch(e){}return out;}';
+            $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}}';
             $html .= 'var debugVisibility=loadVisibility();';
             $html .= 'var chart=null;';
             $html .= 'var idx=0;var savedDay=null;try{savedDay=localStorage.getItem(selectedDayKey);}catch(e){}var i,found=false;for(i=0;i<days.length;i++){if(savedDay&&days[i].date===savedDay){idx=i;found=true;break;}}if(!found){for(i=0;i<days.length;i++){if(days[i].date===today){idx=i;break;}}}';
             $html .= 'function el(s){return document.getElementById(chartId+s);}';
             $html .= 'function draw(){';
-            $html .= 'if(typeof chart!=="undefined"&&chart){try{chart.series.forEach(function(sr){var k=sr.options.custom&&sr.options.custom.sourceKey;if(k){debugVisibility[k]=sr.visible;}});}catch(e){}}';
             $html .= 'if(!days.length||typeof Highcharts==="undefined"){return;}';
             $html .= 'var d=days[idx];try{localStorage.setItem(selectedDayKey,d.date);}catch(e){}var categories=[];var forecastData=[];var actualData=[];var sourceData={};';
             $html .= 'for(var src in d.sourceLabels){if(Object.prototype.hasOwnProperty.call(d.sourceLabels,src)){sourceData[src]=[];}}';
@@ -4975,6 +4969,9 @@ class SmartBatteryOptimizer extends IPSModule
             . ' | Prognose nach Auto: <b>' . number_format($afterAuto, 2, ',', '.') . ' kWh</b></div>';
         $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff">';
         $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist-Erzeugung</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist / Prognose</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Intervalle</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Lernzeitraum</th></tr>';
+        $surfaceHourFactors = is_array($forecast['surfaceHourlyFactors'] ?? null) ? $forecast['surfaceHourlyFactors'] : [];
+        $currentHour = (int)date('G');
+        $nextHour = ($currentHour + 1) % 24;
         foreach ($cal as $name => $c) {
             $sumE = (float)($c['sumExpectedKWh'] ?? 0.0);
             $sumA = (float)($c['sumActualKWh'] ?? 0.0);
@@ -4987,7 +4984,11 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . htmlspecialchars((string)$name) . '</b>' . $status . '</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumE, 2, ',', '.') . ' kWh</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumA, 2, ',', '.') . ' kWh</td>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '-' : number_format((float)$ratio, 3, ',', '.')) . '</td>';
+            $currentFactor = isset($surfaceHourFactors[(string)$name][(string)$currentHour]) ? (float)$surfaceHourFactors[(string)$name][(string)$currentHour] : null;
+            $nextFactor = isset($surfaceHourFactors[(string)$name][(string)$nextHour]) ? (float)$surfaceHourFactors[(string)$name][(string)$nextHour] : null;
+            $hourInfo = '<br><span style="opacity:.75;white-space:nowrap">Aktuell ' . sprintf('%02d:00', $currentHour) . ': ' . ($currentFactor === null ? '-' : number_format($currentFactor, 3, ',', '.'))
+                . ' | Nächste ' . sprintf('%02d:00', $nextHour) . ': ' . ($nextFactor === null ? '-' : number_format($nextFactor, 3, ',', '.')) . '</span>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '-' : number_format((float)$ratio, 3, ',', '.')) . $hourInfo . '</td>';
             $seasonInfo = '';
             if (isset($c['seasonStats']) && is_array($c['seasonStats'])) {
                 $ss = $c['seasonStats'];
@@ -5003,24 +5004,6 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '</tr>';
         }
         $html .= '</table></div>';
-        $hourFactors = is_array($forecast['plantHourlyFactors'] ?? null) ? $forecast['plantHourlyFactors'] : [];
-        $surfaceHourFactors = is_array($forecast['surfaceHourlyFactors'] ?? null) ? $forecast['surfaceHourlyFactors'] : [];
-        if (count($hourFactors) > 0) {
-            $html .= '<div style="margin-top:8px;padding:6px;border:1px solid #555"><b>Auto-Faktor je Stunde (tatsächlich angewandt)</b><br>';
-            $html .= '<table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff;margin-top:4px"><tr><th style="text-align:left">Stunde</th>';
-            foreach ($surfaceHourFactors as $surfaceName => $_) $html .= '<th style="text-align:right">' . htmlspecialchars((string)$surfaceName) . '</th>';
-            $html .= '<th style="text-align:right">Anlage</th></tr>';
-            for ($h=6; $h<=22; $h++) {
-                $html .= '<tr><td style="padding:2px 4px;border-top:1px solid rgba(128,128,128,.2)">' . sprintf('%02d:00', $h) . '</td>';
-                foreach ($surfaceHourFactors as $surfaceName => $values) {
-                    $v = is_array($values) && isset($values[(string)$h]) ? (float)$values[(string)$h] : null;
-                    $html .= '<td style="text-align:right;padding:2px 4px;border-top:1px solid rgba(128,128,128,.2)">' . ($v === null ? '-' : number_format($v,3,',','.')) . '</td>';
-                }
-                $pf = isset($hourFactors[(string)$h]) ? (float)$hourFactors[(string)$h] : 1.0;
-                $html .= '<td style="text-align:right;padding:2px 4px;border-top:1px solid rgba(128,128,128,.2)"><b>' . number_format($pf,3,',','.') . '</b></td></tr>';
-            }
-            $html .= '</table><span style="font-size:10px;opacity:.75">Die blaue Prognose wird je Stunde mit dem Anlagenwert dieser Zeile korrigiert. Fehlende Stunden verwenden die vorhandene Fallback-Logik.</span></div>';
-        }
         $html .= '<div style="margin-top:8px;padding:6px;border:1px solid #555"><b>Kontrolle Verdichtung</b><br>';
         foreach ($cal as $name => $c) {
             $a = isset($c['compactionAudit']) && is_array($c['compactionAudit']) ? $c['compactionAudit'] : [];
