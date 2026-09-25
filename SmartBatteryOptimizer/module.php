@@ -1383,14 +1383,20 @@ class SmartBatteryOptimizer extends IPSModule
         $startedTs = $this->ReadAttributeInteger('ActiveFeedInStartedTs');
         $priceCt = $this->ReadAttributeFloat('ActiveFeedInPriceCt');
         $feedReason = $this->ReadAttributeString('ActiveFeedInReason');
-        if ($key !== '' && $startedTs > 0) {
+        // Die Statistik gehört ausschließlich zur preisgesteuerten Einspeiseautomatik.
+        // Entladungen zur PV-Speicherfreihaltung / zum Abregelungsschutz werden bewusst
+        // nicht als Verkauf erfasst, auch wenn sie technisch über denselben Dispatchpfad laufen.
+        $isPriceFeedInAutomation = ($feedReason === '' || $feedReason === 'price');
+        if ($key !== '' && $startedTs > 0 && $isPriceFeedInAutomation) {
             $stats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
             if (!is_array($stats)) $stats = [];
-            $stats[] = ['start'=>$startedTs,'end'=>time(),'planKey'=>$key,'targetKWh'=>$target,'deliveredKWh'=>$delivered,'priceCt'=>$priceCt,'revenueEUR'=>$delivered*$priceCt/100.0,'completed'=>$completed,'reason'=>$feedReason,'finishReason'=>$reason];
+            $stats[] = ['start'=>$startedTs,'end'=>time(),'planKey'=>$key,'targetKWh'=>$target,'deliveredKWh'=>$delivered,'priceCt'=>$priceCt,'revenueEUR'=>$delivered*$priceCt/100.0,'completed'=>$completed,'reason'=>'price','finishReason'=>$reason];
             if (count($stats) > 1500) $stats = array_slice($stats, -1500);
             $this->WriteAttributeString('FeedInStatisticsJSON', json_encode($stats));
-            SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
         }
+        // Anzeige nach jedem Abschluss aktualisieren. Dadurch verschwindet ein eventuell
+        // laufender Status sofort, auch wenn das Fenster nicht statistikrelevant war.
+        SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
         if ($completed && $key !== '') {
             $done = json_decode($this->ReadAttributeString('CompletedFeedInPlanKeysJSON'), true);
             if (!is_array($done)) $done = [];
@@ -4841,13 +4847,64 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderFeedInStatisticsHTML(): string
     {
-        $stats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true); if (!is_array($stats)) $stats = [];
-        $todayStart=strtotime('today 00:00:00'); $monthStart=strtotime(date('Y-m-01 00:00:00')); $yearStart=strtotime(date('Y-01-01 00:00:00'));
-        $sum=['today'=>[0.0,0.0,0],'month'=>[0.0,0.0,0],'year'=>[0.0,0.0,0],'all'=>[0.0,0.0,0]]; $rows=[];
-        foreach($stats as $r){$ts=(int)($r['end']??$r['start']??0);$k=max(0.0,(float)($r['deliveredKWh']??0));$eur=(float)($r['revenueEUR']??0);foreach(['all'=>0,'year'=>$yearStart,'month'=>$monthStart,'today'=>$todayStart] as $key=>$from)if($ts>=$from){$sum[$key][0]+=$k;$sum[$key][1]+=$eur;$sum[$key][2]++;}if($ts>=strtotime('-30 days'))$rows[]=['label'=>date('d.m. H:i',(int)($r['start']??$ts)),'kWh'=>round($k,3),'eur'=>round($eur,3),'priceCt'=>round((float)($r['priceCt']??0),2)];}
-        $f=static fn($v)=>number_format((float)$v,2,',','.'); $html='<div style="font-family:Tahoma;color:#fff;width:100%"><b>Einspeise-Statistik</b><br><span style="font-size:11px">Tatsächlich gemessene Netzeinspeisung in geplanten Einspeisefenstern.</span><table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px"><tr style="border-bottom:1px solid #666"><th style="text-align:left">Zeitraum</th><th style="text-align:right">Einspeisung</th><th style="text-align:right">Erlös</th><th style="text-align:right">Fenster</th></tr>';
-        foreach([['Heute','today'],['Monat','month'],['Jahr','year'],['Gesamt','all']] as $x){$v=$sum[$x[1]];$html.='<tr style="border-bottom:1px solid #333"><td style="padding:4px"><b>'.$x[0].'</b></td><td style="text-align:right;padding:4px">'.$f($v[0]).' kWh</td><td style="text-align:right;padding:4px">'.$f($v[1]).' €</td><td style="text-align:right;padding:4px">'.$v[2].'</td></tr>';}$html.='</table>';
-        $js=$this->GetHighchartsJavaScript();$id='sbo_feed_stats_'.$this->InstanceID;if($js!==''&&count($rows)>0){$html.='<div id="'.$id.'" style="width:100%;height:330px;margin-top:10px"></div><script>'.$js.'</script><script>(function(){var d='.json_encode($rows).';if(typeof Highcharts==="undefined")return;Highcharts.chart('.json_encode($id).',{chart:{type:"column",backgroundColor:"transparent",style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{enabled:false},xAxis:{categories:d.map(function(x){return x.label}),labels:{style:{color:"#fff",fontSize:"10px"}}},yAxis:{min:0,title:{text:"kWh",style:{color:"#fff"}},labels:{style:{color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{formatter:function(){var r=d[this.point.index];return "<b>"+r.label+"</b><br>Einspeisung: <b>"+Highcharts.numberFormat(r.kWh,2,",",".")+" kWh</b><br>Erlös: <b>"+Highcharts.numberFormat(r.eur,2,",",".")+" €</b><br>Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"}},series:[{name:"Einspeisung",data:d.map(function(x){return x.kWh}),dataLabels:{enabled:true,formatter:function(){return Highcharts.numberFormat(this.y,1,",",".")},style:{color:"#fff",textOutline:"none",fontSize:"9px"}}}]});})();</script>';}
+        $allStats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
+        if (!is_array($allStats)) $allStats = [];
+
+        // Rückwärtskompatibel filtern: Nur echte Preisoptimierungs-Fenster der
+        // Einspeiseautomatik anzeigen. PV-Speicherfreihaltung / Abregelungsschutz
+        // darf weder Summen noch Balken beeinflussen.
+        $stats = [];
+        foreach ($allStats as $r) {
+            $reason = (string)($r['reason'] ?? 'price');
+            if ($reason === '' || $reason === 'price') $stats[] = $r;
+        }
+
+        $todayStart = strtotime('today 00:00:00');
+        $monthStart = strtotime(date('Y-m-01 00:00:00'));
+        $yearStart = strtotime(date('Y-01-01 00:00:00'));
+        $sum = ['today'=>[0.0,0.0,0], 'month'=>[0.0,0.0,0], 'year'=>[0.0,0.0,0], 'all'=>[0.0,0.0,0]];
+        $rows = [];
+        foreach ($stats as $r) {
+            $ts = (int)($r['end'] ?? $r['start'] ?? 0);
+            $k = max(0.0, (float)($r['deliveredKWh'] ?? 0));
+            $eur = (float)($r['revenueEUR'] ?? 0);
+            foreach (['all'=>0, 'year'=>$yearStart, 'month'=>$monthStart, 'today'=>$todayStart] as $key=>$from) {
+                if ($ts >= $from) { $sum[$key][0]+=$k; $sum[$key][1]+=$eur; $sum[$key][2]++; }
+            }
+            if ($ts >= strtotime('-30 days')) {
+                $rows[] = [
+                    'label'=>date('d.m. H:i', (int)($r['start'] ?? $ts)),
+                    'start'=>date('d.m. H:i', (int)($r['start'] ?? $ts)),
+                    'end'=>date('H:i', $ts),
+                    'kWh'=>round($k,3),
+                    'eur'=>round($eur,3),
+                    'priceCt'=>round((float)($r['priceCt'] ?? 0),2)
+                ];
+            }
+        }
+
+        $f = static fn($v)=>number_format((float)$v,2,',','.');
+        $html = '<div style="font-family:Tahoma;color:#fff;width:100%">';
+        $html .= '<b>Einspeise-Statistik – Einspeiseautomatik</b><br>';
+        $html .= '<span style="font-size:11px">Nur tatsächlich gemessene Netzeinspeisung aus Preis-Einspeisefenstern. PV-Abregelungsschutz ist ausgeschlossen.</span>';
+        $html .= '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px"><tr style="border-bottom:1px solid #666"><th style="text-align:left">Zeitraum</th><th style="text-align:right">Einspeisung</th><th style="text-align:right">Erlös</th><th style="text-align:right">Fenster</th></tr>';
+        foreach ([['Heute','today'],['Monat','month'],['Jahr','year'],['Gesamt','all']] as $x) {
+            $v=$sum[$x[1]];
+            $html.='<tr style="border-bottom:1px solid #333"><td style="padding:4px"><b>'.$x[0].'</b></td><td style="text-align:right;padding:4px">'.$f($v[0]).' kWh</td><td style="text-align:right;padding:4px">'.$f($v[1]).' €</td><td style="text-align:right;padding:4px">'.$v[2].'</td></tr>';
+        }
+        $html .= '</table>';
+
+        // Das Highcharts-Feld wird immer gerendert – auch bevor das erste Fenster
+        // abgeschlossen wurde. So ist sofort sichtbar, dass hier eine Grafik vorgesehen ist.
+        $js = $this->GetHighchartsJavaScript();
+        $id = 'sbo_feed_stats_' . $this->InstanceID;
+        if ($js !== '') {
+            $html .= '<div id="'.$id.'" style="width:100%;height:340px;margin-top:10px"></div><script>'.$js.'</script><script>(function(){';
+            $html .= 'var d='.json_encode($rows, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).';if(typeof Highcharts==="undefined")return;';
+            $html .= 'Highcharts.chart('.json_encode($id).',{chart:{type:"column",backgroundColor:"transparent",style:{fontFamily:"Tahoma"}},title:{text:"Einspeisung über Einspeiseautomatik",style:{color:"#fff",fontFamily:"Tahoma",fontSize:"13px"}},subtitle:{text:d.length?"Letzte 30 Tage":"Noch keine abgeschlossenen Einspeisefenster vorhanden",style:{color:"#bbb",fontFamily:"Tahoma",fontSize:"10px"}},credits:{enabled:false},legend:{enabled:false},xAxis:{categories:d.map(function(x){return x.label}),labels:{style:{color:"#fff",fontSize:"10px",fontFamily:"Tahoma"}}},yAxis:{min:0,title:{text:"kWh",style:{color:"#fff",fontFamily:"Tahoma"}},labels:{style:{color:"#fff",fontFamily:"Tahoma"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{formatter:function(){var r=d[this.point.index];return "<b>"+r.start+"–"+r.end+"</b><br>Einspeisung: <b>"+Highcharts.numberFormat(r.kWh,2,\",\",\".\")+" kWh</b><br>Erlös: <b>"+Highcharts.numberFormat(r.eur,2,\",\",\".\")+" €</b><br>Tarif: "+Highcharts.numberFormat(r.priceCt,2,\",\",\".\")+" ct/kWh"}},plotOptions:{column:{borderWidth:0,dataLabels:{enabled:true,formatter:function(){return this.y>0?Highcharts.numberFormat(this.y,1,\",\",\".\"):""},style:{color:"#fff",textOutline:"none",fontFamily:"Tahoma",fontSize:"9px"}}}},series:[{name:"Einspeisung",data:d.map(function(x){return x.kWh})}],lang:{noData:"Noch keine Einspeisedaten vorhanden"},noData:{style:{fontFamily:"Tahoma",fontSize:"12px",color:"#bbb"}}});})();</script>';
+        } else {
+            $html .= '<div style="margin-top:10px;font-size:11px;color:#bbb">Highcharts lokal nicht verfügbar.</div>';
+        }
         return $html.'</div>';
     }
 
