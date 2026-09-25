@@ -150,6 +150,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('OverviewHTML', 'Übersicht', '~HTMLBox', 120);
         $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 150);
         $this->RegisterVariableString('ConsumptionProfileChartHTML', 'Verbrauch Lastprofil Diagramm', '~HTMLBox', 151);
+        $this->RegisterVariableString('FeedInStatisticsHTML', 'Einspeise-Statistik', '~HTMLBox', 152);
         $this->RegisterVariableString('PVCalibrationDiagnosisHTML', 'PV-Kalibrierung Diagnose', '~HTMLBox', 190);
         $this->RegisterVariableString('ActionFeedback', 'Letzte Aktionen', '~HTMLBox', 118);
         $this->RegisterVariableString('ForecastSolarStatus', 'PV-Prognose Anbieter', '~HTMLBox', 119);
@@ -207,6 +208,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
         $this->RegisterAttributeInteger('ActiveFeedInPlannedEndTs', 0);
         $this->RegisterAttributeString('CompletedFeedInPlanKeysJSON', '{}');
+        $this->RegisterAttributeString('FeedInStatisticsJSON', '[]');
+        $this->RegisterAttributeInteger('ActiveFeedInStartedTs', 0);
+        $this->RegisterAttributeFloat('ActiveFeedInPriceCt', 0.0);
+        $this->RegisterAttributeString('ActiveFeedInReason', '');
         $this->RegisterAttributeBoolean('RuntimePVSettingsInitialized', false);
         $this->RegisterAttributeInteger('ManualTestUntil', 0);
         $this->RegisterAttributeInteger('ManualTestPowerW', 0);
@@ -771,6 +776,7 @@ class SmartBatteryOptimizer extends IPSModule
             $profile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
             if (is_array($profile) && !empty($profile)) {
                 SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($profile));
+                SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
             }
         } catch (Throwable $e) {
             $this->DebugLog('PVActual', 'Diagramm-Istwerte konnten nicht aktualisiert werden: ' . $e->getMessage(), 0);
@@ -967,6 +973,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
             SetValue($this->GetIDForIdent('ForecastSolarStatus'), $this->RenderProviderForecastStatusHTML($forecast));
             SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($consumptionProfile));
+            SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
             SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
             SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
             SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
@@ -1321,6 +1328,17 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeFloat('ActiveFeedInLastExportW', $this->ReadCurrentGridExportW());
         $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
         $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
+        $this->WriteAttributeInteger('ActiveFeedInStartedTs', time());
+        $priceCt = 0.0; $reason = 'price';
+        $plan = json_decode($this->ReadAttributeString('PlanJSON'), true);
+        if (is_array($plan) && isset($plan['slots']) && is_array($plan['slots'])) {
+            foreach ($plan['slots'] as $slot) {
+                $slotKey = (string)($slot['planKey'] ?? ((int)($slot['start'] ?? 0) . ':' . (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0))));
+                if ($slotKey === $key) { $priceCt = (float)($slot['priceCt'] ?? 0.0); $reason = (string)($slot['reason'] ?? 'price'); break; }
+            }
+        }
+        $this->WriteAttributeFloat('ActiveFeedInPriceCt', $priceCt);
+        $this->WriteAttributeString('ActiveFeedInReason', $reason);
         SetValue($this->GetIDForIdent('FeedInTargetEnergy'), max(0.0, $targetKWh));
         SetValue($this->GetIDForIdent('FeedInDeliveredEnergy'), 0.0);
         $this->DebugLog('Einspeisemenge', 'Start ' . $key . ' | Ziel=' . round($targetKWh,3) . ' kWh');
@@ -1360,8 +1378,19 @@ class SmartBatteryOptimizer extends IPSModule
     private function FinishMeasuredFeedInRun(bool $completed, string $reason): void
     {
         $key = $this->ReadAttributeString('ActiveFeedInPlanKey');
-        $delivered = $this->ReadAttributeFloat('ActiveFeedInDeliveredKWh');
+        $delivered = $this->UpdateMeasuredFeedInEnergy();
         $target = $this->ReadAttributeFloat('ActiveFeedInTargetKWh');
+        $startedTs = $this->ReadAttributeInteger('ActiveFeedInStartedTs');
+        $priceCt = $this->ReadAttributeFloat('ActiveFeedInPriceCt');
+        $feedReason = $this->ReadAttributeString('ActiveFeedInReason');
+        if ($key !== '' && $startedTs > 0) {
+            $stats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
+            if (!is_array($stats)) $stats = [];
+            $stats[] = ['start'=>$startedTs,'end'=>time(),'planKey'=>$key,'targetKWh'=>$target,'deliveredKWh'=>$delivered,'priceCt'=>$priceCt,'revenueEUR'=>$delivered*$priceCt/100.0,'completed'=>$completed,'reason'=>$feedReason,'finishReason'=>$reason];
+            if (count($stats) > 1500) $stats = array_slice($stats, -1500);
+            $this->WriteAttributeString('FeedInStatisticsJSON', json_encode($stats));
+            SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
+        }
         if ($completed && $key !== '') {
             $done = json_decode($this->ReadAttributeString('CompletedFeedInPlanKeysJSON'), true);
             if (!is_array($done)) $done = [];
@@ -1376,6 +1405,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeFloat('ActiveFeedInLastExportW', 0.0);
         $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
         $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
+        $this->WriteAttributeInteger('ActiveFeedInStartedTs', 0);
+        $this->WriteAttributeFloat('ActiveFeedInPriceCt', 0.0);
+        $this->WriteAttributeString('ActiveFeedInReason', '');
         SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung beendet: ' . $reason . ' | Netz ' . number_format($delivered,2,',','.') . ' / ' . number_format($target,2,',','.') . ' kWh');
         $this->DebugLog('Einspeisemenge', 'Ende | ' . $reason . ' | ' . round($delivered,3) . '/' . round($target,3) . ' kWh');
     }
@@ -4433,7 +4465,7 @@ class SmartBatteryOptimizer extends IPSModule
             if ($source === 'pvnode') {
                 $cache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
                 $fetched = is_array($cache) ? (int)($cache['fetchedAt'] ?? 0) : 0;
-                $status = ($fetched > 0 ? 'Cache ' . date('d.m. H:i', $fetched) : 'Live/kein Cache');
+                $status = 'Standort gesamt · ' . ($fetched > 0 ? 'Cache ' . date('d.m. H:i', $fetched) : 'Live/kein Cache');
             }
             $body .= '<td style="text-align:right;padding:5px 4px"><b>' . number_format($total,2,',','.') . ' kWh</b></td><td style="padding:5px 4px">' . htmlspecialchars($status) . '</td></tr>';
         }
@@ -4807,6 +4839,18 @@ class SmartBatteryOptimizer extends IPSModule
     }
 
 
+    private function RenderFeedInStatisticsHTML(): string
+    {
+        $stats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true); if (!is_array($stats)) $stats = [];
+        $todayStart=strtotime('today 00:00:00'); $monthStart=strtotime(date('Y-m-01 00:00:00')); $yearStart=strtotime(date('Y-01-01 00:00:00'));
+        $sum=['today'=>[0.0,0.0,0],'month'=>[0.0,0.0,0],'year'=>[0.0,0.0,0],'all'=>[0.0,0.0,0]]; $rows=[];
+        foreach($stats as $r){$ts=(int)($r['end']??$r['start']??0);$k=max(0.0,(float)($r['deliveredKWh']??0));$eur=(float)($r['revenueEUR']??0);foreach(['all'=>0,'year'=>$yearStart,'month'=>$monthStart,'today'=>$todayStart] as $key=>$from)if($ts>=$from){$sum[$key][0]+=$k;$sum[$key][1]+=$eur;$sum[$key][2]++;}if($ts>=strtotime('-30 days'))$rows[]=['label'=>date('d.m. H:i',(int)($r['start']??$ts)),'kWh'=>round($k,3),'eur'=>round($eur,3),'priceCt'=>round((float)($r['priceCt']??0),2)];}
+        $f=static fn($v)=>number_format((float)$v,2,',','.'); $html='<div style="font-family:Tahoma;color:#fff;width:100%"><b>Einspeise-Statistik</b><br><span style="font-size:11px">Tatsächlich gemessene Netzeinspeisung in geplanten Einspeisefenstern.</span><table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px"><tr style="border-bottom:1px solid #666"><th style="text-align:left">Zeitraum</th><th style="text-align:right">Einspeisung</th><th style="text-align:right">Erlös</th><th style="text-align:right">Fenster</th></tr>';
+        foreach([['Heute','today'],['Monat','month'],['Jahr','year'],['Gesamt','all']] as $x){$v=$sum[$x[1]];$html.='<tr style="border-bottom:1px solid #333"><td style="padding:4px"><b>'.$x[0].'</b></td><td style="text-align:right;padding:4px">'.$f($v[0]).' kWh</td><td style="text-align:right;padding:4px">'.$f($v[1]).' €</td><td style="text-align:right;padding:4px">'.$v[2].'</td></tr>';}$html.='</table>';
+        $js=$this->GetHighchartsJavaScript();$id='sbo_feed_stats_'.$this->InstanceID;if($js!==''&&count($rows)>0){$html.='<div id="'.$id.'" style="width:100%;height:330px;margin-top:10px"></div><script>'.$js.'</script><script>(function(){var d='.json_encode($rows).';if(typeof Highcharts==="undefined")return;Highcharts.chart('.json_encode($id).',{chart:{type:"column",backgroundColor:"transparent",style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{enabled:false},xAxis:{categories:d.map(function(x){return x.label}),labels:{style:{color:"#fff",fontSize:"10px"}}},yAxis:{min:0,title:{text:"kWh",style:{color:"#fff"}},labels:{style:{color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{formatter:function(){var r=d[this.point.index];return "<b>"+r.label+"</b><br>Einspeisung: <b>"+Highcharts.numberFormat(r.kWh,2,",",".")+" kWh</b><br>Erlös: <b>"+Highcharts.numberFormat(r.eur,2,",",".")+" €</b><br>Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"}},series:[{name:"Einspeisung",data:d.map(function(x){return x.kWh}),dataLabels:{enabled:true,formatter:function(){return Highcharts.numberFormat(this.y,1,",",".")},style:{color:"#fff",textOutline:"none",fontSize:"9px"}}}]});})();</script>';}
+        return $html.'</div>';
+    }
+
     private function RenderConsumptionProfileChartHTML(array $profile): string
     {
         $highchartsJS = $this->GetHighchartsJavaScript();
@@ -4847,7 +4891,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $html='<div style="font-family:Tahoma;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
         if($highchartsJS==='') return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
-        $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button><button id="'.$chartId.'_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
+        $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button><button id="'.$chartId.'_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
         $html.='var days='.json_encode($days).',id='.json_encode($chartId).',key='.json_encode('sbo_consumption_selected_day_' . $this->InstanceID).',idx=Math.max(0,days.length-1),chart=null;try{var sd=localStorage.getItem(key);if(sd){for(var si=0;si<days.length;si++){if(days[si].date===sd){idx=si;break;}}}}catch(e){}function e(s){return document.getElementById(id+s)}function draw(){if(days.length){try{localStorage.setItem(key,days[idx].date)}catch(e){}}if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};e("_today").onclick=function(){var t=new Date(),y=t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0");for(var q=0;q<days.length;q++){if(days[q].date===y){idx=q;break;}}draw()};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
         return $html;
     }
@@ -4962,9 +5006,9 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<div id="' . $chartId . '" style="width:100%;height:410px;margin-top:8px;margin-bottom:6px"></div>';
             $html .= '<div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px 0">';
             $html .= '<button id="' . $chartId . '_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button>';
-            $html .= '<button id="' . $chartId . '_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Heute</button>';
             $html .= '<span id="' . $chartId . '_date" style="min-width:150px;text-align:center;font-weight:bold"></span>';
             $html .= '<button id="' . $chartId . '_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button>';
+            $html .= '<button id="' . $chartId . '_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Heute</button>';
             $html .= '</div>';
             $html .= '<div id="' . $chartId . '_summary" style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px;text-align:center"></div>';
             $html .= '<script>' . $highchartsJS . '</script>';
