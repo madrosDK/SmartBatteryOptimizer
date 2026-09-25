@@ -401,7 +401,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.69';
+        $currentModuleVersion = '1.9.70';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -758,6 +758,23 @@ class SmartBatteryOptimizer extends IPSModule
         // Die Prognose besitzt wieder ihr eigenes konfigurierbares Intervall.
         $this->DebugLog('PVActual', 'PV-Ist + Planung aktualisieren; gespeicherte PV-Prognose verwenden');
         $this->RecalculateInternal(false);
+
+        // Diagramme bewusst nochmals direkt aus Archiv + gespeichertem Forecast/Profile
+        // aufbauen. Dadurch werden die Istwerte auch dann im konfigurierten
+        // PV-Ist-Intervall aktualisiert, wenn ein paralleler Rechenlauf durch die
+        // Berechnungssperre uebersprungen wurde.
+        try {
+            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+            if (is_array($forecast) && !empty($forecast)) {
+                SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+            }
+            $profile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
+            if (is_array($profile) && !empty($profile)) {
+                SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($profile));
+            }
+        } catch (Throwable $e) {
+            $this->DebugLog('PVActual', 'Diagramm-Istwerte konnten nicht aktualisiert werden: ' . $e->getMessage(), 0);
+        }
     }
 
     private function UpdatePVCalibrationState(bool $renderDiagnosis = true): void
@@ -4830,7 +4847,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $html='<div style="font-family:Tahoma;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
         if($highchartsJS==='') return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
-        $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button><button id="'.$chartId.'_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:58px">Heute</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
+        $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button><button id="'.$chartId.'_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
         $html.='var days='.json_encode($days).',id='.json_encode($chartId).',key='.json_encode('sbo_consumption_selected_day_' . $this->InstanceID).',idx=Math.max(0,days.length-1),chart=null;try{var sd=localStorage.getItem(key);if(sd){for(var si=0;si<days.length;si++){if(days[si].date===sd){idx=si;break;}}}}catch(e){}function e(s){return document.getElementById(id+s)}function draw(){if(days.length){try{localStorage.setItem(key,days[idx].date)}catch(e){}}if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};e("_today").onclick=function(){var t=new Date(),y=t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0");for(var q=0;q<days.length;q++){if(days[q].date===y){idx=q;break;}}draw()};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
         return $html;
     }
@@ -4945,7 +4962,7 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<div id="' . $chartId . '" style="width:100%;height:410px;margin-top:8px;margin-bottom:6px"></div>';
             $html .= '<div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px 0">';
             $html .= '<button id="' . $chartId . '_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button>';
-            $html .= '<button id="' . $chartId . '_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:58px;padding:4px 10px;cursor:pointer">Heute</button>';
+            $html .= '<button id="' . $chartId . '_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Heute</button>';
             $html .= '<span id="' . $chartId . '_date" style="min-width:150px;text-align:center;font-weight:bold"></span>';
             $html .= '<button id="' . $chartId . '_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button>';
             $html .= '</div>';
