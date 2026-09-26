@@ -87,6 +87,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('PVHeadroomTargetSOC', 95.0);
         $this->RegisterPropertyFloat('PVStorageSharePct', 70.0);
         $this->RegisterPropertyFloat('PVSpaceMinimumPriceCt', 0.0);
+        $this->RegisterPropertyInteger('FeedInFactorVariable', 0);
 
         $this->RegisterPropertyInteger('RefreshMinutes', 30);
         $this->RegisterPropertyInteger('PVForecastRefreshMinutes', 30);
@@ -128,10 +129,11 @@ class SmartBatteryOptimizer extends IPSModule
         $this->EnableAction('RuntimePVHeadroomTargetSOC');
         $this->RegisterVariableFloat('RuntimePVStorageSharePct', 'PV-Prognose als möglicher Batterieüberschuss', 'SBO.Percent', 61);
         $this->EnableAction('RuntimePVStorageSharePct');
-        $this->RegisterVariableFloat('RuntimePVSpaceMinimumPriceCt', 'Mindestpreis notwendige Speicherfreihaltung', 'SBO.PriceCt', 62);
+        $this->RegisterVariableFloat('RuntimePVSpaceMinimumPriceCt', 'Mindestpreis Einspeisung', 'SBO.PriceCt', 62);
         $this->EnableAction('RuntimePVSpaceMinimumPriceCt');
         $this->RegisterVariableFloat('RuntimeMinimumSOC', 'Mindest-SoC', 'SBO.Percent', 67);
         $this->EnableAction('RuntimeMinimumSOC');
+        $this->RegisterVariableString('FeedInPriceLockStatus', 'Einspeisepreis-Sperre', '', 68);
 
         $this->RegisterVariableInteger('TestDischargePowerW', 'Test Entladeleistung', 'SBO.PowerW', 63);
         $this->EnableAction('TestDischargePowerW');
@@ -212,6 +214,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('ActiveFeedInStartedTs', 0);
         $this->RegisterAttributeFloat('ActiveFeedInPriceCt', 0.0);
         $this->RegisterAttributeString('ActiveFeedInReason', '');
+        $this->RegisterAttributeBoolean('FeedInPriceLockActive', false);
+        $this->RegisterAttributeFloat('FeedInFactorOriginalValue', 0.0);
+        $this->RegisterAttributeBoolean('FeedInFactorOriginalValid', false);
+        $this->RegisterAttributeInteger('FeedInFactorVariableLastID', 0);
         $this->RegisterAttributeBoolean('RuntimePVSettingsInitialized', false);
         $this->RegisterAttributeInteger('ManualTestUntil', 0);
         $this->RegisterAttributeInteger('ManualTestPowerW', 0);
@@ -320,6 +326,12 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('RuntimeMinimumSOC'), $this->GetRuntimeMinimumSOC());
         }
 
+        // Der bisherige Laufzeitwert bleibt aus Kompatibilitätsgründen unter demselben Ident,
+        // ist funktional aber ab dieser Version die zentrale Preisuntergrenze für JEDE Netzeinspeisung.
+        $minimumPriceVarID = @$this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt');
+        if ($minimumPriceVarID > 0) @IPS_SetName($minimumPriceVarID, 'Mindestpreis Einspeisung');
+        $this->InitializeFeedInFactorMemory();
+
         $debugMode = $this->ReadPropertyBoolean('DebugMode');
         $lastAppliedDebugMode = $this->ReadAttributeBoolean('LastAppliedDebugMode');
         $debugModeChanged = ($debugMode !== $lastAppliedDebugMode);
@@ -406,7 +418,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.70';
+        $currentModuleVersion = '1.9.76';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -422,16 +434,16 @@ class SmartBatteryOptimizer extends IPSModule
             'PVDebugVisibilityJSON','ProviderDebugLogJSON','ActionHistoryJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
             'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PricesJSON','PlanJSON','NightLearningSource',
             'ConsumptionProfileJSON','ConsumptionLearningSource','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
-            'CompletedFeedInPlanKeysJSON','AlphaTestTrace'
+            'CompletedFeedInPlanKeysJSON','FeedInStatisticsJSON','ActiveFeedInReason','AlphaTestTrace'
         ];
         $integerAttributes = [
             'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
             'PVCalibrationBlockedFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
-            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs'
+            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID'
         ];
-        $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW'];
-        $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized'];
+        $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
+        $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized','FeedInPriceLockActive','FeedInFactorOriginalValid'];
 
         $attributes = [];
         foreach ($stringAttributes as $name) $attributes[$name] = $this->ReadAttributeString($name);
@@ -502,6 +514,12 @@ class SmartBatteryOptimizer extends IPSModule
                 break;
             case 'TestDischarge':
                 if ((bool)$Value) {
+                    $priceLock = $this->UpdateFeedInPriceLock();
+                    if (!empty($priceLock['blocked'])) {
+                        SetValue($this->GetIDForIdent('TestDischarge'), false);
+                        SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test nicht gestartet: Mindestpreis Einspeisung unterschritten.');
+                        break;
+                    }
                     $socVar = $this->ReadPropertyInteger('SOCVariable');
                     $soc = ($socVar > 0 && @IPS_VariableExists($socVar)) ? (float)GetValue($socVar) : 0.0;
                     if ($soc <= $this->GetRuntimeMinimumSOC()) {
@@ -588,6 +606,7 @@ class SmartBatteryOptimizer extends IPSModule
                 break;
             case 'RuntimePVSpaceMinimumPriceCt':
                 SetValue($this->GetIDForIdent($Ident), (float)$Value);
+                $this->UpdateFeedInPriceLock();
                 $this->RecalculateInternal(false);
                 break;
             case 'RuntimeMinimumSOC':
@@ -641,6 +660,177 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $id = @$this->GetIDForIdent($ident);
         return $id > 0 ? (float)GetValue($id) : $fallback;
+    }
+
+    private function GetMinimumFeedInPriceCt(): float
+    {
+        return $this->GetRuntimeFloat('RuntimePVSpaceMinimumPriceCt', $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
+    }
+
+    private function WriteFeedInFactorVariable(int $variableID, float $value): void
+    {
+        $variable = @IPS_GetVariable($variableID);
+        $type = is_array($variable) ? (int)($variable['VariableType'] ?? -1) : -1;
+        if ($type === 1) {
+            $this->WriteVariableSmart($variableID, (int)round($value));
+            return;
+        }
+        if ($type === 2) {
+            $this->WriteVariableSmart($variableID, $value);
+            return;
+        }
+        throw new Exception('Einspeisefaktor-Variable muss Integer oder Float sein.');
+    }
+
+    private function InitializeFeedInFactorMemory(): void
+    {
+        $variableID = $this->ReadPropertyInteger('FeedInFactorVariable');
+        $lastID = $this->ReadAttributeInteger('FeedInFactorVariableLastID');
+
+        if ($lastID !== $variableID) {
+            // Wurde die Zielvariable gewechselt, einen eventuell noch gesperrten alten Wert
+            // nach Möglichkeit wiederherstellen, bevor die neue Variable übernommen wird.
+            if ($lastID > 0 && $this->ReadAttributeBoolean('FeedInPriceLockActive') && $this->ReadAttributeBoolean('FeedInFactorOriginalValid') && @IPS_VariableExists($lastID)) {
+                try { $this->WriteFeedInFactorVariable($lastID, $this->ReadAttributeFloat('FeedInFactorOriginalValue')); } catch (Throwable $e) {}
+            }
+            $this->WriteAttributeBoolean('FeedInPriceLockActive', false);
+            $this->WriteAttributeBoolean('FeedInFactorOriginalValid', false);
+            $this->WriteAttributeInteger('FeedInFactorVariableLastID', $variableID);
+        }
+
+        if ($variableID > 0 && @IPS_VariableExists($variableID) && !$this->ReadAttributeBoolean('FeedInPriceLockActive')) {
+            $variable = @IPS_GetVariable($variableID);
+            $type = is_array($variable) ? (int)($variable['VariableType'] ?? -1) : -1;
+            if ($type === 1 || $type === 2) {
+                $value = (float)GetValue($variableID);
+                $this->WriteAttributeFloat('FeedInFactorOriginalValue', $value);
+                $this->WriteAttributeBoolean('FeedInFactorOriginalValid', true);
+            }
+        }
+    }
+
+    private function GetFeedInPriceLockInfo(?int $timestamp = null): array
+    {
+        $now = $timestamp ?? time();
+        $threshold = $this->GetMinimumFeedInPriceCt();
+        $prices = json_decode($this->ReadAttributeString('PricesJSON'), true);
+        if (!is_array($prices)) $prices = [];
+        usort($prices, static fn($a, $b) => ((int)($a['start'] ?? 0)) <=> ((int)($b['start'] ?? 0)));
+
+        $current = null;
+        foreach ($prices as $p) {
+            $start = (int)($p['start'] ?? 0);
+            $end = (int)($p['end'] ?? 0);
+            if ($start <= $now && $now < $end) { $current = $p; break; }
+        }
+
+        $known = is_array($current);
+        $priceCt = $known ? (float)($current['priceCt'] ?? 0.0) : null;
+        $blocked = $known && $priceCt < $threshold;
+        $blockedUntil = 0;
+        $nextBlockedStart = 0;
+        $nextBlockedEnd = 0;
+
+        if ($blocked) {
+            $blockedUntil = (int)($current['end'] ?? 0);
+            foreach ($prices as $p) {
+                $start = (int)($p['start'] ?? 0);
+                $end = (int)($p['end'] ?? 0);
+                if ($start < $blockedUntil - 1) continue;
+                if ($start > $blockedUntil + 1) break;
+                if ((float)($p['priceCt'] ?? 0.0) < $threshold) $blockedUntil = max($blockedUntil, $end);
+                else break;
+            }
+        } else {
+            foreach ($prices as $i => $p) {
+                $start = (int)($p['start'] ?? 0);
+                $end = (int)($p['end'] ?? 0);
+                if ($end <= $now || (float)($p['priceCt'] ?? 0.0) >= $threshold) continue;
+                $nextBlockedStart = max($now, $start);
+                $nextBlockedEnd = $end;
+                for ($j = $i + 1; $j < count($prices); $j++) {
+                    $n = $prices[$j];
+                    $ns = (int)($n['start'] ?? 0);
+                    $ne = (int)($n['end'] ?? 0);
+                    if ($ns > $nextBlockedEnd + 1) break;
+                    if ((float)($n['priceCt'] ?? 0.0) < $threshold) $nextBlockedEnd = max($nextBlockedEnd, $ne);
+                    else break;
+                }
+                break;
+            }
+        }
+
+        return [
+            'known'=>$known, 'blocked'=>$blocked, 'priceCt'=>$priceCt, 'thresholdCt'=>$threshold,
+            'blockedUntil'=>$blockedUntil, 'nextBlockedStart'=>$nextBlockedStart, 'nextBlockedEnd'=>$nextBlockedEnd
+        ];
+    }
+
+    private function UpdateFeedInPriceLock(): array
+    {
+        $info = $this->GetFeedInPriceLockInfo();
+        $variableID = $this->ReadPropertyInteger('FeedInFactorVariable');
+        $factorConfigured = $variableID > 0 && @IPS_VariableExists($variableID);
+        $factorValid = false;
+        if ($factorConfigured) {
+            $variable = @IPS_GetVariable($variableID);
+            $type = is_array($variable) ? (int)($variable['VariableType'] ?? -1) : -1;
+            $factorValid = ($type === 1 || $type === 2);
+        }
+
+        if (!$info['known']) {
+            $factorText = !$factorConfigured ? 'Einspeisefaktor-Variable nicht konfiguriert'
+                : (!$factorValid ? 'Einspeisefaktor-Variable ist nicht numerisch'
+                : 'Einspeisefaktor ' . number_format((float)GetValue($variableID), 1, ',', '.') . ' %'
+                    . ($this->ReadAttributeBoolean('FeedInFactorOriginalValid') ? ' (Rückstellwert ' . number_format($this->ReadAttributeFloat('FeedInFactorOriginalValue'), 1, ',', '.') . ' %)' : ''));
+            $status = 'Keine aktuelle Preisperiode verfügbar | Mindestpreis ' . number_format($info['thresholdCt'], 2, ',', '.') . ' ct/kWh | ' . $factorText;
+            $statusID = @$this->GetIDForIdent('FeedInPriceLockStatus');
+            if ($statusID > 0) SetValue($statusID, $status);
+            return $info;
+        }
+
+        if (!empty($info['blocked'])) {
+            if ($factorValid) {
+                if (!$this->ReadAttributeBoolean('FeedInPriceLockActive')) {
+                    $this->WriteAttributeFloat('FeedInFactorOriginalValue', (float)GetValue($variableID));
+                    $this->WriteAttributeBoolean('FeedInFactorOriginalValid', true);
+                }
+                if (abs((float)GetValue($variableID)) > 0.0001) {
+                    $this->WriteFeedInFactorVariable($variableID, 0.0);
+                }
+            }
+            $this->WriteAttributeBoolean('FeedInPriceLockActive', true);
+        } else {
+            if ($this->ReadAttributeBoolean('FeedInPriceLockActive')) {
+                if ($factorValid && $this->ReadAttributeBoolean('FeedInFactorOriginalValid')) {
+                    $this->WriteFeedInFactorVariable($variableID, $this->ReadAttributeFloat('FeedInFactorOriginalValue'));
+                }
+                $this->WriteAttributeBoolean('FeedInPriceLockActive', false);
+            }
+            // Außerhalb einer Preissperre folgt der gespeicherte Rückstellwert einer
+            // manuellen Änderung des Einspeisefaktors automatisch.
+            if ($factorValid) {
+                $this->WriteAttributeFloat('FeedInFactorOriginalValue', (float)GetValue($variableID));
+                $this->WriteAttributeBoolean('FeedInFactorOriginalValid', true);
+            }
+        }
+
+        $factorText = !$factorConfigured ? 'Einspeisefaktor-Variable nicht konfiguriert'
+            : (!$factorValid ? 'Einspeisefaktor-Variable ist nicht numerisch'
+            : 'Einspeisefaktor ' . number_format((float)GetValue($variableID), 1, ',', '.') . ' %'
+                . ($this->ReadAttributeBoolean('FeedInFactorOriginalValid') ? ' (Rückstellwert ' . number_format($this->ReadAttributeFloat('FeedInFactorOriginalValue'), 1, ',', '.') . ' %)' : ''));
+
+        if ($info['blocked']) {
+            $status = 'GESPERRT: ' . number_format((float)$info['priceCt'], 2, ',', '.') . ' < ' . number_format($info['thresholdCt'], 2, ',', '.') . ' ct/kWh'
+                . ($info['blockedUntil'] > 0 ? ' | bis ' . date('d.m. H:i', $info['blockedUntil']) : '') . ' | ' . $factorText;
+        } else {
+            $status = 'Einspeisung erlaubt: ' . number_format((float)$info['priceCt'], 2, ',', '.') . ' ≥ ' . number_format($info['thresholdCt'], 2, ',', '.') . ' ct/kWh';
+            if ($info['nextBlockedStart'] > 0) $status .= ' | nächste Preissperre ' . date('d.m. H:i', $info['nextBlockedStart']) . '–' . date('H:i', $info['nextBlockedEnd']);
+            $status .= ' | ' . $factorText;
+        }
+        $statusID = @$this->GetIDForIdent('FeedInPriceLockStatus');
+        if ($statusID > 0) SetValue($statusID, $status);
+        return $info;
     }
 
     private function DebugLog(string $area, $message, int $format = 0): void
@@ -1153,6 +1343,23 @@ class SmartBatteryOptimizer extends IPSModule
         if (!IPS_SemaphoreEnter($lock, 1)) return;
         try {
             $now = time();
+            $priceLock = $this->UpdateFeedInPriceLock();
+            if (!empty($priceLock['blocked'])) {
+                if ($this->ReadAttributeString('ActiveFeedInPlanKey') !== '') {
+                    $this->UpdateMeasuredFeedInEnergy();
+                    $this->FinishMeasuredFeedInRun(false, 'Mindestpreis Einspeisung unterschritten');
+                } else {
+                    $this->StopFeedIn();
+                }
+                if ($this->ReadAttributeInteger('ManualTestUntil') > 0) {
+                    $this->WriteAttributeInteger('ManualTestUntil', 0);
+                    $this->WriteAttributeInteger('ManualTestPowerW', 0);
+                    SetValue($this->GetIDForIdent('TestDischarge'), false);
+                    SetValue($this->GetIDForIdent('TestDischargeStatus'), 'Test beendet: Mindestpreis Einspeisung unterschritten.');
+                }
+                SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung gesperrt: Tarif ' . number_format((float)$priceLock['priceCt'], 2, ',', '.') . ' ct/kWh < Mindestpreis ' . number_format((float)$priceLock['thresholdCt'], 2, ',', '.') . ' ct/kWh' . (!empty($priceLock['blockedUntil']) ? ' | bis ' . date('d.m. H:i', (int)$priceLock['blockedUntil']) : ''));
+                return;
+            }
 
             $testUntil = $this->ReadAttributeInteger('ManualTestUntil');
             if ($testUntil > $now) {
@@ -3186,7 +3393,8 @@ class SmartBatteryOptimizer extends IPSModule
             $allSlots[] = $p;
         }
 
-        $economic = array_values(array_filter($allSlots, fn($p) => $p['priceCt'] >= $this->ReadPropertyFloat('MinimumFeedInPriceCt')));
+        $minimumFeedInPrice = $this->GetMinimumFeedInPriceCt();
+        $economic = array_values(array_filter($allSlots, fn($p) => $p['priceCt'] >= $minimumFeedInPrice));
         usort($economic, fn($a, $b) => $b['priceCt'] <=> $a['priceCt']);
 
         $remaining = $available;
@@ -3245,7 +3453,7 @@ class SmartBatteryOptimizer extends IPSModule
         // deshalb erzwingt pvSpaceRequired keine zusätzlichen Nacht-Preisfenster.
         $mandatoryMissing = 0.0;
         if ($mandatoryMissing > 0.001 && $remaining > 0.001 && $maxKW > 0) {
-            $pvFloor = $this->GetRuntimeFloat('RuntimePVSpaceMinimumPriceCt', $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
+            $pvFloor = $this->GetMinimumFeedInPriceCt();
             $fallbackSlots = array_values(array_filter($allSlots, function ($p) use ($usedKeys, $pvFloor) {
                 $key = $p['start'] . ':' . $p['end'];
                 return !isset($usedKeys[$key]) && $p['priceCt'] >= $pvFloor;
@@ -3376,7 +3584,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         if ($pvSpaceRequired > 0.05) {
-            $pvFloor = $this->GetRuntimeFloat('RuntimePVSpaceMinimumPriceCt', $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
+            $pvFloor = $this->GetMinimumFeedInPriceCt();
             $status .= ' | PV-Speicherfreihaltung ' . number_format($pvSpaceRequired, 2, ',', '.') . ' kWh'
                 . ' | Preisuntergrenze ' . number_format($pvFloor, 2, ',', '.') . ' ct/kWh';
             if ($mandatoryMissing > 0.05) {
@@ -4201,6 +4409,14 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function SetFeedIn(bool $enable, float $powerW, int $slotEnd = 0)
     {
+        if ($enable) {
+            $priceLock = $this->GetFeedInPriceLockInfo();
+            if (!empty($priceLock['blocked'])) {
+                $this->DebugLog('Batterie', 'Einspeisebefehl verworfen: Mindestpreis Einspeisung unterschritten (' . round((float)$priceLock['priceCt'], 2) . ' < ' . round((float)$priceLock['thresholdCt'], 2) . ' ct/kWh)');
+                $enable = false;
+                $powerW = 0.0;
+            }
+        }
         $this->DebugLog('Batterie', ($enable ? 'Einspeisung AN' : 'Einspeisung AUS') . ' | Soll=' . round($powerW) . ' W' . ($slotEnd > 0 ? ' | bis ' . date('H:i:s', $slotEnd) : ''));
         // Older configurations may still use the default generic mode despite
         // having configured only AlphaESS. Never silently discard the command.
@@ -4809,6 +5025,12 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '<td style="' . $cellLabel . '">davon für Einspeisung frei</td><td style="' . $cellValue . '">' . number_format((float)($plan['availableAtNightStartKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
         $html .= '</tr>';
         $html .= '<tr>';
+        $html .= '<td style="' . $cellLabel . '">Mindestpreis Einspeisung</td><td style="' . $cellValue . '">' . number_format($this->GetMinimumFeedInPriceCt(), 2, ',', '.') . ' ct/kWh</td>';
+        $lockStatusID = @$this->GetIDForIdent('FeedInPriceLockStatus');
+        $lockStatus = $lockStatusID > 0 ? (string)GetValue($lockStatusID) : '';
+        $html .= '<td style="' . $cellLabel . '">Preissperre</td><td style="' . $cellValue . '">' . htmlspecialchars($lockStatus !== '' ? $lockStatus : 'wird mit nächster Steuerprüfung aktualisiert') . '</td>';
+        $html .= '</tr>';
+        $html .= '<tr>';
         $html .= '<td style="' . $cellLabel . '">Erwarteter Erlös</td><td style="' . $cellValue . '">' . number_format((float)$plan['expectedRevenueEUR'], 2, ',', '.') . ' €</td>';
         $html .= '<td style="' . $cellLabel . '">Status</td><td style="' . $cellValue . '">' . htmlspecialchars((string)$plan['status']) . '</td>';
         $html .= '</tr>';
@@ -4970,7 +5192,7 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= 'try{var sm=localStorage.getItem(key);if(sm){for(var si=0;si<months.length;si++){if(months[si].key===sm){idx=si;break;}}}}catch(ex){}';
         $html .= 'function e(s){return document.getElementById(id+s)}';
         $html .= 'function fmt(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}';
-        $html .= 'function draw(){var el=e("");if(!el||typeof Highcharts==="undefined"||!months.length)return false;var m=months[idx],cats=[],kwh=[],eur=[];for(var i=0;i<m.rows.length;i++){var r=m.rows[i];cats.push(r.label);kwh.push({y:Number(r.kWh)||0,custom:r});eur.push({y:Number(r.eur)||0,custom:r});}try{localStorage.setItem(key,m.key)}catch(ex){}try{chart=Highcharts.chart(el,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:cats,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:[{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{fontFamily:"Tahoma",color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888",style:{fontFamily:"Tahoma",color:"#fff",fontSize:"11px"},formatter:function(){var p=this.points&&this.points.length?this.points[0].point:null,c=p&&p.custom?p.custom:{};return "<b>"+(c.date||"")+"</b><br>Einspeisung: <b>"+fmt(c.kWh,2)+" kWh</b><br><span style=\"color:#ffe082\">Erlös: <b>"+fmt(c.eur,2)+" €</b></span><br>Ø Tarif: "+fmt(c.avgPriceCt,2)+" ct/kWh<br>Einspeisefenster: "+(Number(c.windows)||0)+(Number(c.targetKWh)>0?"<br>Geplant: "+fmt(c.targetKWh,2)+" kWh":"");}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Einspeisung",yAxis:0,data:kwh,zIndex:2,dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,1)+" kWh":""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Erlös",yAxis:1,data:eur,color:"rgba(255,213,79,.38)",pointPadding:.20,zIndex:1,dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,2)+" €":""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffe082",textOutline:"none"}}}]});var de=e("_date");if(de)de.innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=e("_summary");if(s)s.innerHTML="Monat: <b>"+fmt(m.month.kWh,2)+" kWh / "+fmt(m.month.eur,2)+" €</b> &middot; Jahr: <b>"+fmt(m.year.kWh,2)+" kWh / "+fmt(m.year.eur,2)+" €</b> &middot; Gesamt: <b>"+fmt(m.all.kWh,2)+" kWh / "+fmt(m.all.eur,2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=months.length-1;return true;}catch(ex){el.innerHTML="<div style=\"font-family:Tahoma;font-size:11px;color:#ffb3b3;padding:8px\">Highcharts-Fehler: "+String(ex&&ex.message?ex.message:ex)+"</div>";return true;}}';
+        $html .= 'function draw(){var el=e("");if(!el||typeof Highcharts==="undefined"||!months.length)return false;var m=months[idx],cats=[],kwh=[],eur=[];for(var i=0;i<m.rows.length;i++){var r=m.rows[i];cats.push(r.label);kwh.push({y:Number(r.kWh)||0,custom:r});eur.push({y:Number(r.eur)||0,custom:r});}try{localStorage.setItem(key,m.key)}catch(ex){}try{chart=Highcharts.chart(el,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:cats,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:[{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{fontFamily:"Tahoma",color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888",style:{fontFamily:"Tahoma",color:"#fff",fontSize:"11px"},formatter:function(){var p=this.points&&this.points.length?this.points[0].point:null,c=p&&p.custom?p.custom:{};return "<b>"+(c.date||"")+"</b><br>Einspeisung: <b>"+fmt(c.kWh,2)+" kWh</b><br><span style=\"color:#ffe082\">Erlös: <b>"+fmt(c.eur,2)+" €</b></span><br>Ø Tarif: "+fmt(c.avgPriceCt,2)+" ct/kWh<br>Einspeisefenster: "+(Number(c.windows)||0)+(Number(c.targetKWh)>0?"<br>Geplant: "+fmt(c.targetKWh,2)+" kWh":"");}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Einspeisung",yAxis:0,data:kwh,zIndex:2,events:{mouseOver:function(){var me=this;this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:s===me?1:.22});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:s===me?1:.22})})},mouseOut:function(){this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:1});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:1})})}},dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,1)+" kWh":""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Erlös",yAxis:1,data:eur,color:"rgba(255,213,79,.42)",pointPadding:.20,zIndex:3,events:{mouseOver:function(){var me=this;this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:s===me?1:.22});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:s===me?1:.22})})},mouseOut:function(){this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:1});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:1})})}},dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,2)+" €":""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffe082",textOutline:"none"}}}]});var de=e("_date");if(de)de.innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=e("_summary");if(s)s.innerHTML="Monat: <b>"+fmt(m.month.kWh,2)+" kWh / "+fmt(m.month.eur,2)+" €</b> &middot; Jahr: <b>"+fmt(m.year.kWh,2)+" kWh / "+fmt(m.year.eur,2)+" €</b> &middot; Gesamt: <b>"+fmt(m.all.kWh,2)+" kWh / "+fmt(m.all.eur,2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=months.length-1;return true;}catch(ex){el.innerHTML="<div style=\"font-family:Tahoma;font-size:11px;color:#ffb3b3;padding:8px\">Highcharts-Fehler: "+String(ex&&ex.message?ex.message:ex)+"</div>";return true;}}';
         $html .= 'function init(n){var p=e("_prev"),nx=e("_next"),t=e("_today");if(p)p.onclick=function(){if(idx>0){idx--;draw()}};if(nx)nx.onclick=function(){if(idx<months.length-1){idx++;draw()}};if(t)t.onclick=function(){idx=Math.max(0,months.length-1);draw()};if(draw())return;if(n>0)setTimeout(function(){init(n-1)},150)}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",function(){init(8)})}else{setTimeout(function(){init(8)},0)}})();</script></div>';
         return $html;
     }
@@ -5323,7 +5545,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nur die Daten werden vorab von 15 Minuten auf Stundenmittel zusammengefasst.
         $highchartsJS = $this->GetHighchartsJavaScript();
         $chartId = 'sbo_price_chart_' . $this->InstanceID;
-        $minimumPrice = $this->ReadPropertyFloat('MinimumFeedInPriceCt');
+        $minimumPrice = $this->GetMinimumFeedInPriceCt();
 
         $now = time();
         $displayStart = mktime((int)date('H', $now), 0, 0, (int)date('m', $now), (int)date('d', $now), (int)date('Y', $now));
@@ -5403,7 +5625,7 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
             $html .= 'title:{text:null,style:{fontFamily:"Tahoma",color:"#ffffff"}},credits:{enabled:false},legend:{enabled:false,itemStyle:{fontFamily:"Tahoma",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
             $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
-            $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
+            $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis Einspeisung ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
             $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
             $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return Highcharts.numberFormat(this.y,2,",",".")+" ct";},style:{fontFamily:"Tahoma",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
             $html .= 'series:[{name:"Einspeisevergütung",data:market}]';

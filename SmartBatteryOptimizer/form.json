@@ -663,15 +663,6 @@
                 },
                 {
                     "type": "NumberSpinner",
-                    "name": "MinimumFeedInPriceCt",
-                    "caption": "Mindest-Einspeisepreis",
-                    "digits": 2,
-                    "minimum": -100,
-                    "maximum": 500,
-                    "suffix": " ct/kWh"
-                },
-                {
-                    "type": "NumberSpinner",
                     "name": "MinimumTomorrowPVKWh",
                     "caption": "Min. PV-Prognose morgen für normale Freigabe",
                     "digits": 1,
@@ -759,11 +750,20 @@
                 {
                     "type": "NumberSpinner",
                     "name": "PVSpaceMinimumPriceCt",
-                    "caption": "Preisuntergrenze für notwendige Speicherfreihaltung (Startwert)",
+                    "caption": "Mindestpreis Einspeisung (Startwert)",
                     "digits": 2,
                     "minimum": -100,
-                    "maximum": 100,
+                    "maximum": 500,
                     "suffix": " ct/kWh"
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "FeedInFactorVariable",
+                    "caption": "Variable Einspeisefaktor (%)"
+                },
+                {
+                    "type": "Label",
+                    "caption": "Wird der Mindestpreis Einspeisung unterschritten, wird diese Variable auf 0 % gesetzt. Der zuvor eingestellte Wert (z. B. 43 %) wird gespeichert und nach Ende der Preissperre automatisch wiederhergestellt. Die Preisgrenze gilt für jede Netzeinspeisung – auch für PV-Abregelungsschutz/Speicherfreihaltung."
                 }
             ]
         },

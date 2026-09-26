@@ -11,7 +11,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.9.75 / Build 146**
+**1.9.76 / Build 147**
 
 ## Neu in 1.2.3
 
@@ -278,7 +278,7 @@ Die Instanzkonfiguration liefert beim ersten Anlegen der Variablen nur die Start
 Die editierbaren Laufzeitvariablen verwenden nun eigene, typkorrekte IP-Symcon-Profile. Leistungswerte sind Integer mit Einheit W, Prozentwerte und Preise sind Float-Profile. Dadurch wird die WebFront-/Tile-Fehlermeldung `Invalid profile type` vermieden.
 
 ### Preislogik für notwendige Speicherfreihaltung 1.7.3
-Die normale Einspeisung nutzt weiterhin den normalen Mindest-Einspeisepreis. Reicht die dadurch geschaffene Speicherkapazität für den PV-/Netzlimit-Schutz nicht aus, wählt der Optimierer zusätzlich die bestbezahlten noch freien Zeitfenster vor dem kritischen PV-Zeitpunkt. Die separate Preisuntergrenze für notwendige Speicherfreihaltung ist dabei eine harte Untergrenze. Standard ist nun 0 ct/kWh; negative Preise werden damit nicht verwendet, sofern der Benutzer die Grenze nicht bewusst negativ einstellt.
+Ab Version 1.9.76 gibt es nur noch eine zentrale Laufzeit-Preisgrenze **Mindestpreis Einspeisung**. Sie gilt für jede Netzeinspeisung: Preis-Einspeiseautomatik, PV-Speicherfreihaltung und PV-Abregelungsschutz. Preisperioden unterhalb dieser Grenze werden bereits bei der Planung ausgeschlossen. Während einer solchen Periode werden Batterie-Einspeisebefehle gesperrt. Ist eine **Variable Einspeisefaktor (%)** konfiguriert, speichert das Modul den aktuellen Wert (z. B. 43 %), setzt ihn während der Preissperre auf 0 % und stellt ihn anschließend automatisch wieder her.
 
 ### Entladetest und Steuerdiagnose 1.7.4
 Für die Diagnose der Batterieansteuerung gibt es zwei neue bedienbare Frontend-Variablen: `Test Entladeleistung` und `Test Entladung / Einspeisung`. Der Test umgeht bewusst Einspeiseplan, Preisprüfung und Lernfreigabe, respektiert aber Mindest-SoC und maximale Entladeleistung. Er läuft maximal 120 Sekunden und wird anschließend automatisch beendet.
