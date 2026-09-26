@@ -18,6 +18,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyBoolean('UsePVNodeForecast', false);
         $this->RegisterPropertyString('PVNodeAPIKey', '');
         $this->RegisterPropertyString('PVNodeSiteID', '');
+        $this->RegisterPropertyInteger('PVNodeMaxRequestsPerDay', 1);
         $this->RegisterPropertyInteger('ForecastWeightLearningDays', 7);
         $this->RegisterPropertyInteger('PVCalibrationDays', 30);
         $this->RegisterPropertyInteger('UnknownOrientationLearningDays', 30);
@@ -147,13 +148,14 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('LastUpdate', 'Letzte Aktualisierung', '', 100);
         $this->RegisterVariableString('StatusText', 'Optimierungsstatus', '', 110);
         $this->RegisterVariableString('OverviewHTML', 'Übersicht', '~HTMLBox', 120);
-        $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 121);
-        $this->RegisterVariableString('ConsumptionProfileChartHTML', 'Verbrauch Lastprofil Diagramm', '~HTMLBox', 124);
-        $this->RegisterVariableString('PVCalibrationDiagnosisHTML', 'PV-Kalibrierung Diagnose', '~HTMLBox', 122);
-        $this->RegisterVariableString('ActionFeedback', 'Letzte manuelle Aktion', '', 123);
-        $this->RegisterVariableString('ForecastSolarStatus', 'Forecast.Solar Flächenstatus', '', 125);
+        $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 150);
+        $this->RegisterVariableString('ConsumptionProfileChartHTML', 'Verbrauch Lastprofil Diagramm', '~HTMLBox', 151);
+        $this->RegisterVariableString('FeedInStatisticsHTML', 'Einspeise-Statistik', '~HTMLBox', 152);
+        $this->RegisterVariableString('PVCalibrationDiagnosisHTML', 'PV-Kalibrierung Diagnose', '~HTMLBox', 190);
+        $this->RegisterVariableString('ActionFeedback', 'Letzte Aktionen', '~HTMLBox', 118);
+        $this->RegisterVariableString('ForecastSolarStatus', 'PV-Prognose Anbieter', '~HTMLBox', 119);
         $this->RegisterVariableString('PVDebugVisibilityState', 'PV Debug Sichtbarkeit', '', 126);
-        $this->RegisterVariableString('ProviderDebugHTML', 'Prognose Provider Debug', '~HTMLBox', 127);
+        $this->RegisterVariableString('ProviderDebugHTML', 'Prognose Provider Debug', '~HTMLBox', 191);
         $this->RegisterVariableString('DataExportStatus', 'Datenspeicher Export', '', 128);
         $this->EnableAction('PVDebugVisibilityState');
         $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 123);
@@ -166,12 +168,17 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('ForecastSolarRetryAfterTs', 0);
         $this->RegisterAttributeString('PVDebugVisibilityJSON', '{}');
         $this->RegisterAttributeString('ProviderDebugLogJSON', '[]');
+        $this->RegisterAttributeString('ActionHistoryJSON', '[]');
         $this->RegisterAttributeString('AppliedModuleVersion', '');
         $this->RegisterAttributeString('PVSourceWeightsJSON', '{}');
         $this->RegisterAttributeInteger('PVSourceWeightLearningResetTs', 0);
         $this->RegisterAttributeInteger('PVNodeConsecutiveRejects', 0);
         $this->RegisterAttributeBoolean('PVNodeAutoDisabled', false);
         $this->RegisterAttributeString('PVNodeLastError', '');
+        $this->RegisterAttributeString('PVNodeForecastCacheJSON', '{}');
+        $this->RegisterAttributeInteger('PVNodeNextPollTs', 0);
+        $this->RegisterAttributeString('PVNodeRequestDay', '');
+        $this->RegisterAttributeInteger('PVNodeRequestCount', 0);
         $this->RegisterAttributeBoolean('LastAppliedDebugMode', false);
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
@@ -181,6 +188,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('PVCalibrationAboveThresholdCount', 0);
         $this->RegisterAttributeInteger('PVCalibrationBlockedFromTs', 0);
         $this->RegisterAttributeString('PVCalibrationCurtailmentSamplesJSON', '[]');
+        $this->RegisterAttributeInteger('PVCalibrationLockUntil', 0);
+        $this->RegisterAttributeInteger('CalculationLockUntil', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeString('PlanJSON', '[]');
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
@@ -199,6 +208,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
         $this->RegisterAttributeInteger('ActiveFeedInPlannedEndTs', 0);
         $this->RegisterAttributeString('CompletedFeedInPlanKeysJSON', '{}');
+        $this->RegisterAttributeString('FeedInStatisticsJSON', '[]');
+        $this->RegisterAttributeInteger('ActiveFeedInStartedTs', 0);
+        $this->RegisterAttributeFloat('ActiveFeedInPriceCt', 0.0);
+        $this->RegisterAttributeString('ActiveFeedInReason', '');
         $this->RegisterAttributeBoolean('RuntimePVSettingsInitialized', false);
         $this->RegisterAttributeInteger('ManualTestUntil', 0);
         $this->RegisterAttributeInteger('ManualTestPowerW', 0);
@@ -279,6 +292,16 @@ class SmartBatteryOptimizer extends IPSModule
     public function ApplyChanges()
     {
         parent::ApplyChanges();
+        // Oberfläche aufgeräumt: Status zuerst, danach Diagramme, Debug ganz unten.
+        $positions = [
+            'ActionFeedback'=>118, 'ForecastSolarStatus'=>119,
+            'OverviewHTML'=>120, 'PlanHTML'=>130, 'PriceChartHTML'=>149,
+            'PVForecastChartHTML'=>150, 'ConsumptionProfileChartHTML'=>151,
+            'PVCalibrationDiagnosisHTML'=>190, 'ProviderDebugHTML'=>191
+        ];
+        foreach ($positions as $ident => $position) {
+            $id = @$this->GetIDForIdent($ident); if ($id > 0) @IPS_SetPosition($id, $position);
+        }
 
         if (!$this->ReadAttributeBoolean('RuntimePVSettingsInitialized')) {
             SetValue($this->GetIDForIdent('PVCurtailmentProtectionEnabled'), $this->ReadPropertyBoolean('PreventPVCurtailment'));
@@ -363,6 +386,7 @@ class SmartBatteryOptimizer extends IPSModule
 
             if (is_array($forecast) && !empty($forecast)) {
                 SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+                SetValue($this->GetIDForIdent('ForecastSolarStatus'), $this->RenderProviderForecastStatusHTML($forecast));
                 SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
 
                 if (is_array($prices) && is_array($plan) && !empty($plan)) {
@@ -382,7 +406,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.48';
+        $currentModuleVersion = '1.9.70';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -395,7 +419,7 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $stringAttributes = [
             'ForecastJSON','PVForecastHistoryJSON','PVSourceForecastHistoryJSON','ForecastSolarSurfaceCacheJSON',
-            'PVDebugVisibilityJSON','ProviderDebugLogJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
+            'PVDebugVisibilityJSON','ProviderDebugLogJSON','ActionHistoryJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
             'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PricesJSON','PlanJSON','NightLearningSource',
             'ConsumptionProfileJSON','ConsumptionLearningSource','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
             'CompletedFeedInPlanKeysJSON','AlphaTestTrace'
@@ -443,7 +467,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.48',
+            'moduleVersion' => '1.9.69',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -647,9 +671,36 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function SetActionFeedback(string $text): void
     {
-        $message = date('d.m.Y H:i:s') . ' | ' . $text;
-        SetValue($this->GetIDForIdent('ActionFeedback'), $message);
+        $entries = json_decode($this->ReadAttributeString('ActionHistoryJSON'), true);
+        if (!is_array($entries)) $entries = [];
+        $entries[] = ['time' => time(), 'text' => $text];
+        if (count($entries) > 5) $entries = array_slice($entries, -5);
+        $this->WriteAttributeString('ActionHistoryJSON', json_encode($entries));
+        SetValue($this->GetIDForIdent('ActionFeedback'), $this->RenderActionHistoryHTML($entries));
         $this->DebugLog('Manuelle Aktion', $text);
+    }
+
+    private function RenderPersistentDetailsHTML(string $storageKey, string $title, string $body, string $subtitle = ''): string
+    {
+        $id = 'sbo_details_' . md5($storageKey . '_' . $this->InstanceID);
+        $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff;background:#181818;padding:8px">';
+        $html .= '<details id="' . $id . '"><summary style="cursor:pointer;font-family:Tahoma;font-size:14px;font-weight:bold;padding:4px 0">' . htmlspecialchars($title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</summary>';
+        if ($subtitle !== '') $html .= '<div style="font-size:11px;opacity:.75;margin:2px 0 6px">' . htmlspecialchars($subtitle, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</div>';
+        $html .= $body . '</details>';
+        $html .= '<script>(function(){var d=document.getElementById(' . json_encode($id) . '),k=' . json_encode($storageKey . '_' . $this->InstanceID) . ';if(!d)return;try{var v=localStorage.getItem(k);d.open=(v===null)?true:(v==="1");}catch(e){d.open=true;}d.addEventListener("toggle",function(){try{localStorage.setItem(k,d.open?"1":"0");}catch(e){}});})();</script></div>';
+        return $html;
+    }
+
+    private function RenderActionHistoryHTML(array $entries): string
+    {
+        $e = static function ($v): string { return htmlspecialchars((string)$v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); };
+        $body = '<div style="border-top:1px solid #555;margin-top:4px">';
+        if (!$entries) $body .= '<div style="padding:6px 0;opacity:.7">Noch keine Aktion.</div>';
+        foreach (array_reverse($entries) as $row) {
+            $body .= '<div style="padding:5px 2px;border-bottom:1px solid #333"><b>' . $e(date('d.m.Y H:i:s', (int)($row['time'] ?? 0))) . '</b> &nbsp; ' . $e($row['text'] ?? '') . '</div>';
+        }
+        $body .= '</div>';
+        return $this->RenderPersistentDetailsHTML('sbo_action_history', 'Letzte Aktionen', $body, 'Neueste Aktion oben · letzte 5 Einträge');
     }
 
     public function RefreshAll()
@@ -712,63 +763,124 @@ class SmartBatteryOptimizer extends IPSModule
         // Die Prognose besitzt wieder ihr eigenes konfigurierbares Intervall.
         $this->DebugLog('PVActual', 'PV-Ist + Planung aktualisieren; gespeicherte PV-Prognose verwenden');
         $this->RecalculateInternal(false);
+
+        // Diagramme bewusst nochmals direkt aus Archiv + gespeichertem Forecast/Profile
+        // aufbauen. Dadurch werden die Istwerte auch dann im konfigurierten
+        // PV-Ist-Intervall aktualisiert, wenn ein paralleler Rechenlauf durch die
+        // Berechnungssperre uebersprungen wurde.
+        try {
+            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+            if (is_array($forecast) && !empty($forecast)) {
+                SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+            }
+            $profile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
+            if (is_array($profile) && !empty($profile)) {
+                SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($profile));
+                SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
+            }
+        } catch (Throwable $e) {
+            $this->DebugLog('PVActual', 'Diagramm-Istwerte konnten nicht aktualisiert werden: ' . $e->getMessage(), 0);
+        }
     }
 
     private function UpdatePVCalibrationState(bool $renderDiagnosis = true): void
     {
-
+        $nowLock = time();
+        $lockUntil = $this->ReadAttributeInteger('PVCalibrationLockUntil');
+        if ($lockUntil > $nowLock) {
+            $this->ForecastDiagnosticStep('05 PV-Kalibrierung übersprungen | anderer Lauf aktiv');
+            return;
+        }
+        $this->WriteAttributeInteger('PVCalibrationLockUntil', $nowLock + 300);
+        try {
+        $this->ForecastDiagnosticStep('05.01 PV-Kalibrierung ForecastJSON lesen START');
         $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
-            if (!is_array($forecast)) $forecast = [];
-            $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
-            if (!is_array($calibration)) $calibration = [];
-            $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
-            if (!is_array($surfaces)) $surfaces = [];
+        if (!is_array($forecast)) $forecast = [];
+        $this->ForecastDiagnosticStep('05.02 PV-Kalibrierung ForecastJSON lesen ENDE');
 
-            // Gate bei jedem 30-s-Takt aktualisieren. Ein einmal erkannter Zustand bleibt
-            // verriegelt und wird erst nach 5 Minuten DURCHGEHEND unter derselben Schwelle frei.
-            $gate = $this->GetPVCalibrationFeedInGate();
-            $surfaceCalibration = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
+        $this->ForecastDiagnosticStep('05.03 PV-Kalibrierung PVCalibrationJSON lesen START');
+        $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
+        if (!is_array($calibration)) $calibration = [];
+        $this->ForecastDiagnosticStep('05.04 PV-Kalibrierung PVCalibrationJSON lesen ENDE | Oberflächen=' . count($calibration));
 
-            foreach ($surfaces as $idx => $surface) {
-                if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
-                $name = trim((string)($surface['Name'] ?? 'PV'));
-                if ($name === '') $name = 'PV ' . ($idx + 1);
-                $key = $this->SurfaceKey($name, $idx);
-                $actualW = $this->ReadSurfaceActualPower($surface);
-                $expectedW = isset($surfaceCalibration[$name]['expectedBaseW'])
-                    ? (float)$surfaceCalibration[$name]['expectedBaseW'] : 0.0;
+        $this->ForecastDiagnosticStep('05.05 PV-Kalibrierung PVSurfaces lesen START');
+        $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+        if (!is_array($surfaces)) $surfaces = [];
+        $this->ForecastDiagnosticStep('05.06 PV-Kalibrierung PVSurfaces lesen ENDE | Anzahl=' . count($surfaces));
 
-                if ($gate['blocked']) {
-                    if (isset($calibration[$key])) {
-                        $blockedFromTs = (int)($gate['blockedFromTs'] ?? time());
-                        $calibration = $this->InvalidatePVCalibrationFrom(
-                            $calibration, $key, max(0, $blockedFromTs)
-                        );
-                    }
-                } elseif ($actualW !== null && $expectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
-                    $calibration = $this->AddPVCalibrationEnergySample($calibration, $key, $expectedW, $actualW);
+        $this->ForecastDiagnosticStep('05.07 Feed-In-Gate START');
+        $gate = $this->GetPVCalibrationFeedInGate();
+        $this->ForecastDiagnosticStep('05.08 Feed-In-Gate ENDE | blockiert=' . (!empty($gate['blocked']) ? 'ja' : 'nein'));
+        $surfaceCalibration = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
+
+        foreach ($surfaces as $idx => $surface) {
+            if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
+            $name = trim((string)($surface['Name'] ?? 'PV'));
+            if ($name === '') $name = 'PV ' . ($idx + 1);
+            $key = $this->SurfaceKey($name, $idx);
+            $calibration = $this->CompactPVCalibrationData($calibration, $key);
+            $prefix = '05.S' . ($idx + 1) . ' ' . $name . ' | ';
+
+            $this->ForecastDiagnosticStep($prefix . 'Istleistung lesen START');
+            $actualW = $this->ReadSurfaceActualPower($surface);
+            $this->ForecastDiagnosticStep($prefix . 'Istleistung lesen ENDE | W=' . ($actualW === null ? 'n/a' : round($actualW, 1)));
+            $expectedW = isset($surfaceCalibration[$name]['expectedBaseW'])
+                ? (float)$surfaceCalibration[$name]['expectedBaseW'] : 0.0;
+
+            if ($gate['blocked']) {
+                if (isset($calibration[$key])) {
+                    $blockedFromTs = (int)($gate['blockedFromTs'] ?? time());
+                    $this->ForecastDiagnosticStep($prefix . 'Sperrbereich entfernen START');
+                    $calibration = $this->InvalidatePVCalibrationFrom($calibration, $key, max(0, $blockedFromTs));
+                    $this->ForecastDiagnosticStep($prefix . 'Sperrbereich entfernen ENDE');
                 }
-
-                $diag = $this->GetPVCalibrationDiagnostics($calibration, $key);
-                if (!isset($surfaceCalibration[$name]) || !is_array($surfaceCalibration[$name])) $surfaceCalibration[$name] = [];
-                $surfaceCalibration[$name]['autoFactor'] = !empty($diag['factorReady'])
-                    ? max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diag['learnedRatio'] ?? $diag['ratio'] ?? 1.0)))
-                    : 1.0;
-                $surfaceCalibration[$name]['sumExpectedKWh'] = (float)($diag['sumExpectedKWh'] ?? 0.0);
-                $surfaceCalibration[$name]['sumActualKWh'] = (float)($diag['sumActualKWh'] ?? 0.0);
-                $surfaceCalibration[$name]['learnedRatio'] = $diag['ratio'] ?? null;
-                $surfaceCalibration[$name]['sampleCount'] = (int)($diag['sampleCount'] ?? 0);
-                $surfaceCalibration[$name]['firstSampleTs'] = (int)($diag['firstSampleTs'] ?? 0);
-                $surfaceCalibration[$name]['lastSampleTs'] = (int)($diag['lastSampleTs'] ?? 0);
-                $surfaceCalibration[$name]['calibrationBlocked'] = (bool)$gate['blocked'];
-                $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
+            } elseif ($actualW !== null && $expectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
+                $sampleCountBefore = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? count($calibration[$key]['energySamples']) : 0;
+                $this->ForecastDiagnosticStep($prefix . 'Energiesample START | Samples=' . $sampleCountBefore);
+                $calibration = $this->AddPVCalibrationEnergySample($calibration, $key, $expectedW, $actualW);
+                $sampleCountAfter = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? count($calibration[$key]['energySamples']) : 0;
+                $this->ForecastDiagnosticStep($prefix . 'Energiesample ENDE | Samples=' . $sampleCountAfter);
             }
 
-            $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
-            $forecast['surfaceCalibration'] = $surfaceCalibration;
-            $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
-            SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
-            if ($renderDiagnosis) SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
+            $this->ForecastDiagnosticStep($prefix . 'Diagnose berechnen START');
+            $diag = $this->GetPVCalibrationDiagnostics($calibration, $key);
+            $this->ForecastDiagnosticStep($prefix . 'Diagnose berechnen ENDE | Samples=' . (int)($diag['sampleCount'] ?? 0));
+            if (!isset($surfaceCalibration[$name]) || !is_array($surfaceCalibration[$name])) $surfaceCalibration[$name] = [];
+            $surfaceCalibration[$name]['autoFactor'] = !empty($diag['factorReady'])
+                ? max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diag['learnedRatio'] ?? $diag['ratio'] ?? 1.0)))
+                : 1.0;
+            $surfaceCalibration[$name]['sumExpectedKWh'] = (float)($diag['sumExpectedKWh'] ?? 0.0);
+            $surfaceCalibration[$name]['sumActualKWh'] = (float)($diag['sumActualKWh'] ?? 0.0);
+            $surfaceCalibration[$name]['learnedRatio'] = $diag['ratio'] ?? null;
+            $surfaceCalibration[$name]['sampleCount'] = (int)($diag['sampleCount'] ?? 0);
+            $surfaceCalibration[$name]['firstSampleTs'] = (int)($diag['firstSampleTs'] ?? 0);
+            $surfaceCalibration[$name]['lastSampleTs'] = (int)($diag['lastSampleTs'] ?? 0);
+            $surfaceCalibration[$name]['calibrationBlocked'] = (bool)$gate['blocked'];
+            $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
+            $surfaceCalibration[$name]['seasonalFactor'] = $this->GetSeasonalPVFactor($calibration, $key, time(), (int)date('G'));
+            $surfaceCalibration[$name]['seasonStats'] = $this->GetPVSeasonStats($calibration, $key, time());
+            $surfaceCalibration[$name]['compactionAudit'] = isset($calibration[$key]['lastCompactionAudit']) && is_array($calibration[$key]['lastCompactionAudit']) ? $calibration[$key]['lastCompactionAudit'] : [];
+            $surfaceCalibration[$name]['storageMode'] = (string)($calibration[$key]['storageMode'] ?? 'raw');
+        }
+
+        $this->ForecastDiagnosticStep('05.90 PVCalibrationJSON schreiben START');
+        $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
+        $this->ForecastDiagnosticStep('05.91 PVCalibrationJSON schreiben ENDE');
+        $forecast['surfaceCalibration'] = $surfaceCalibration;
+        $this->ForecastDiagnosticStep('05.92 ForecastJSON schreiben START');
+        $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
+        $this->ForecastDiagnosticStep('05.93 ForecastJSON schreiben ENDE');
+        $this->ForecastDiagnosticStep('05.94 Kalibrierungsstatus rendern START');
+        SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
+        $this->ForecastDiagnosticStep('05.95 Kalibrierungsstatus rendern ENDE');
+        if ($renderDiagnosis) {
+            $this->ForecastDiagnosticStep('05.96 Diagnose-HTML rendern START');
+            SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
+            $this->ForecastDiagnosticStep('05.97 Diagnose-HTML rendern ENDE');
+        }
+        } finally {
+            $this->WriteAttributeInteger('PVCalibrationLockUntil', 0);
+        }
     }
 
     public function RefreshPVCalibration()
@@ -782,15 +894,26 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RecalculateInternal(bool $refreshPVForecast)
     {
+        $nowCalcLock = time();
+        $calcLockUntil = $this->ReadAttributeInteger('CalculationLockUntil');
+        if ($calcLockUntil > $nowCalcLock) {
+            $this->DebugLog('Recalculate', 'Übersprungen: anderer Berechnungslauf ist noch aktiv');
+            return;
+        }
+        $this->WriteAttributeInteger('CalculationLockUntil', $nowCalcLock + 900);
         // Execute a due saved window before rebuilding or fetching remote data.
         $this->Control();
         $this->DebugLog('Recalculate', 'Start | PV-Prognose neu abrufen=' . ($refreshPVForecast ? 'ja' : 'nein'));
         $dayNight = $this->GetCurrentDayNightStatus();
         $this->DebugLog('DayNight', ($dayNight['isNight'] ? 'NACHT' : 'TAG') . ' | Fenster ' . date('Y-m-d H:i', (int)$dayNight['start']) . ' -> ' . date('Y-m-d H:i', (int)$dayNight['end']) . ' | Modus=' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell'));
         try {
+            $this->ForecastDiagnosticStep('01 Nachtverbrauch START');
             $night = $this->LearnNightConsumptionInternal();
+            $this->ForecastDiagnosticStep('02 Nachtverbrauch ENDE');
             $this->DebugLog('Nachtverbrauch', 'Ergebnis ' . round($night, 3) . ' kWh | ' . $this->ReadAttributeString('NightLearningSource'));
+            $this->ForecastDiagnosticStep('03 Verbrauchsprofil START');
             $consumptionProfile = $this->LearnConsumptionProfileInternal(false);
+            $this->ForecastDiagnosticStep('04 Verbrauchsprofil ENDE');
             $this->DebugLog('Verbrauchsprofil', ['Quelle'=>$this->ReadAttributeString('ConsumptionLearningSource'),'dailyKWh'=>$consumptionProfile['dailyKWh'] ?? null,'validDays'=>$consumptionProfile['validDays'] ?? null]);
             $forecast = [];
             if (!$refreshPVForecast) {
@@ -801,8 +924,12 @@ class SmartBatteryOptimizer extends IPSModule
             }
             if ($refreshPVForecast) {
                 // Zuerst Kalibrierung/Faktoren aktualisieren, erst danach Prognose berechnen und Highcharts rendern.
+                $this->ForecastDiagnosticStep('05 PV-Kalibrierung START');
                 $this->UpdatePVCalibrationState(false);
+                $this->ForecastDiagnosticStep('06 PV-Kalibrierung ENDE');
+                $this->ForecastDiagnosticStep('07 FetchPVForecast START');
                 $forecast = $this->FetchPVForecast();
+                $this->ForecastDiagnosticStep('08 FetchPVForecast ENDE');
                 $this->DebugLog('PV-Prognose', ['heuteKWh'=>$forecast['todayKWh'] ?? null,'morgenKWh'=>$forecast['tomorrowKWh'] ?? null,'Quellen'=>$forecast['forecastSources'] ?? [],'Gewichte'=>$forecast['forecastSourceWeights'] ?? []]);
                 $this->StorePVForecastHistory($forecast);
             }
@@ -810,10 +937,14 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
             $gate = $this->GetAutomaticLearningGateStatus();
             SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
+            $this->ForecastDiagnosticStep('09 Preise START');
             $prices = $this->FetchPrices();
+            $this->ForecastDiagnosticStep('10 Preise ENDE');
             $this->DebugLog('Preise', 'Geladene interne Preis-Slots: ' . count($prices));
             $nightForPlan = (float)($forecast['nightConsumptionTomorrowKWh'] ?? $night);
+            $this->ForecastDiagnosticStep('11 Einspeiseplan START');
             $plan = $this->BuildPlan($forecast, $prices, $nightForPlan, $consumptionProfile);
+            $this->ForecastDiagnosticStep('12 Einspeiseplan ENDE');
             $this->DebugLog('Einspeiseplan', ['SoC'=>$plan['soc'] ?? null,'gespeichertKWh'=>$plan['storedKWh'] ?? null,'ReserveKWh'=>$plan['reserveKWh'] ?? null,'verfuegbarKWh'=>$plan['availableKWh'] ?? null,'PVSpeicherKWh'=>$plan['pvSpaceRequiredKWh'] ?? null,'Slots'=>count($plan['slots'] ?? []),'ErloesEUR'=>$plan['expectedRevenueEUR'] ?? null,'Status'=>$plan['status'] ?? '']);
 
             $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
@@ -840,7 +971,9 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('LastUpdate'), date('d.m.Y H:i:s'));
             SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
             SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+            SetValue($this->GetIDForIdent('ForecastSolarStatus'), $this->RenderProviderForecastStatusHTML($forecast));
             SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($consumptionProfile));
+            SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
             SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
             SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
             SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
@@ -853,6 +986,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetStatus(201);
             $this->StopFeedIn();
         }
+        $this->WriteAttributeInteger('CalculationLockUntil', 0);
     }
 
     public function LearnNightConsumption()
@@ -933,11 +1067,27 @@ class SmartBatteryOptimizer extends IPSModule
             $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
             if (is_array($forecast) && count($forecast) > 0) {
                 $forecast['forecastSourceWeights'] = $neutralWeights;
+                $forecast['plantAutoFactor'] = 1.0;
+                // Nach einem Kalibrierungs-Reset dürfen auch Diagnosewerte aus dem
+                // Forecast-Cache keine alten Faktoren mehr anzeigen.
+                if (isset($forecast['surfaceCalibration']) && is_array($forecast['surfaceCalibration'])) {
+                    foreach ($forecast['surfaceCalibration'] as &$surfaceCalReset) {
+                        if (!is_array($surfaceCalReset)) continue;
+                        $surfaceCalReset['autoFactor'] = 1.0;
+                        $surfaceCalReset['ratio'] = null;
+                        $surfaceCalReset['learnedRatio'] = null;
+                        $surfaceCalReset['factorReady'] = false;
+                        $surfaceCalReset['sampleCount'] = 0;
+                        $surfaceCalReset['sumExpectedKWh'] = 0.0;
+                        $surfaceCalReset['sumActualKWh'] = 0.0;
+                    }
+                    unset($surfaceCalReset);
+                }
 
                 // Alle im Forecast-Cache mitgeführten Kalibrierwerte sofort neutralisieren.
                 // Dadurch zeigen Chart und Diagnose direkt nach dem Tastendruck 1,000 bzw.
                 // die neutrale Anbietergewichtung und warten nicht auf den nächsten Zyklus.
-                foreach (['surfaceFactors', 'surfaceAutoFactors', 'hourlyCalibrationFactors', 'calibrationFactors'] as $factorKey) {
+                foreach (['surfaceFactors', 'surfaceAutoFactors', 'hourlyCalibrationFactors', 'calibrationFactors', 'surfaceHourlyFactors', 'plantHourlyFactors'] as $factorKey) {
                     if (isset($forecast[$factorKey]) && is_array($forecast[$factorKey])) {
                         array_walk_recursive($forecast[$factorKey], function (&$value) {
                             if (is_numeric($value)) $value = 1.0;
@@ -947,6 +1097,7 @@ class SmartBatteryOptimizer extends IPSModule
 
                 $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
                 SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+                SetValue($this->GetIDForIdent('ForecastSolarStatus'), $this->RenderProviderForecastStatusHTML($forecast));
                 SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
             } else {
                 // Auch ohne vorhandenen Forecast die Diagnose unmittelbar aus dem
@@ -1090,7 +1241,7 @@ class SmartBatteryOptimizer extends IPSModule
 
                 $consumptionProfile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
                 if (!is_array($consumptionProfile)) $consumptionProfile = ['hourlyKWh'=>array_fill(0,24,0.0)];
-                $powerW = $this->GetPlannedBatteryPowerW($consumptionProfile, $now);
+                $powerW = max(0.0, (float)$this->ReadPropertyInteger('MaxDischargePowerW'));
                 $expectedExportW = $this->GetExpectedGridExportPowerW($consumptionProfile, $now);
                 $remainingKWh = max(0.0, $targetKWh - $deliveredKWh);
 
@@ -1177,6 +1328,17 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeFloat('ActiveFeedInLastExportW', $this->ReadCurrentGridExportW());
         $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
         $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
+        $this->WriteAttributeInteger('ActiveFeedInStartedTs', time());
+        $priceCt = 0.0; $reason = 'price';
+        $plan = json_decode($this->ReadAttributeString('PlanJSON'), true);
+        if (is_array($plan) && isset($plan['slots']) && is_array($plan['slots'])) {
+            foreach ($plan['slots'] as $slot) {
+                $slotKey = (string)($slot['planKey'] ?? ((int)($slot['start'] ?? 0) . ':' . (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0))));
+                if ($slotKey === $key) { $priceCt = (float)($slot['priceCt'] ?? 0.0); $reason = (string)($slot['reason'] ?? 'price'); break; }
+            }
+        }
+        $this->WriteAttributeFloat('ActiveFeedInPriceCt', $priceCt);
+        $this->WriteAttributeString('ActiveFeedInReason', $reason);
         SetValue($this->GetIDForIdent('FeedInTargetEnergy'), max(0.0, $targetKWh));
         SetValue($this->GetIDForIdent('FeedInDeliveredEnergy'), 0.0);
         $this->DebugLog('Einspeisemenge', 'Start ' . $key . ' | Ziel=' . round($targetKWh,3) . ' kWh');
@@ -1216,8 +1378,25 @@ class SmartBatteryOptimizer extends IPSModule
     private function FinishMeasuredFeedInRun(bool $completed, string $reason): void
     {
         $key = $this->ReadAttributeString('ActiveFeedInPlanKey');
-        $delivered = $this->ReadAttributeFloat('ActiveFeedInDeliveredKWh');
+        $delivered = $this->UpdateMeasuredFeedInEnergy();
         $target = $this->ReadAttributeFloat('ActiveFeedInTargetKWh');
+        $startedTs = $this->ReadAttributeInteger('ActiveFeedInStartedTs');
+        $priceCt = $this->ReadAttributeFloat('ActiveFeedInPriceCt');
+        $feedReason = $this->ReadAttributeString('ActiveFeedInReason');
+        // Die Statistik gehört ausschließlich zur preisgesteuerten Einspeiseautomatik.
+        // Entladungen zur PV-Speicherfreihaltung / zum Abregelungsschutz werden bewusst
+        // nicht als Verkauf erfasst, auch wenn sie technisch über denselben Dispatchpfad laufen.
+        $isPriceFeedInAutomation = ($feedReason === '' || $feedReason === 'price');
+        if ($key !== '' && $startedTs > 0 && $isPriceFeedInAutomation) {
+            $stats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
+            if (!is_array($stats)) $stats = [];
+            $stats[] = ['start'=>$startedTs,'end'=>time(),'planKey'=>$key,'targetKWh'=>$target,'deliveredKWh'=>$delivered,'priceCt'=>$priceCt,'revenueEUR'=>$delivered*$priceCt/100.0,'completed'=>$completed,'reason'=>'price','finishReason'=>$reason];
+            if (count($stats) > 1500) $stats = array_slice($stats, -1500);
+            $this->WriteAttributeString('FeedInStatisticsJSON', json_encode($stats));
+        }
+        // Anzeige nach jedem Abschluss aktualisieren. Dadurch verschwindet ein eventuell
+        // laufender Status sofort, auch wenn das Fenster nicht statistikrelevant war.
+        SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
         if ($completed && $key !== '') {
             $done = json_decode($this->ReadAttributeString('CompletedFeedInPlanKeysJSON'), true);
             if (!is_array($done)) $done = [];
@@ -1232,6 +1411,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeFloat('ActiveFeedInLastExportW', 0.0);
         $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
         $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
+        $this->WriteAttributeInteger('ActiveFeedInStartedTs', 0);
+        $this->WriteAttributeFloat('ActiveFeedInPriceCt', 0.0);
+        $this->WriteAttributeString('ActiveFeedInReason', '');
         SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung beendet: ' . $reason . ' | Netz ' . number_format($delivered,2,',','.') . ' / ' . number_format($target,2,',','.') . ' kWh');
         $this->DebugLog('Einspeisemenge', 'Ende | ' . $reason . ' | ' . round($delivered,3) . '/' . round($target,3) . ' kWh');
     }
@@ -1239,6 +1421,17 @@ class SmartBatteryOptimizer extends IPSModule
     public function StopFeedIn()
     {
         $this->SetFeedIn(false, 0.0);
+    }
+
+    private function ForecastDiagnosticStep(string $step): void
+    {
+        $text = 'DIAG: ' . $step;
+        $this->DebugLog('Forecast-Diagnose', $text);
+        try {
+            SetValue($this->GetIDForIdent('StatusText'), date('d.m.Y H:i:s') . ' | ' . $text);
+        } catch (Throwable $e) {
+        }
+        $this->AddProviderDebug('DIAG', $step, [], $text, 0, 0.0);
     }
 
     private function FetchPVForecast(): array
@@ -1309,7 +1502,9 @@ class SmartBatteryOptimizer extends IPSModule
                     'timezone' => 'Europe/Vienna',
                     'forecast_days' => 3
                 ]);
+                $this->ForecastDiagnosticStep('Open-Meteo START | ' . $name);
                 $data = $this->HttpGetJson($url, 'Open-Meteo', ['Fläche'=>$name,'kWp'=>$kwp,'Azimut'=>$azimuth,'Neigung'=>$tilt,'AutoFaktor'=>$autoFactor,'Zeitzone'=>'Europe/Vienna']);
+                $this->ForecastDiagnosticStep('Open-Meteo ENDE | ' . $name);
                 if (!isset($data['hourly']['time'], $data['hourly']['global_tilted_irradiance'])) {
                     throw new Exception('Ungültige Open-Meteo-Antwort für Fläche ' . $name);
                 }
@@ -1357,7 +1552,9 @@ class SmartBatteryOptimizer extends IPSModule
                             throw new Exception('Forecast.Solar Rate-Limit aktiv bis ' . date('d.m.Y H:i:s', $retryAfterTs) . '; kein Flächen-Cache vorhanden.');
                         }
                     } else {
-                        $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp, $name);
+                        $this->ForecastDiagnosticStep('Forecast.Solar START | ' . $name);
+                            $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp, $name);
+                            $this->ForecastDiagnosticStep('Forecast.Solar ENDE | ' . $name);
                     }
                     $forecastSolarCache[$key] = [
                         'savedAt' => time(),
@@ -1443,7 +1640,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $sourceHours['forecastsolar'] = [];
                 $forecastSolarSurfaceStatus[] = 'Forecast.Solar nicht verwendet: nur ' . $forecastSolarResolved . ' von ' . $forecastSolarRequired . ' Flächen verfügbar.';
             }
-            SetValue($this->GetIDForIdent('ForecastSolarStatus'), implode(' | ', $forecastSolarSurfaceStatus));
+            // Detailstatus wird gesammelt; die kompakte Anbieter-HTMLBox wird nach Abschluss der Prognose gerendert.
         }
 
         // pvnode V2 arbeitet mit einem in pvnode gespeicherten Gesamtstandort
@@ -1457,10 +1654,8 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->DebugLog('pvnode', 'Aktiviert, aber API-Key oder Site-ID fehlt. Es wurde keine API-Anfrage gesendet.', 0);
             } else {
                 try {
-                    $sourceHours['pvnode'] = $this->FetchPVNodeForecast($pvnodeKey, $pvnodeSiteID);
-                    $this->DebugLog('pvnode', 'Prognose empfangen | Site-ID=' . $pvnodeSiteID . ' | Stunden=' . count($sourceHours['pvnode']));
-                    $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
-                    $this->WriteAttributeString('PVNodeLastError', '');
+                    $sourceHours['pvnode'] = $this->GetPVNodeForecastLimited($pvnodeKey, $pvnodeSiteID);
+                    $this->DebugLog('pvnode', 'Prognose bereit | Site-ID=' . $pvnodeSiteID . ' | Stunden=' . count($sourceHours['pvnode']));
                 } catch (Throwable $e) {
                     $this->WriteAttributeString('PVNodeLastError', $e->getMessage());
                     $this->DebugLog('pvnode', $e->getMessage(), 0);
@@ -1505,6 +1700,8 @@ class SmartBatteryOptimizer extends IPSModule
             if (empty($diagAuto['factorReady'])) continue;
             $expectedAuto = max(0.0, (float)($diagAuto['sumExpectedKWh'] ?? 0.0));
             if ($expectedAuto <= 0.0) continue;
+            // Der aktuelle, über identische Ist-/Prognoseintervalle gemessene Faktor ist maßgeblich.
+            // Saisonwerte sind Langzeitwissen und dürfen einen belastbaren aktuellen Faktor nicht ersetzen.
             $factorAuto = max(
                 $this->ReadPropertyFloat('PVCalibrationMinFactor'),
                 min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diagAuto['ratio'] ?? 1.0))
@@ -1516,6 +1713,34 @@ class SmartBatteryOptimizer extends IPSModule
         $plantAutoFactor = ($plantReadySurfaces > 0 && $plantExpectedKWh > 0.0)
             ? ($plantCorrectedKWh / $plantExpectedKWh)
             : 1.0;
+
+        // Die Tagesprognose wird nicht mehr mit einem einzigen Faktor korrigiert.
+        // Für jede Stunde wird je PV-Fläche der gelernte Stundenfaktor bestimmt.
+        // Die Flächen werden mit ihrer für diese Stunde historisch verglichenen
+        // Prognoseenergie gewichtet. Dadurch wirken unterschiedliche Dachausrichtungen
+        // morgens/mittags/abends unterschiedlich auf die Anlagenkorrektur.
+        $plantHourlyFactors = [];
+        $surfaceHourlyFactors = [];
+        for ($hour = 0; $hour < 24; $hour++) {
+            $weightedFactor = 0.0; $weight = 0.0; $fallbackFactors = [];
+            foreach ($surfaces as $idx => $surface) {
+                if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
+                $nameH = trim((string)($surface['Name'] ?? 'PV'));
+                if ($nameH === '') $nameH = 'PV ' . ($idx + 1);
+                $keyH = $this->SurfaceKey($nameH, $idx);
+                $diagH = $this->GetPVCalibrationDiagnostics($calibration, $keyH);
+                if (empty($diagH['factorReady'])) continue;
+                $overallH = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diagH['ratio'] ?? 1.0)));
+                $factorH = $this->GetPVForecastHourFactor($calibration, $keyH, $hour, $overallH, true);
+                $hourWeight = $this->GetPVForecastHourWeight($calibration, $keyH, $hour);
+                $surfaceHourlyFactors[$nameH][(string)$hour] = $factorH;
+                $fallbackFactors[] = $factorH;
+                if ($hourWeight > 0.0) { $weightedFactor += $factorH * $hourWeight; $weight += $hourWeight; }
+            }
+            if ($weight > 0.0) $plantHourlyFactors[(string)$hour] = $weightedFactor / $weight;
+            elseif (count($fallbackFactors) > 0) $plantHourlyFactors[(string)$hour] = array_sum($fallbackFactors) / count($fallbackFactors);
+            else $plantHourlyFactors[(string)$hour] = 1.0;
+        }
 
         $allTs = [];
         foreach ($availableSources as $source) foreach ($sourceHours[$source] as $ts => $_) $allTs[(int)$ts] = true;
@@ -1532,7 +1757,8 @@ class SmartBatteryOptimizer extends IPSModule
             }
             if ($weightSum <= 0.0) continue;
             $rawCombinedKW = $weighted / $weightSum;
-            $hours[$ts] = ['totalKW' => max(0.0, $rawCombinedKW * $plantAutoFactor), 'totalKWBeforeAuto' => $rawCombinedKW, 'surfaces' => [], 'sources' => $sourceValues];
+            $hourAutoFactor = (float)($plantHourlyFactors[(string)((int)date('G', (int)$ts))] ?? $plantAutoFactor);
+            $hours[$ts] = ['totalKW' => max(0.0, $rawCombinedKW * $hourAutoFactor), 'totalKWBeforeAuto' => $rawCombinedKW, 'autoFactor' => $hourAutoFactor, 'surfaces' => [], 'sources' => $sourceValues];
             $day = date('Y-m-d', (int)$ts);
             if ($day === date('Y-m-d')) $todayBeforeAuto += $rawCombinedKW;
             if ($day === date('Y-m-d', strtotime('tomorrow'))) $tomorrowBeforeAuto += $rawCombinedKW;
@@ -1566,9 +1792,9 @@ class SmartBatteryOptimizer extends IPSModule
         return [
             'todayKWh' => $today, 'tomorrowKWh' => $tomorrow,
             'todayKWhBeforeAuto' => $todayBeforeAuto, 'tomorrowKWhBeforeAuto' => $tomorrowBeforeAuto,
-            'plantAutoFactor' => $plantAutoFactor, 'morningTs' => $morningTs,
+            'plantAutoFactor' => $plantAutoFactor, 'plantHourlyFactors' => $plantHourlyFactors, 'surfaceHourlyFactors' => $surfaceHourlyFactors, 'morningTs' => $morningTs,
             'hours' => $hours, 'surfaceTotals' => $surfaceTotals, 'surfaceCalibration' => $surfaceCalibration,
-            'forecastSources' => $availableSources, 'forecastSourceWeights' => $weights
+            'forecastSources' => $availableSources, 'forecastSourceWeights' => $weights, 'providerSurfaceTomorrow' => $surfaceTotalsBySource
         ];
     }
 
@@ -1590,8 +1816,8 @@ class SmartBatteryOptimizer extends IPSModule
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_FOLLOWLOCATION => true,
                 CURLOPT_MAXREDIRS => 3,
-                CURLOPT_CONNECTTIMEOUT => 8,
-                CURLOPT_TIMEOUT => 15,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 8,
                 CURLOPT_USERAGENT => 'IP-Symcon-SmartBatteryOptimizer/1.9.20',
                 CURLOPT_HTTPHEADER => ['Accept: application/json'],
                 CURLOPT_HEADER => true
@@ -1636,7 +1862,7 @@ class SmartBatteryOptimizer extends IPSModule
             }
         } else {
             $opts = ['http' => [
-                'timeout' => 15,
+                'timeout' => 8,
                 'ignore_errors' => true,
                 'follow_location' => 1,
                 'max_redirects' => 3,
@@ -1682,7 +1908,74 @@ class SmartBatteryOptimizer extends IPSModule
         return $hours;
     }
 
-    private function FetchPVNodeForecast(string $apiKey, string $siteID): array
+    private function GetPVNodeForecastLimited(string $apiKey, string $siteID): array
+    {
+        $maxPerDay = max(1, min(144, $this->ReadPropertyInteger('PVNodeMaxRequestsPerDay')));
+        $today = date('Y-m-d');
+        $storedDay = $this->ReadAttributeString('PVNodeRequestDay');
+        $count = $this->ReadAttributeInteger('PVNodeRequestCount');
+        if ($storedDay !== $today) {
+            $storedDay = $today;
+            $count = 0;
+            $this->WriteAttributeString('PVNodeRequestDay', $today);
+            $this->WriteAttributeInteger('PVNodeRequestCount', 0);
+        }
+
+        $cache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
+        if (!is_array($cache)) $cache = [];
+        $cachedHours = (($cache['siteID'] ?? '') === $siteID && isset($cache['hours']) && is_array($cache['hours'])) ? $cache['hours'] : [];
+        $normalizedCache = [];
+        foreach ($cachedHours as $ts => $value) $normalizedCache[(int)$ts] = (float)$value;
+        ksort($normalizedCache);
+
+        $nextPollTs = $this->ReadAttributeInteger('PVNodeNextPollTs');
+        $now = time();
+        $reason = '';
+        if ($count >= $maxPerDay) {
+            $reason = 'Tageslimit erreicht (' . $count . '/' . $maxPerDay . ')';
+        } elseif ($nextPollTs > $now && count($normalizedCache) > 0) {
+            $reason = 'neue Daten erst ab ' . date('d.m.Y H:i:s', $nextPollTs);
+        }
+
+        if ($reason !== '' && count($normalizedCache) > 0) {
+            $this->DebugLog('pvnode', 'CACHE | ' . $reason . ' | Stunden=' . count($normalizedCache));
+            return $normalizedCache;
+        }
+        if ($reason !== '' && count($normalizedCache) === 0) {
+            $this->DebugLog('pvnode', 'Kein Cache vorhanden, obwohl ' . $reason . '. Kein zusätzlicher API-Abruf.', 0);
+            return [];
+        }
+
+        // Der Zähler wird direkt vor dem HTTP-Aufruf erhöht. So kann ein Timeout oder
+        // Serverfehler nicht zu mehreren automatischen Wiederholungen im selben Lauf führen.
+        $count++;
+        $this->WriteAttributeString('PVNodeRequestDay', $today);
+        $this->WriteAttributeInteger('PVNodeRequestCount', $count);
+        $this->DebugLog('pvnode', 'LIVE | API-Abruf ' . $count . '/' . $maxPerDay . ' START');
+
+        try {
+            $result = $this->FetchPVNodeForecastLive($apiKey, $siteID);
+            $hours = $result['hours'];
+            $next = (int)$result['nextPollTs'];
+            $this->WriteAttributeString('PVNodeForecastCacheJSON', json_encode([
+                'siteID' => $siteID,
+                'fetchedAt' => $now,
+                'hours' => $hours
+            ]));
+            $this->WriteAttributeInteger('PVNodeNextPollTs', $next);
+            $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
+            $this->WriteAttributeString('PVNodeLastError', '');
+            $this->DebugLog('pvnode', 'LIVE | API-Abruf ' . $count . '/' . $maxPerDay . ' ENDE | Stunden=' . count($hours) . ($next > 0 ? ' | next_poll_at=' . date('d.m.Y H:i:s', $next) : ''));
+            return $hours;
+        } catch (Throwable $e) {
+            $this->WriteAttributeString('PVNodeLastError', $e->getMessage());
+            $this->DebugLog('pvnode', 'LIVE fehlgeschlagen | ' . $e->getMessage() . (count($normalizedCache) > 0 ? ' | verwende Cache' : ''), 0);
+            if (count($normalizedCache) > 0) return $normalizedCache;
+            throw $e;
+        }
+    }
+
+    private function FetchPVNodeForecastLive(string $apiKey, string $siteID): array
     {
         $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc';
 
@@ -1692,10 +1985,6 @@ class SmartBatteryOptimizer extends IPSModule
             ], 'pvnode', ['Site-ID'=>$siteID,'Zeitzone'=>'utc']);
         } catch (Throwable $e) {
             $status = (int)$e->getCode();
-
-            // Nur echte Ablehnungen wegen Authentifizierung / ungültiger Site-Konfiguration
-            // zählen gegen die 3-Fehlversuche-Sperre. Rate-Limits, Server- und
-            // Verbindungsfehler dürfen den Benutzer nicht aussperren.
             if (in_array($status, [400, 401, 403, 404, 422], true)) {
                 $this->RegisterPVNodeRejection($status, $e->getMessage());
             }
@@ -1706,16 +1995,11 @@ class SmartBatteryOptimizer extends IPSModule
             throw new Exception('pvnode: Antwort enthält keine Prognosewerte.');
         }
 
-        // pvnode liefert 15-Minuten-Leistungswerte in Watt. Für unsere gemeinsame
-        // Prognose werden diese zu einem mittleren kW-Stundenwert zusammengefasst.
-        // Dieser Stundenwert entspricht bei einer vollen Stunde zugleich den kWh.
         $quarterValues = [];
         foreach ($data['values'] as $row) {
             if (!is_array($row) || !isset($row['timestamp'], $row['pv_power'])) continue;
             $ts = strtotime((string)$row['timestamp']);
             if ($ts === false) continue;
-
-            // UTC-Zeitstempel in lokale IP-Symcon/PHP-Zeit auf volle Stunde abbilden.
             $hourTs = strtotime(date('Y-m-d H:00:00', $ts));
             if (!isset($quarterValues[$hourTs])) $quarterValues[$hourTs] = [];
             $quarterValues[$hourTs][] = max(0.0, (float)$row['pv_power']) / 1000.0;
@@ -1727,12 +2011,19 @@ class SmartBatteryOptimizer extends IPSModule
             $hours[(int)$hourTs] = array_sum($values) / count($values);
         }
         ksort($hours);
+        if (count($hours) === 0) throw new Exception('pvnode: Keine verwertbaren PV-Leistungswerte erhalten.');
 
-        if (count($hours) === 0) {
-            throw new Exception('pvnode: Keine verwertbaren PV-Leistungswerte erhalten.');
+        $nextPollRaw = $data['next_poll_at'] ?? ($data['meta']['next_poll_at'] ?? ($data['metadata']['next_poll_at'] ?? null));
+        $nextPollTs = 0;
+        if (is_numeric($nextPollRaw)) {
+            $n = (int)$nextPollRaw;
+            $nextPollTs = $n > 20000000000 ? (int)floor($n / 1000) : $n;
+        } elseif (is_string($nextPollRaw) && trim($nextPollRaw) !== '') {
+            $parsed = strtotime($nextPollRaw);
+            if ($parsed !== false) $nextPollTs = $parsed;
         }
 
-        return $hours;
+        return ['hours' => $hours, 'nextPollTs' => $nextPollTs];
     }
 
     private function RegisterPVNodeRejection(int $status, string $message): void
@@ -1944,6 +2235,181 @@ class SmartBatteryOptimizer extends IPSModule
         ];
     }
 
+    private function PVSeasonForTimestamp(int $ts): string
+    {
+        $month = (int)date('n', $ts);
+        if ($month >= 3 && $month <= 5) return 'spring';
+        if ($month >= 6 && $month <= 8) return 'summer';
+        if ($month >= 9 && $month <= 11) return 'autumn';
+        return 'winter';
+    }
+
+    private function MergePVSeasonArchive(array $archive, array $sample): array
+    {
+        $ts = (int)($sample['ts'] ?? 0);
+        $exp = (float)($sample['expectedKWh'] ?? 0.0);
+        $act = (float)($sample['actualKWh'] ?? 0.0);
+        if ($ts <= 0 || $exp <= 0.0 || $act < 0.0) return $archive;
+        $season = $this->PVSeasonForTimestamp($ts);
+        $hour = (string)(isset($sample['hour']) ? (int)$sample['hour'] : (int)date('G', $ts));
+        if (!isset($archive[$season]) || !is_array($archive[$season])) $archive[$season] = [];
+        if (!isset($archive[$season][$hour]) || !is_array($archive[$season][$hour])) {
+            $archive[$season][$hour] = ['expectedKWh'=>0.0,'actualKWh'=>0.0,'intervals'=>0,'days'=>[]];
+        }
+        $archive[$season][$hour]['expectedKWh'] += $exp;
+        $archive[$season][$hour]['actualKWh'] += $act;
+        $archive[$season][$hour]['intervals'] += max(1, (int)($sample['intervals'] ?? 1));
+        if (!isset($archive[$season][$hour]['days']) || !is_array($archive[$season][$hour]['days'])) $archive[$season][$hour]['days'] = [];
+        $archive[$season][$hour]['days'][date('Y-m-d', $ts)] = true;
+        return $archive;
+    }
+
+    private function CompactPVCalibrationData(array $calibration, string $key): array
+    {
+        if (!isset($calibration[$key]) || !is_array($calibration[$key])) return $calibration;
+        $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
+        if (count($samples) === 0) return $calibration;
+
+        // Rohmessungen werden pro Stunde zusammengefasst. Damit bleiben Energie und
+        // Tages-/Stundenstruktur exakt erhalten, die JSON-Menge sinkt aber typischerweise
+        // von zehntausenden Punkten auf höchstens 24 * Lerntage.
+        $buckets = [];
+        $auditRawExpected = 0.0;
+        $auditRawActual = 0.0;
+        $auditRawCount = 0;
+        foreach ($samples as $sample) {
+            $ts = (int)($sample['ts'] ?? 0);
+            $exp = (float)($sample['expectedKWh'] ?? 0.0);
+            $act = (float)($sample['actualKWh'] ?? 0.0);
+            if ($ts <= 0 || $exp <= 0.0 || $act < 0.0) continue;
+            $auditRawExpected += $exp;
+            $auditRawActual += $act;
+            $auditRawCount++;
+            $hourStart = strtotime(date('Y-m-d H:00:00', $ts));
+            $bucketKey = (string)$hourStart;
+            if (!isset($buckets[$bucketKey])) {
+                $buckets[$bucketKey] = ['ts'=>$hourStart,'endTs'=>(int)($sample['endTs'] ?? $ts),'expectedKWh'=>0.0,'actualKWh'=>0.0,'hour'=>(int)date('G',$ts),'intervals'=>0];
+            }
+            $buckets[$bucketKey]['expectedKWh'] += $exp;
+            $buckets[$bucketKey]['actualKWh'] += $act;
+            $buckets[$bucketKey]['endTs'] = max((int)$buckets[$bucketKey]['endTs'], (int)($sample['endTs'] ?? $ts));
+            $buckets[$bucketKey]['intervals'] += max(1, (int)($sample['intervals'] ?? 1));
+        }
+        ksort($buckets, SORT_NUMERIC);
+        $auditBucketExpected = 0.0;
+        $auditBucketActual = 0.0;
+        foreach ($buckets as $bucket) {
+            $auditBucketExpected += (float)($bucket['expectedKWh'] ?? 0.0);
+            $auditBucketActual += (float)($bucket['actualKWh'] ?? 0.0);
+        }
+
+        $retentionDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'), $this->ReadPropertyInteger('UnknownOrientationLearningDays'));
+        $cutoff = time() - $retentionDays * 86400;
+        $archive = isset($calibration[$key]['seasonalArchive']) && is_array($calibration[$key]['seasonalArchive']) ? $calibration[$key]['seasonalArchive'] : [];
+        $recent = [];
+        foreach ($buckets as $bucket) {
+            if ((int)$bucket['ts'] < $cutoff) $archive = $this->MergePVSeasonArchive($archive, $bucket);
+            else $recent[] = $bucket;
+        }
+        $calibration[$key]['energySamples'] = $recent;
+        $calibration[$key]['seasonalArchive'] = $archive;
+        $calibration[$key]['storageMode'] = 'hourly+seasonal';
+        $calibration[$key]['compactedAt'] = time();
+        $beforeFactor = $auditRawExpected > 0.0 ? $auditRawActual / $auditRawExpected : null;
+        $afterFactor = $auditBucketExpected > 0.0 ? $auditBucketActual / $auditBucketExpected : null;
+        $calibration[$key]['lastCompactionAudit'] = [
+            'ts' => time(),
+            'rawCount' => $auditRawCount,
+            'bucketCount' => count($buckets),
+            'expectedBeforeKWh' => $auditRawExpected,
+            'expectedAfterKWh' => $auditBucketExpected,
+            'actualBeforeKWh' => $auditRawActual,
+            'actualAfterKWh' => $auditBucketActual,
+            'factorBefore' => $beforeFactor,
+            'factorAfter' => $afterFactor,
+            'expectedDeltaKWh' => $auditBucketExpected - $auditRawExpected,
+            'actualDeltaKWh' => $auditBucketActual - $auditRawActual
+        ];
+        return $calibration;
+    }
+
+    private function GetPVSeasonLabel(string $season): string
+    {
+        $labels = ['spring'=>'Frühling','summer'=>'Sommer','autumn'=>'Herbst','winter'=>'Winter'];
+        return $labels[$season] ?? $season;
+    }
+
+    private function GetPVSeasonStats(array $calibration, string $key, int $ts): array
+    {
+        $season = $this->PVSeasonForTimestamp($ts);
+        $expected = 0.0; $actual = 0.0; $intervals = 0; $days = [];
+        $archive = isset($calibration[$key]['seasonalArchive']) && is_array($calibration[$key]['seasonalArchive']) ? $calibration[$key]['seasonalArchive'] : [];
+        if (isset($archive[$season]) && is_array($archive[$season])) {
+            foreach ($archive[$season] as $entry) {
+                if (!is_array($entry)) continue;
+                $expected += max(0.0, (float)($entry['expectedKWh'] ?? 0.0));
+                $actual += max(0.0, (float)($entry['actualKWh'] ?? 0.0));
+                $intervals += max(0, (int)($entry['intervals'] ?? 0));
+                if (isset($entry['days']) && is_array($entry['days'])) foreach ($entry['days'] as $day => $_) $days[(string)$day] = true;
+            }
+        }
+        foreach (($calibration[$key]['energySamples'] ?? []) as $sample) {
+            $sampleTs = (int)($sample['ts'] ?? 0);
+            if ($sampleTs <= 0 || $this->PVSeasonForTimestamp($sampleTs) !== $season) continue;
+            $exp = (float)($sample['expectedKWh'] ?? 0.0); $act = (float)($sample['actualKWh'] ?? 0.0);
+            if ($exp <= 0.0 || $act < 0.0) continue;
+            $expected += $exp; $actual += $act;
+            $intervals += max(1, (int)($sample['intervals'] ?? 1));
+            $days[date('Y-m-d', $sampleTs)] = true;
+        }
+        return [
+            'season'=>$season, 'label'=>$this->GetPVSeasonLabel($season),
+            'expectedKWh'=>$expected, 'actualKWh'=>$actual,
+            'factor'=>$expected > 0.0 ? $actual / $expected : null,
+            'intervals'=>$intervals, 'days'=>count($days)
+        ];
+    }
+
+    private function GetSeasonalPVFactor(array $calibration, string $key, int $ts, ?int $hour = null): ?float
+    {
+        if (!isset($calibration[$key]) || !is_array($calibration[$key])) return null;
+        $min = $this->ReadPropertyFloat('PVCalibrationMinFactor');
+        $max = $this->ReadPropertyFloat('PVCalibrationMaxFactor');
+        $hour = $hour === null ? (int)date('G', $ts) : max(0, min(23, $hour));
+
+        // Saisonzentren: 15.04 / 15.07 / 15.10 / 15.01. Zwischen zwei Zentren wird
+        // linear überblendet, damit es an Monatsgrenzen keinen Faktorsprung gibt.
+        $year = (int)date('Y', $ts);
+        $centers = [
+            ['winter', strtotime(($year-1).'-01-15 12:00:00')],
+            ['spring', strtotime($year.'-04-15 12:00:00')],
+            ['summer', strtotime($year.'-07-15 12:00:00')],
+            ['autumn', strtotime($year.'-10-15 12:00:00')],
+            ['winter', strtotime(($year+1).'-01-15 12:00:00')],
+            ['spring', strtotime(($year+1).'-04-15 12:00:00')]
+        ];
+        if ($ts < $centers[1][1]) { $centers[0][1] = strtotime(($year-1).'-10-15 12:00:00'); $centers[0][0]='autumn'; $centers[1]=['winter',strtotime($year.'-01-15 12:00:00')]; $centers[2]=['spring',strtotime($year.'-04-15 12:00:00')]; }
+        $left = $centers[0]; $right = $centers[1];
+        for ($i=0; $i<count($centers)-1; $i++) {
+            if ($ts >= $centers[$i][1] && $ts <= $centers[$i+1][1]) { $left=$centers[$i]; $right=$centers[$i+1]; break; }
+        }
+        $span = max(1, $right[1]-$left[1]);
+        $wr = max(0.0, min(1.0, ($ts-$left[1])/$span));
+        $wl = 1.0-$wr;
+
+        $archive = isset($calibration[$key]['seasonalArchive']) && is_array($calibration[$key]['seasonalArchive']) ? $calibration[$key]['seasonalArchive'] : [];
+        // Auch die aktuellen kompakten Lerndaten fließen saisonal ein.
+        foreach (($calibration[$key]['energySamples'] ?? []) as $sample) $archive = $this->MergePVSeasonArchive($archive, $sample);
+        $get = function(string $season) use ($archive, $hour, $min, $max) {
+            $entry = $archive[$season][(string)$hour] ?? null;
+            if (!is_array($entry) || (float)($entry['expectedKWh'] ?? 0.0) <= 0.0) return null;
+            return max($min, min($max, (float)$entry['actualKWh'] / (float)$entry['expectedKWh']));
+        };
+        $fl=$get($left[0]); $fr=$get($right[0]);
+        if ($fl !== null && $fr !== null) return $fl*$wl + $fr*$wr;
+        return $fl ?? $fr;
+    }
+
     private function InvalidatePVCalibrationFrom(array $calibration, string $key, int $fromTs): array
     {
         if (!isset($calibration[$key]) || !is_array($calibration[$key])) return $calibration;
@@ -1990,53 +2456,86 @@ class SmartBatteryOptimizer extends IPSModule
         $calibration[$key]['factorSampleCount']=$count;
         $hourly=[];
         for($hour=0;$hour<24;$hour++) {
-            $he=0.0;$ha=0.0;$hc=0;
+            $he=0.0;$ha=0.0;$hc=0;$hourLearningDays=[];
             foreach($samples as $sample) {
-                if ((int)($sample['ts'] ?? 0) < $factorCutoff) continue;
-                $sh=isset($sample['hour'])?(int)$sample['hour']:(int)date('G',(int)$sample['ts']);
+                $sampleTs=(int)($sample['ts'] ?? 0);
+                if ($sampleTs < $factorCutoff) continue;
+                $sh=isset($sample['hour'])?(int)$sample['hour']:(int)date('G',$sampleTs);
                 if($sh!==$hour) continue;
-                $he+=(float)$sample['expectedKWh']; $ha+=(float)$sample['actualKWh']; $hc++;
+                $exp=(float)($sample['expectedKWh'] ?? 0.0);
+                $act=(float)($sample['actualKWh'] ?? 0.0);
+                if ($exp <= 0.0 || $act < 0.0) continue;
+                $he+=$exp; $ha+=$act; $hc++;
+                $hourLearningDays[date('Y-m-d',$sampleTs)]=true;
             }
-            if($he>0) $hourly[(string)$hour]=['factor'=>max($min,min($max,$ha/$he)),'samples'=>$hc];
+            // Ein Stundenfaktor gilt erst dann als bekannt, wenn fuer GENAU diese
+            // Stunde der konfigurierte Lernzeitraum erreicht ist. Vorher existiert
+            // absichtlich kein hourlyFactors-Eintrag; GetPVForecastHourFactor()
+            // liefert dann 1,000, ohne Min-/Max-Clamping.
+            $hourReady=(count($hourLearningDays) >= $minimumLearningDays && $he > 0.0);
+            if($hourReady) {
+                $hourly[(string)$hour]=[
+                    'factor'=>max($min,min($max,$ha/$he)),
+                    'samples'=>$hc,
+                    'learningDays'=>count($hourLearningDays),
+                    'expectedKWh'=>$he,
+                    'actualKWh'=>$ha
+                ];
+            }
         }
         $calibration[$key]['hourlyFactors']=$hourly;
         $calibration[$key]['updated']=$now;
         return $calibration;
     }
 
-    private function GetPVForecastHourFactor(array $calibration, string $key, int $hour, float $overallFactor): float
+    private function GetPVForecastHourFactor(array $calibration, string $key, int $hour, float $overallFactor, ?bool $factorReadyOverride = null): float
     {
         $minFactor = $this->ReadPropertyFloat('PVCalibrationMinFactor');
         $maxFactor = $this->ReadPropertyFloat('PVCalibrationMaxFactor');
         $hourKey = (string)max(0, min(23, $hour));
-        if (empty($calibration[$key]['factorReady'])) {
+        $factorReady = $factorReadyOverride ?? !empty($calibration[$key]['factorReady']);
+        if (!$factorReady) {
             return 1.0;
         }
         $hourly = isset($calibration[$key]['hourlyFactors']) && is_array($calibration[$key]['hourlyFactors'])
             ? $calibration[$key]['hourlyFactors'] : [];
 
-        // 1. Bevorzugt den echten, für diese Stunde gelernten Faktor verwenden.
+        // Nur ein tatsächlich für genau diese Stunde gelernter Faktor darf die
+        // Stundenprognose korrigieren. Fehlt für diese Stunde eine belastbare
+        // Datengrundlage, bleibt die Prognose unverändert (Faktor 1,000).
+        // Gesamt- und Saisonfaktoren bleiben Diagnose-/Langzeitinformationen und
+        // werden ausdrücklich nicht als Ersatz für eine unbekannte Stunde benutzt.
         if (isset($hourly[$hourKey]['factor'])) {
-            return max($minFactor, min($maxFactor, (float)$hourly[$hourKey]['factor']));
+            $factor = (float)$hourly[$hourKey]['factor'];
+            if (is_finite($factor) && $factor > 0.0) {
+                return max($minFactor, min($maxFactor, $factor));
+            }
         }
 
-        // 2. Fehlt die Stunde (typisch wegen PV-Abregelung / Lernsperre), den
-        // Mittelwert der übrigen gültigen Stundenfaktoren verwenden. Die Ersatzwerte
-        // werden nur für die Prognose benutzt und nicht als Lernwerte gespeichert.
-        $validFactors = [];
-        foreach ($hourly as $entry) {
-            if (!is_array($entry) || !isset($entry['factor'])) continue;
-            $factor = (float)$entry['factor'];
-            if (!is_finite($factor)) continue;
-            $validFactors[] = max($minFactor, min($maxFactor, $factor));
-        }
-        if (count($validFactors) > 0) {
-            return max($minFactor, min($maxFactor, array_sum($validFactors) / count($validFactors)));
-        }
+        return 1.0;
+    }
 
-        // 3. Solange noch keine Stundenfaktoren vorhanden sind, bleibt der
-        // langfristige Gesamtfaktor die letzte Rückfallebene.
-        return max($minFactor, min($maxFactor, $overallFactor));
+    private function GetPVForecastHourWeight(array $calibration, string $key, int $hour): float
+    {
+        if (!isset($calibration[$key]) || !is_array($calibration[$key])) return 0.0;
+        $hour = max(0, min(23, $hour));
+        $weight = 0.0;
+        $cutoff = time() - max(1, $this->ReadPropertyInteger('PVCalibrationDays')) * 86400;
+        foreach (($calibration[$key]['energySamples'] ?? []) as $sample) {
+            $ts = (int)($sample['ts'] ?? 0);
+            if ($ts < $cutoff) continue;
+            $h = isset($sample['hour']) ? (int)$sample['hour'] : (int)date('G', $ts);
+            if ($h !== $hour) continue;
+            $weight += max(0.0, (float)($sample['expectedKWh'] ?? 0.0));
+        }
+        // Falls im aktuellen Fenster für diese Stunde noch nichts vorhanden ist,
+        // dient das saisonale Stundenarchiv als Gewicht (nicht als zusätzlicher Messwert).
+        if ($weight <= 0.0) {
+            $season = $this->PVSeasonForTimestamp(time());
+            $entry = $calibration[$key]['seasonalArchive'][$season][(string)$hour] ?? null;
+            if (is_array($entry)) $weight = max(0.0, (float)($entry['expectedKWh'] ?? 0.0));
+        }
+        return $weight;
     }
 
     private function AddPVCalibrationEnergySample(array $calibration, string $key, float $expectedW, float $actualW): array
@@ -2048,6 +2547,7 @@ class SmartBatteryOptimizer extends IPSModule
             $calibration[$key]['energySamples'] = [];
         }
 
+        $calibration = $this->CompactPVCalibrationData($calibration, $key);
         $now = time();
         $lastTs = (int)($calibration[$key]['lastPointTs'] ?? 0);
         $lastExpectedW = (float)($calibration[$key]['lastPointExpectedW'] ?? 0.0);
@@ -2112,30 +2612,20 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $calibration[$key]['factorSampleCount'] = $count;
 
-        // Zusätzlich für jede Tagesstunde einen eigenen Korrekturfaktor lernen.
-        // Dadurch können z.B. systematische Morgen-/Abendabweichungen separat
-        // von der Mittagsprognose korrigiert werden.
+        // Stundenfaktoren in einem einzigen Durchlauf bilden (O(n) statt 24*n).
+        $hourSums = [];
+        foreach ($samples as $sample) {
+            if ((int)$sample['ts'] < $factorCutoff) continue;
+            $h = isset($sample['hour']) ? (int)$sample['hour'] : (int)date('G', (int)$sample['ts']);
+            if (!isset($hourSums[$h])) $hourSums[$h] = ['e'=>0.0,'a'=>0.0,'c'=>0];
+            $hourSums[$h]['e'] += (float)$sample['expectedKWh'];
+            $hourSums[$h]['a'] += (float)$sample['actualKWh'];
+            $hourSums[$h]['c'] += max(1, (int)($sample['intervals'] ?? 1));
+        }
         $hourlyFactors = [];
-        for ($hour = 0; $hour < 24; $hour++) {
-            $hourExpected = 0.0;
-            $hourActual = 0.0;
-            $hourCount = 0;
-            foreach ($samples as $sample) {
-                if ((int)$sample['ts'] < $factorCutoff) continue;
-                $sampleHour = isset($sample['hour']) ? (int)$sample['hour'] : (int)date('G', (int)$sample['ts']);
-                if ($sampleHour !== $hour) continue;
-                $hourExpected += (float)$sample['expectedKWh'];
-                $hourActual += (float)$sample['actualKWh'];
-                $hourCount++;
-            }
-            if ($hourExpected > 0.0) {
-                $hourFactor = $hourActual / $hourExpected;
-                $hourFactor = max(
-                    $this->ReadPropertyFloat('PVCalibrationMinFactor'),
-                    min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $hourFactor)
-                );
-                $hourlyFactors[(string)$hour] = ['factor' => $hourFactor, 'samples' => $hourCount];
-            }
+        foreach ($hourSums as $h => $v) {
+            if ($v['e'] <= 0.0) continue;
+            $hourlyFactors[(string)$h] = ['factor'=>max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $v['a']/$v['e'])),'samples'=>$v['c'],'expectedKWh'=>$v['e'],'actualKWh'=>$v['a']];
         }
         $calibration[$key]['hourlyFactors'] = $hourlyFactors;
         $calibration[$key]['updated'] = $now;
@@ -2144,6 +2634,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function GetPVCalibrationDiagnostics(array $calibration, string $key): array
     {
+        $calibration = $this->CompactPVCalibrationData($calibration, $key);
         $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
         $factorDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
         $cutoff = time() - $factorDays * 86400;
@@ -2172,13 +2663,49 @@ class SmartBatteryOptimizer extends IPSModule
             if ($ts < $cutoff || $exp <= 0.0 || $act < 0.0) continue;
             $validDays[date('Y-m-d', $ts)] = true;
         }
+        $archive = isset($calibration[$key]['seasonalArchive']) && is_array($calibration[$key]['seasonalArchive']) ? $calibration[$key]['seasonalArchive'] : [];
+        foreach ($archive as $seasonEntries) {
+            if (!is_array($seasonEntries)) continue;
+            foreach ($seasonEntries as $entry) {
+                if (!is_array($entry) || !isset($entry['days']) || !is_array($entry['days'])) continue;
+                foreach ($entry['days'] as $day => $_) $validDays[(string)$day] = true;
+            }
+        }
         $requiredDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
-        $factorReady = count($validDays) >= $requiredDays && $sumExpected > 0.0;
+
+        // Verdichtete ältere Daten dürfen bei der Faktorberechnung nicht verloren gehen.
+        // energySamples enthält nur den kompakten aktuellen Zeitraum; ältere Stundenblöcke
+        // liegen im saisonalen Archiv. Für den Auto-Faktor werden beide Energiemengen
+        // energiegewichtet zusammengeführt. Dadurch ändert eine Verdichtung das Verhältnis
+        // Ist/Prognose nicht künstlich nur deshalb, weil Rohpunkte ins Archiv gewandert sind.
+        $currentSeason = $this->PVSeasonForTimestamp(time());
+        $archiveExpected = 0.0;
+        $archiveActual = 0.0;
+        $archiveIntervals = 0;
+        if (isset($archive[$currentSeason]) && is_array($archive[$currentSeason])) {
+            foreach ($archive[$currentSeason] as $entry) {
+                if (!is_array($entry)) continue;
+                $exp = (float)($entry['expectedKWh'] ?? 0.0);
+                $act = (float)($entry['actualKWh'] ?? 0.0);
+                if ($exp <= 0.0 || $act < 0.0) continue;
+                $archiveExpected += $exp;
+                $archiveActual += $act;
+                $archiveIntervals += max(1, (int)($entry['intervals'] ?? 1));
+            }
+        }
+        $factorExpected = $sumExpected + $archiveExpected;
+        $factorActual = $sumActual + $archiveActual;
+        $factorReady = count($validDays) >= $requiredDays && $factorExpected > 0.0;
         return [
             'sampleCount' => $count,
-            'sumExpectedKWh' => $sumExpected,
-            'sumActualKWh' => $sumActual,
-            'ratio' => $factorReady ? $sumActual / $sumExpected : null,
+            'sumExpectedKWh' => $factorExpected,
+            'sumActualKWh' => $factorActual,
+            'recentExpectedKWh' => $sumExpected,
+            'recentActualKWh' => $sumActual,
+            'archiveExpectedKWh' => $archiveExpected,
+            'archiveActualKWh' => $archiveActual,
+            'archiveIntervalCount' => $archiveIntervals,
+            'ratio' => $factorReady ? $factorActual / $factorExpected : null,
             'factorReady' => $factorReady,
             'learningDayCount' => count($validDays),
             'firstSampleTs' => $firstTs,
@@ -2698,7 +3225,7 @@ class SmartBatteryOptimizer extends IPSModule
                 'priceCt' => $p['priceCt'],
                 'marketCt' => $p['marketCt'],
                 'energyKWh' => $energy,
-                'powerW' => $batteryPowerW,
+                'powerW' => $maxKW * 1000.0,
                 'expectedGridExportW' => $expectedExportKW * 1000.0,
                 'expectedLoadW' => $this->GetExpectedLoadPowerW($consumptionProfile, $slotStart),
                 'reason' => 'price'
@@ -2749,7 +3276,7 @@ class SmartBatteryOptimizer extends IPSModule
                     'priceCt' => $p['priceCt'],
                     'marketCt' => $p['marketCt'],
                     'energyKWh' => $energy,
-                    'powerW' => $batteryPowerW,
+                    'powerW' => $maxKW * 1000.0,
                     'expectedGridExportW' => $expectedExportKW * 1000.0,
                     'expectedLoadW' => $this->GetExpectedLoadPowerW($consumptionProfile, $slotStart),
                     'reason' => 'pv_space_required'
@@ -3912,14 +4439,72 @@ class SmartBatteryOptimizer extends IPSModule
         SetValue($this->GetIDForIdent('ProviderDebugHTML'), $this->RenderProviderDebugHTML($entries));
     }
 
+    private function RenderProviderForecastStatusHTML(array $forecast): string
+    {
+        $sources = is_array($forecast['forecastSources'] ?? null) ? $forecast['forecastSources'] : [];
+        $surfaceData = is_array($forecast['providerSurfaceTomorrow'] ?? null) ? $forecast['providerSurfaceTomorrow'] : [];
+        $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+        if (!is_array($surfaces)) $surfaces = [];
+        $surfaceNames = [];
+        foreach ($surfaces as $idx => $surface) {
+            if (empty($surface['Active'])) continue;
+            $name = trim((string)($surface['Name'] ?? 'PV')); if ($name === '') $name = 'PV ' . ($idx + 1);
+            $surfaceNames[] = $name;
+        }
+        $history = json_decode($this->ReadAttributeString('PVSourceForecastHistoryJSON'), true);
+        if (!is_array($history)) $history = [];
+        $tomorrow = date('Y-m-d', strtotime('tomorrow'));
+        $labels = ['openmeteo'=>'Open-Meteo','forecastsolar'=>'Forecast.Solar','pvnode'=>'pvnode'];
+        $body = '<table style="width:100%;border-collapse:collapse;font-family:Tahoma;font-size:12px"><tr style="border-bottom:1px solid #666"><th style="text-align:left;padding:4px">Anbieter</th>';
+        foreach ($surfaceNames as $name) $body .= '<th style="text-align:right;padding:4px">' . htmlspecialchars($name) . ' morgen</th>';
+        $body .= '<th style="text-align:right;padding:4px">Gesamt morgen</th><th style="text-align:left;padding:4px">Status</th></tr>';
+        foreach ($labels as $source => $label) {
+            if (!in_array($source, $sources, true) && empty($history[$source][$tomorrow])) continue;
+            $total = 0.0;
+            if (isset($history[$source][$tomorrow]) && is_array($history[$source][$tomorrow])) foreach ($history[$source][$tomorrow] as $v) if ($v !== null) $total += max(0.0,(float)$v);
+            $body .= '<tr style="border-bottom:1px solid #333"><td style="padding:5px 4px"><b>' . htmlspecialchars($label) . '</b></td>';
+            foreach ($surfaceNames as $name) {
+                $v = $surfaceData[$source][$name] ?? null;
+                $body .= '<td style="text-align:right;padding:5px 4px">' . ($v === null ? '–' : number_format((float)$v,2,',','.') . ' kWh') . '</td>';
+            }
+            $status = 'Live';
+            if ($source === 'pvnode') {
+                $cache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
+                $fetched = is_array($cache) ? (int)($cache['fetchedAt'] ?? 0) : 0;
+                $status = 'Standort gesamt · ' . ($fetched > 0 ? 'Cache ' . date('d.m. H:i', $fetched) : 'Live/kein Cache');
+            }
+            $body .= '<td style="text-align:right;padding:5px 4px"><b>' . number_format($total,2,',','.') . ' kWh</b></td><td style="padding:5px 4px">' . htmlspecialchars($status) . '</td></tr>';
+        }
+        $body .= '</table>';
+        return $this->RenderPersistentDetailsHTML('sbo_provider_status', 'PV-Prognose Anbieter', $body, 'Prognose für morgen je Anbieter');
+    }
+
     private function RenderProviderDebugHTML(array $entries): string
     {
         if (!$this->ReadPropertyBoolean('DebugMode')) return '';
         $e = static function ($v): string { return htmlspecialchars((string)$v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); };
-        $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff;background:#181818;padding:8px">';
-        $html .= '<details open><summary style="cursor:pointer;font-family:Tahoma;font-size:14px;font-weight:bold;padding:4px 0">Prognose Provider Debug</summary>';
-        $html .= '<div style="margin-top:3px"><span style="opacity:.75">Neueste Abfrage oben | Rohantworten aufklappbar</span>';
-        foreach (array_reverse($entries) as $row) {
+        $html = '<div style="margin-top:3px">';
+        // Diagnosezeilen direkt sichtbar darstellen. Provider-Rohantworten bleiben aufklappbar.
+        $diagRows = [];
+        $providerRows = [];
+        foreach ($entries as $row) {
+            if (($row['provider'] ?? '') === 'DIAG') {
+                $diagRows[] = $row;
+            } else {
+                $providerRows[] = $row;
+            }
+        }
+        if ($diagRows) {
+            $html .= '<div style="margin:8px 0;padding:8px;background:#101010;border:1px solid #555;max-height:420px;overflow:auto">';
+            $html .= '<div style="font-weight:bold;margin-bottom:5px">DIAG – Ablaufprotokoll</div>';
+            foreach (array_reverse($diagRows) as $row) {
+                $step = (string)($row['request'] ?? $row['response'] ?? '');
+                $html .= '<div style="font-family:Consolas,monospace;white-space:pre-wrap;padding:2px 0;border-bottom:1px solid #292929">'
+                    .$e(date('H:i:s',(int)($row['time'] ?? 0))).' | '.$e($step).'</div>';
+            }
+            $html .= '</div>';
+        }
+        foreach (array_reverse($providerRows) as $row) {
             $meta = is_array($row['meta'] ?? null) ? $row['meta'] : [];
             $html .= '<details style="margin-top:8px;border-top:1px solid #555;padding-top:6px"><summary style="cursor:pointer"><b>'.$e($row['provider'] ?? '').'</b> | '.$e(date('d.m.Y H:i:s',(int)($row['time'] ?? 0))).' | HTTP '.$e($row['status'] ?? '').' | '.$e($row['durationMs'] ?? 0).' ms</summary>';
             if ($meta) $html .= '<div style="margin:5px 0"><b>Parameter:</b> '.$e(implode(' | ', array_map(static fn($k,$v)=>$k.'='.$v,array_keys($meta),array_values($meta)))).'</div>';
@@ -3927,7 +4512,7 @@ class SmartBatteryOptimizer extends IPSModule
             $raw = is_string($row['response'] ?? null) ? $row['response'] : json_encode($row['response'] ?? null, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
             $html .= '<details><summary style="cursor:pointer">Antwort anzeigen</summary><pre style="white-space:pre-wrap;word-break:break-word;background:#101010;padding:6px;max-height:500px;overflow:auto">'.$e($raw).'</pre></details></details>';
         }
-        return $html.'</div></details></div>';
+        return $this->RenderPersistentDetailsHTML('sbo_provider_debug', 'Prognose Provider Debug', $html . '</div>', 'Neueste Abfrage oben | Rohantworten aufklappbar');
     }
 
     private function HttpGetJsonWithHeaders(string $url, array $headers = [], string $debugProvider = '', array $debugMeta = []): array
@@ -3939,7 +4524,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $opts = [
             'http' => [
-                'timeout' => 12,
+                'timeout' => 8,
                 'ignore_errors' => true,
                 'header' => implode("\r\n", $allHeaders) . "\r\n"
             ]
@@ -3982,7 +4567,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function HttpGetJson(string $url, string $debugProvider = '', array $debugMeta = []): array
     {
-        $opts = ['http' => ['timeout' => 12, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.7\r\n"]];
+        $opts = ['http' => ['timeout' => 8, 'header' => "User-Agent: IP-Symcon-SmartBatteryOptimizer/1.2.7\r\n"]];
         $ctx = stream_context_create($opts);
         $debugStart = microtime(true);
         $raw = @file_get_contents($url, false, $ctx);
@@ -4260,6 +4845,73 @@ class SmartBatteryOptimizer extends IPSModule
     }
 
 
+    private function RenderFeedInStatisticsHTML(): string
+    {
+        $allStats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
+        if (!is_array($allStats)) $allStats = [];
+
+        // Ausschließlich Preis-Einspeisefenster der Einspeiseautomatik auswerten.
+        // PV-Speicherfreihaltung / Abregelungsschutz bleibt vollständig außen vor.
+        $stats = [];
+        foreach ($allStats as $r) {
+            $reason = (string)($r['reason'] ?? 'price');
+            if ($reason === '' || $reason === 'price') $stats[] = $r;
+        }
+
+        $todayStart = strtotime('today 00:00:00');
+        $monthStart = strtotime(date('Y-m-01 00:00:00'));
+        $yearStart = strtotime(date('Y-01-01 00:00:00'));
+        $sum = ['today'=>[0.0,0.0,0], 'month'=>[0.0,0.0,0], 'year'=>[0.0,0.0,0], 'all'=>[0.0,0.0,0]];
+        $rows = [];
+        foreach ($stats as $r) {
+            $startTs = (int)($r['start'] ?? 0);
+            $endTs = (int)($r['end'] ?? $startTs);
+            $ts = $endTs > 0 ? $endTs : $startTs;
+            $kWh = max(0.0, (float)($r['deliveredKWh'] ?? 0));
+            $eur = (float)($r['revenueEUR'] ?? 0);
+            foreach (['all'=>0, 'year'=>$yearStart, 'month'=>$monthStart, 'today'=>$todayStart] as $key=>$from) {
+                if ($ts >= $from) { $sum[$key][0]+=$kWh; $sum[$key][1]+=$eur; $sum[$key][2]++; }
+            }
+            if ($ts >= strtotime('-30 days')) {
+                $rows[] = [
+                    'sortTs'=>($startTs > 0 ? $startTs : $ts),
+                    'label'=>date('d.m. H:i', $startTs > 0 ? $startTs : $ts),
+                    'start'=>date('d.m.Y H:i', $startTs > 0 ? $startTs : $ts),
+                    'end'=>date('H:i', $endTs > 0 ? $endTs : $ts),
+                    'kWh'=>round($kWh,3),
+                    'targetKWh'=>round(max(0.0,(float)($r['targetKWh'] ?? 0)),3),
+                    'eur'=>round($eur,3),
+                    'priceCt'=>round((float)($r['priceCt'] ?? 0),2)
+                ];
+            }
+        }
+        usort($rows, static fn($a,$b) => ((int)($a['sortTs'] ?? 0)) <=> ((int)($b['sortTs'] ?? 0)));
+
+        $highchartsJS = $this->GetHighchartsJavaScript();
+        $chartId = 'sbo_feed_stats_' . $this->InstanceID;
+        $f = static fn($v)=>number_format((float)$v,2,',','.');
+        $summary = 'Heute: <b>'.$f($sum['today'][0]).' kWh / '.$f($sum['today'][1]).' €</b>'
+            . ' &middot; Monat: <b>'.$f($sum['month'][0]).' kWh / '.$f($sum['month'][1]).' €</b>'
+            . ' &middot; Jahr: <b>'.$f($sum['year'][0]).' kWh / '.$f($sum['year'][1]).' €</b>'
+            . ' &middot; Gesamt: <b>'.$f($sum['all'][0]).' kWh / '.$f($sum['all'][1]).' €</b>';
+
+        $html = '<div style="font-family:Tahoma;color:#fff;width:100%"><b>Einspeise-Statistik – Einspeiseautomatik</b><br>';
+        $html .= '<span style="font-size:11px">Tatsächlich gemessene Netzeinspeisung aus Preis-Einspeisefenstern der Einspeiseautomatik.</span><br>';
+        if ($highchartsJS === '') {
+            return $html . '<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div><div style="font-size:11px;text-align:center;margin-top:8px">'.$summary.'</div></div>';
+        }
+
+        // Gleicher robuster HTMLBox-/Highcharts-Aufbau wie beim Lastprofil.
+        $html .= '<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div>';
+        $html .= '<div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center;margin-top:4px">'.$summary.'</div>';
+        $html .= '<script>'.$highchartsJS.'</script><script>(function(){';
+        $html .= 'var d='.json_encode($rows, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',id='.json_encode($chartId).';';
+        $html .= 'function draw(){if(typeof Highcharts==="undefined")return;var cats=[],vals=[];for(var i=0;i<d.length;i++){cats.push(d[i].label);vals.push(d[i].kWh);}';
+        $html .= 'Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{enabled:false},xAxis:{categories:cats,lineColor:"#fff",tickColor:"#fff",labels:{rotation:d.length>8?-45:0,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888",style:{fontFamily:"Tahoma",color:"#fff",fontSize:"11px"},formatter:function(){var r=d[this.point.index];return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.start+"–"+r.end+"</b><br>Einspeisung: <b>"+Highcharts.numberFormat(r.kWh,2,\",\",\".\")+" kWh</b><br>Geplant: "+Highcharts.numberFormat(r.targetKWh,2,\",\",\".\")+" kWh<br>Erlös: <b>"+Highcharts.numberFormat(r.eur,2,\",\",\".\")+" €</b><br>Ø Tarif: "+Highcharts.numberFormat(r.priceCt,2,\",\",\".\")+" ct/kWh</span>";}},plotOptions:{column:{borderWidth:0,groupPadding:.10,pointPadding:.04,dataLabels:{enabled:true,formatter:function(){return this.y>0?Highcharts.numberFormat(this.y,1,\",\",\".\"):""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}}},series:[{name:"Einspeisung",data:vals}]});}';
+        $html .= 'function init(){draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
+        return $html;
+    }
+
     private function RenderConsumptionProfileChartHTML(array $profile): string
     {
         $highchartsJS = $this->GetHighchartsJavaScript();
@@ -4300,8 +4952,8 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $html='<div style="font-family:Tahoma;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
         if($highchartsJS==='') return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
-        $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
-        $html.='var days='.json_encode($days).',id='.json_encode($chartId).',key='.json_encode('sbo_consumption_selected_day_' . $this->InstanceID).',idx=Math.max(0,days.length-1),chart=null;try{var sd=localStorage.getItem(key);if(sd){for(var si=0;si<days.length;si++){if(days[si].date===sd){idx=si;break;}}}}catch(e){}function e(s){return document.getElementById(id+s)}function draw(){if(days.length){try{localStorage.setItem(key,days[idx].date)}catch(e){}}if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
+        $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button><button id="'.$chartId.'_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
+        $html.='var days='.json_encode($days).',id='.json_encode($chartId).',key='.json_encode('sbo_consumption_selected_day_' . $this->InstanceID).',idx=Math.max(0,days.length-1),chart=null;try{var sd=localStorage.getItem(key);if(sd){for(var si=0;si<days.length;si++){if(days[si].date===sd){idx=si;break;}}}}catch(e){}function e(s){return document.getElementById(id+s)}function draw(){if(days.length){try{localStorage.setItem(key,days[idx].date)}catch(e){}}if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; <span style=\"color:#ffe082\">Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b></span>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};e("_today").onclick=function(){var t=new Date(),y=t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0");for(var q=0;q<days.length;q++){if(days[q].date===y){idx=q;break;}}draw()};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
         return $html;
     }
 
@@ -4417,6 +5069,7 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<button id="' . $chartId . '_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button>';
             $html .= '<span id="' . $chartId . '_date" style="min-width:150px;text-align:center;font-weight:bold"></span>';
             $html .= '<button id="' . $chartId . '_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button>';
+            $html .= '<button id="' . $chartId . '_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Heute</button>';
             $html .= '</div>';
             $html .= '<div id="' . $chartId . '_summary" style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px;text-align:center"></div>';
             $html .= '<script>' . $highchartsJS . '</script>';
@@ -4426,25 +5079,24 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'var chartId=' . json_encode($chartId) . ';';
             $html .= 'var visibilityKey="sbo_pv_debug_visibility_' . $this->InstanceID . '";';
             $html .= 'var selectedDayKey="sbo_pv_selected_day_' . $this->InstanceID . '";';
-            $storedVisibility = $this->ReadAttributeString('PVDebugVisibilityJSON');
-            $runtimeVisibility = (string)GetValue($this->GetIDForIdent('PVDebugVisibilityState'));
-            if ($runtimeVisibility !== '' && $runtimeVisibility !== '{}') $storedVisibility = $runtimeVisibility;
-            if ($storedVisibility === '') $storedVisibility = '{}';
-            $html .= 'var serverVisibility=' . $storedVisibility . ';';
-            $html .= 'function loadVisibility(){var out={};for(var k in serverVisibility){if(Object.prototype.hasOwnProperty.call(serverVisibility,k)){out[k]=!!serverVisibility[k];}}try{var v=localStorage.getItem(visibilityKey);if(v){var l=JSON.parse(v);for(var k2 in l){if(Object.prototype.hasOwnProperty.call(l,k2)){out[k2]=!!l[k2];}}}}catch(e){}return out;}';
-            $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}try{if(typeof IPS!=="undefined"&&IPS.requestAction){IPS.requestAction(' . $this->InstanceID . ',"PVDebugVisibilityState",JSON.stringify(v));}}catch(e){}}';
+            $html .= 'function loadVisibility(){var out={};try{var v=localStorage.getItem(visibilityKey);if(v){var l=JSON.parse(v);for(var k in l){if(Object.prototype.hasOwnProperty.call(l,k)){out[k]=!!l[k];}}}}catch(e){}return out;}';
+            $html .= 'function saveVisibility(v){try{localStorage.setItem(visibilityKey,JSON.stringify(v));}catch(e){}}';
+            // Fehlende Eintraege bedeuten sichtbar. Damit werden neu aktivierte
+            // Provider (Open-Meteo, Forecast.Solar, pvnode) beim ersten Aufbau
+            // nicht stillschweigend ausgeblendet. Danach wird der tatsaechlich
+            // eingetretene Highcharts show/hide-Zustand gespeichert.
+
             $html .= 'var debugVisibility=loadVisibility();';
             $html .= 'var chart=null;';
             $html .= 'var idx=0;var savedDay=null;try{savedDay=localStorage.getItem(selectedDayKey);}catch(e){}var i,found=false;for(i=0;i<days.length;i++){if(savedDay&&days[i].date===savedDay){idx=i;found=true;break;}}if(!found){for(i=0;i<days.length;i++){if(days[i].date===today){idx=i;break;}}}';
             $html .= 'function el(s){return document.getElementById(chartId+s);}';
             $html .= 'function draw(){';
-            $html .= 'if(typeof chart!=="undefined"&&chart){try{chart.series.forEach(function(sr){var k=sr.options.custom&&sr.options.custom.sourceKey;if(k){debugVisibility[k]=sr.visible;}});}catch(e){}}';
             $html .= 'if(!days.length||typeof Highcharts==="undefined"){return;}';
             $html .= 'var d=days[idx];try{localStorage.setItem(selectedDayKey,d.date);}catch(e){}var categories=[];var forecastData=[];var actualData=[];var sourceData={};';
             $html .= 'for(var src in d.sourceLabels){if(Object.prototype.hasOwnProperty.call(d.sourceLabels,src)){sourceData[src]=[];}}';
             $html .= 'for(var j=0;j<d.rows.length;j++){var r=d.rows[j];categories.push(r.label);forecastData.push({y:r.forecastKWh,custom:r});actualData.push(r.actualKWh===null?null:{y:r.actualKWh,custom:r});for(var src2 in sourceData){var sv=(r.sourceKWh&&Object.prototype.hasOwnProperty.call(r.sourceKWh,src2))?r.sourceKWh[src2]:null;sourceData[src2].push(sv===null?null:{y:sv,custom:r});}}';
             $html .= 'var chartSeries=[{name:"PV-Prognose kombiniert",data:forecastData,zIndex:1,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},{name:"Ist-Produktion",data:actualData,color:"rgba(255,213,79,0.38)",zIndex:3,pointPadding:0.20,dataLabels:{enabled:false}}];';
-            $html .= 'for(var src3 in sourceData){if(Object.prototype.hasOwnProperty.call(sourceData,src3)){var vis=Object.prototype.hasOwnProperty.call(debugVisibility,src3)?!!debugVisibility[src3]:false;chartSeries.push({name:d.sourceLabels[src3],type:"line",data:sourceData[src3],visible:vis,zIndex:5,lineWidth:2,marker:{enabled:true,radius:2},custom:{sourceKey:src3},events:{legendItemClick:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){var nextVisible=!this.visible;debugVisibility[key]=nextVisible;saveVisibility(debugVisibility);}}},dataLabels:{enabled:false}});}}';
+            $html .= 'for(var src3 in sourceData){if(Object.prototype.hasOwnProperty.call(sourceData,src3)){var vis=Object.prototype.hasOwnProperty.call(debugVisibility,src3)?!!debugVisibility[src3]:true;chartSeries.push({name:d.sourceLabels[src3],type:"line",data:sourceData[src3],visible:vis,zIndex:5,lineWidth:2,marker:{enabled:true,radius:2},custom:{sourceKey:src3},events:{show:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){debugVisibility[key]=true;saveVisibility(debugVisibility);}},hide:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){debugVisibility[key]=false;saveVisibility(debugVisibility);}}},dataLabels:{enabled:false}});}}';
             $html .= 'chart=chart=Highcharts.chart(chartId,{';
             $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
             $html .= 'title:{text:null},credits:{enabled:false},';
@@ -4459,7 +5111,7 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'var sumEl=el("_summary");if(sumEl){sumEl.innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; <span style=\\"color:#ffe082\\">Ist: <b>"+Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh</b></span>"+(d.dayAhead?" &middot; gespeicherte Day-Ahead-Prognose":"");}';
             $html .= 'var prev=el("_prev"),next=el("_next");if(prev){prev.disabled=(idx<=0);}if(next){next.disabled=(idx>=days.length-1);}';
             $html .= '}';
-            $html .= 'function init(){var prev=el("_prev"),next=el("_next");if(prev){prev.onclick=function(){if(idx>0){idx--;draw();}};}if(next){next.onclick=function(){if(idx<days.length-1){idx++;draw();}};}draw();}';
+            $html .= 'function init(){var prev=el("_prev"),next=el("_next"),todayBtn=el("_today");if(prev){prev.onclick=function(){if(idx>0){idx--;draw();}};}if(next){next.onclick=function(){if(idx<days.length-1){idx++;draw();}};}if(todayBtn){todayBtn.onclick=function(){for(var q=0;q<days.length;q++){if(days[q].date===today){idx=q;break;}}draw();};}draw();}';
             $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",init);}else{setTimeout(init,0);}';
             $html .= '})();</script>';
         } else {
@@ -4537,10 +5189,13 @@ class SmartBatteryOptimizer extends IPSModule
         $plantFactor = (float)($forecast['plantAutoFactor'] ?? 1.0);
         $html .= '<div style="margin:8px 0;padding:6px;border:1px solid #555"><b>Gesamtprognose / Auto-Korrektur</b><br>'
             . 'Kombinierte Prognose vor Auto: <b>' . number_format($beforeAuto, 2, ',', '.') . ' kWh</b>'
-            . ' | Anlagen-Auto-Faktor (energiegewichtet): <b>' . number_format($plantFactor, 3, ',', '.') . '</b>'
+            . ' | Referenz-Gesamtfaktor (energiegewichtet): <b>' . number_format($plantFactor, 3, ',', '.') . '</b>'
             . ' | Prognose nach Auto: <b>' . number_format($afterAuto, 2, ',', '.') . ' kWh</b></div>';
         $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff">';
         $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist-Erzeugung</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist / Prognose</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Intervalle</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Lernzeitraum</th></tr>';
+        $surfaceHourFactors = is_array($forecast['surfaceHourlyFactors'] ?? null) ? $forecast['surfaceHourlyFactors'] : [];
+        $currentHour = (int)date('G');
+        $nextHour = ($currentHour + 1) % 24;
         foreach ($cal as $name => $c) {
             $sumE = (float)($c['sumExpectedKWh'] ?? 0.0);
             $sumA = (float)($c['sumActualKWh'] ?? 0.0);
@@ -4553,13 +5208,48 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . htmlspecialchars((string)$name) . '</b>' . $status . '</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumE, 2, ',', '.') . ' kWh</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumA, 2, ',', '.') . ' kWh</td>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '-' : number_format((float)$ratio, 3, ',', '.')) . '</td>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . number_format($factor, 3, ',', '.') . '</b></td>';
+            // Ohne gültige Kalibrierungsdaten ist der Stundenfaktor definitionsgemäß 1,000.
+            // Damit können alte Forecast-Cache-Werte nach einem Reset niemals 0,750 o.ä. anzeigen.
+            $hasCalibrationData = !empty($c['factorReady']) && (int)($c['sampleCount'] ?? 0) > 0;
+            if ($hasCalibrationData) {
+                $currentFactor = isset($surfaceHourFactors[(string)$name][(string)$currentHour]) ? (float)$surfaceHourFactors[(string)$name][(string)$currentHour] : 1.0;
+                $nextFactor = isset($surfaceHourFactors[(string)$name][(string)$nextHour]) ? (float)$surfaceHourFactors[(string)$name][(string)$nextHour] : 1.0;
+            } else {
+                $currentFactor = 1.0;
+                $nextFactor = 1.0;
+            }
+            $hourInfo = '<br><span style="opacity:.75;white-space:nowrap">Aktuell ' . sprintf('%02d:00', $currentHour) . ': ' . ($currentFactor === null ? '-' : number_format($currentFactor, 3, ',', '.'))
+                . ' | Nächste ' . sprintf('%02d:00', $nextHour) . ': ' . ($nextFactor === null ? '-' : number_format($nextFactor, 3, ',', '.')) . '</span>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '-' : number_format((float)$ratio, 3, ',', '.')) . $hourInfo . '</td>';
+            $seasonInfo = '';
+            if (isset($c['seasonStats']) && is_array($c['seasonStats'])) {
+                $ss = $c['seasonStats'];
+                $sf = $ss['factor'] ?? null;
+                $seasonInfo = '<br><span style="opacity:.75">Saison ' . htmlspecialchars((string)($ss['label'] ?? '')) . ': ' . ($sf === null ? '-' : number_format((float)$sf, 3, ',', '.'))
+                    . ' | ' . number_format((float)($ss['expectedKWh'] ?? 0.0), 1, ',', '.') . ' kWh Prognose'
+                    . ' | ' . number_format((float)($ss['actualKWh'] ?? 0.0), 1, ',', '.') . ' kWh Ist'
+                    . ' | ' . (int)($ss['days'] ?? 0) . ' Tage</span>';
+            }
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . number_format($factor, 3, ',', '.') . '</b>' . $seasonInfo . '</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . (int)($c['sampleCount'] ?? 0) . '</td>';
             $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($first > 0 ? date('d.m. H:i', $first) : '-') . ' – ' . ($last > 0 ? date('d.m. H:i', $last) : '-') . '</td>';
             $html .= '</tr>';
         }
-        $html .= '</table></div><br><span style="font-size:11px"><b>Beispiel:</b> Prognose vor Auto-Faktor 100,0 kWh, tatsächliche Erzeugung 118,0 kWh ⇒ Verhältnis 1,180 ⇒ Auto-Faktor 1,180 (begrenzt durch die eingestellten Min-/Max-Werte). Alte Watt-Samples aus Versionen vor 1.5.0 werden automatisch verworfen.</span>';
+        $html .= '</table></div>';
+        $html .= '<div style="margin-top:8px;padding:6px;border:1px solid #555"><b>Kontrolle Verdichtung</b><br>';
+        foreach ($cal as $name => $c) {
+            $a = isset($c['compactionAudit']) && is_array($c['compactionAudit']) ? $c['compactionAudit'] : [];
+            if (count($a) === 0) continue;
+            $fb = $a['factorBefore'] ?? null; $fa = $a['factorAfter'] ?? null;
+            $ok = abs((float)($a['expectedDeltaKWh'] ?? 0.0)) < 0.0001 && abs((float)($a['actualDeltaKWh'] ?? 0.0)) < 0.0001;
+            $html .= '<div style="margin-top:3px"><b>' . htmlspecialchars((string)$name) . ':</b> '
+                . (int)($a['rawCount'] ?? 0) . ' → ' . (int)($a['bucketCount'] ?? 0) . ' Intervalle'
+                . ' | Prognose ' . number_format((float)($a['expectedBeforeKWh'] ?? 0.0), 3, ',', '.') . ' → ' . number_format((float)($a['expectedAfterKWh'] ?? 0.0), 3, ',', '.') . ' kWh'
+                . ' | Ist ' . number_format((float)($a['actualBeforeKWh'] ?? 0.0), 3, ',', '.') . ' → ' . number_format((float)($a['actualAfterKWh'] ?? 0.0), 3, ',', '.') . ' kWh'
+                . ' | Faktor ' . ($fb === null ? '-' : number_format((float)$fb, 3, ',', '.')) . ' → ' . ($fa === null ? '-' : number_format((float)$fa, 3, ',', '.'))
+                . ' | <b>' . ($ok ? 'verlustfrei' : 'ABWEICHUNG') . '</b></div>';
+        }
+        $html .= '</div><br><span style="font-size:11px"><b>Beispiel:</b> Prognose vor Auto-Faktor 100,0 kWh, tatsächliche Erzeugung 118,0 kWh ⇒ Verhältnis 1,180 ⇒ Auto-Faktor 1,180 (begrenzt durch die eingestellten Min-/Max-Werte). Alte Watt-Samples aus Versionen vor 1.5.0 werden automatisch verworfen.</span>';
         return $html . '</div>';
     }
 
@@ -4663,7 +5353,7 @@ class SmartBatteryOptimizer extends IPSModule
         $priceAvailabilityText = $missingHours > 0
             ? ' Für ' . $missingHours . ' der nächsten ' . $displayHours . ' Stunden sind vom Preisportal noch keine veröffentlichten Werte vorhanden; diese Stunden werden beim nächsten Abruf automatisch ergänzt.'
             : ' Für alle nächsten ' . $displayHours . ' Stunden liegen Preiswerte vor.';
-        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Jeder Balken ist der Mittelwert der 15-Minuten-Werte der jeweiligen Stunde. Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden. Die Optimierung selbst bleibt im 15-Minuten-Takt.' . htmlspecialchars($priceAvailabilityText) . '</div>';
+        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden.' . htmlspecialchars($priceAvailabilityText) . '</div>';
         return $html . '</div>';
     }
 

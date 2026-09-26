@@ -59,6 +59,15 @@
                     "caption": "pvnode API-Key"
                 },
                 {
+                    "type": "NumberSpinner",
+                    "name": "PVNodeMaxRequestsPerDay",
+                    "caption": "pvnode max. API-Abrufe pro Tag",
+                    "digits": 0,
+                    "minimum": 1,
+                    "maximum": 144,
+                    "suffix": " / Tag"
+                },
+                {
                     "type": "Label",
                     "caption": "pvnode benötigt Site-ID und API-Key. Nach 3 aufeinanderfolgenden Ablehnungen wegen ungültigem Zugang bzw. ungültiger Site wird pvnode automatisch deaktiviert und der Haken entfernt. Erst erneutes Anhaken aktiviert die Quelle wieder. Rate-Limits, Server- oder Netzwerkfehler zählen nicht als falsche Zugangsdaten."
                 },
