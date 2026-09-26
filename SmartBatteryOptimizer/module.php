@@ -4858,59 +4858,123 @@ class SmartBatteryOptimizer extends IPSModule
             if ($reason === '' || $reason === 'price') $stats[] = $r;
         }
 
-        $todayStart = strtotime('today 00:00:00');
-        $monthStart = strtotime(date('Y-m-01 00:00:00'));
-        $yearStart = strtotime(date('Y-01-01 00:00:00'));
-        $sum = ['today'=>[0.0,0.0,0], 'month'=>[0.0,0.0,0], 'year'=>[0.0,0.0,0], 'all'=>[0.0,0.0,0]];
-        $rows = [];
+        $currentMonthStart = strtotime(date('Y-m-01 00:00:00'));
+        $firstMonthStart = $currentMonthStart;
         foreach ($stats as $r) {
-            $startTs = (int)($r['start'] ?? 0);
-            $endTs = (int)($r['end'] ?? $startTs);
-            $ts = $endTs > 0 ? $endTs : $startTs;
-            $kWh = max(0.0, (float)($r['deliveredKWh'] ?? 0));
-            $eur = (float)($r['revenueEUR'] ?? 0);
-            foreach (['all'=>0, 'year'=>$yearStart, 'month'=>$monthStart, 'today'=>$todayStart] as $key=>$from) {
-                if ($ts >= $from) { $sum[$key][0]+=$kWh; $sum[$key][1]+=$eur; $sum[$key][2]++; }
-            }
-            if ($ts >= strtotime('-30 days')) {
-                $rows[] = [
-                    'sortTs'=>($startTs > 0 ? $startTs : $ts),
-                    'label'=>date('d.m. H:i', $startTs > 0 ? $startTs : $ts),
-                    'start'=>date('d.m.Y H:i', $startTs > 0 ? $startTs : $ts),
-                    'end'=>date('H:i', $endTs > 0 ? $endTs : $ts),
-                    'kWh'=>round($kWh,3),
-                    'targetKWh'=>round(max(0.0,(float)($r['targetKWh'] ?? 0)),3),
-                    'eur'=>round($eur,3),
-                    'priceCt'=>round((float)($r['priceCt'] ?? 0),2)
+            $ts = (int)($r['start'] ?? ($r['end'] ?? 0));
+            if ($ts <= 0) continue;
+            $monthStart = strtotime(date('Y-m-01 00:00:00', $ts));
+            if ($monthStart < $firstMonthStart) $firstMonthStart = $monthStart;
+        }
+
+        $monthNames = [1=>'Januar',2=>'Februar',3=>'März',4=>'April',5=>'Mai',6=>'Juni',7=>'Juli',8=>'August',9=>'September',10=>'Oktober',11=>'November',12=>'Dezember'];
+        $months = [];
+        for ($monthStart = $firstMonthStart; $monthStart <= $currentMonthStart; $monthStart = strtotime('+1 month', $monthStart)) {
+            $nextMonthStart = strtotime('+1 month', $monthStart);
+            $year = (int)date('Y', $monthStart);
+            $month = (int)date('n', $monthStart);
+            $daysInMonth = (int)date('t', $monthStart);
+            $dayRows = [];
+            for ($d = 1; $d <= $daysInMonth; $d++) {
+                $dayRows[$d] = [
+                    'label'=>str_pad((string)$d, 2, '0', STR_PAD_LEFT),
+                    'date'=>sprintf('%02d.%02d.%04d', $d, $month, $year),
+                    'kWh'=>0.0,
+                    'eur'=>0.0,
+                    'targetKWh'=>0.0,
+                    'windows'=>0
                 ];
             }
+
+            $monthKWh = 0.0; $monthEUR = 0.0; $monthWindows = 0;
+            $yearKWh = 0.0; $yearEUR = 0.0; $yearWindows = 0;
+            $allKWh = 0.0; $allEUR = 0.0; $allWindows = 0;
+
+            foreach ($stats as $r) {
+                $startTs = (int)($r['start'] ?? 0);
+                $endTs = (int)($r['end'] ?? $startTs);
+                $ts = $startTs > 0 ? $startTs : $endTs;
+                if ($ts <= 0) continue;
+                $kWh = max(0.0, (float)($r['deliveredKWh'] ?? 0));
+                $eur = (float)($r['revenueEUR'] ?? 0);
+                $targetKWh = max(0.0, (float)($r['targetKWh'] ?? 0));
+
+                $allKWh += $kWh; $allEUR += $eur; $allWindows++;
+                if ((int)date('Y', $ts) === $year) {
+                    $yearKWh += $kWh; $yearEUR += $eur; $yearWindows++;
+                }
+                if ($ts >= $monthStart && $ts < $nextMonthStart) {
+                    $day = (int)date('j', $ts);
+                    if (isset($dayRows[$day])) {
+                        $dayRows[$day]['kWh'] += $kWh;
+                        $dayRows[$day]['eur'] += $eur;
+                        $dayRows[$day]['targetKWh'] += $targetKWh;
+                        $dayRows[$day]['windows']++;
+                    }
+                    $monthKWh += $kWh; $monthEUR += $eur; $monthWindows++;
+                }
+            }
+
+            $rows = [];
+            foreach ($dayRows as $row) {
+                $kWh = (float)$row['kWh'];
+                $eur = (float)$row['eur'];
+                $row['kWh'] = round($kWh, 3);
+                $row['eur'] = round($eur, 3);
+                $row['targetKWh'] = round((float)$row['targetKWh'], 3);
+                $row['avgPriceCt'] = $kWh > 0.00001 ? round(($eur / $kWh) * 100.0, 2) : 0.0;
+                $rows[] = $row;
+            }
+
+            $months[] = [
+                'key'=>date('Y-m', $monthStart),
+                'label'=>$monthNames[$month] . ' ' . $year,
+                'isCurrent'=>($monthStart === $currentMonthStart),
+                'rows'=>$rows,
+                'month'=>['kWh'=>round($monthKWh,3),'eur'=>round($monthEUR,3),'windows'=>$monthWindows],
+                'year'=>['kWh'=>round($yearKWh,3),'eur'=>round($yearEUR,3),'windows'=>$yearWindows],
+                'all'=>['kWh'=>round($allKWh,3),'eur'=>round($allEUR,3),'windows'=>$allWindows]
+            ];
         }
-        usort($rows, static fn($a,$b) => ((int)($a['sortTs'] ?? 0)) <=> ((int)($b['sortTs'] ?? 0)));
+
+        if (count($months) === 0) {
+            $months[] = [
+                'key'=>date('Y-m'),
+                'label'=>$monthNames[(int)date('n')] . ' ' . date('Y'),
+                'isCurrent'=>true,
+                'rows'=>[],
+                'month'=>['kWh'=>0.0,'eur'=>0.0,'windows'=>0],
+                'year'=>['kWh'=>0.0,'eur'=>0.0,'windows'=>0],
+                'all'=>['kWh'=>0.0,'eur'=>0.0,'windows'=>0]
+            ];
+        }
 
         $highchartsJS = $this->GetHighchartsJavaScript();
         $chartId = 'sbo_feed_stats_' . $this->InstanceID;
-        $f = static fn($v)=>number_format((float)$v,2,',','.');
-        $summary = 'Heute: <b>'.$f($sum['today'][0]).' kWh / '.$f($sum['today'][1]).' €</b>'
-            . ' &middot; Monat: <b>'.$f($sum['month'][0]).' kWh / '.$f($sum['month'][1]).' €</b>'
-            . ' &middot; Jahr: <b>'.$f($sum['year'][0]).' kWh / '.$f($sum['year'][1]).' €</b>'
-            . ' &middot; Gesamt: <b>'.$f($sum['all'][0]).' kWh / '.$f($sum['all'][1]).' €</b>';
-
         $html = '<div style="font-family:Tahoma;color:#fff;width:100%"><b>Einspeise-Statistik – Einspeiseautomatik</b><br>';
-        $html .= '<span style="font-size:11px">Tatsächlich gemessene Netzeinspeisung aus Preis-Einspeisefenstern der Einspeiseautomatik.</span><br>';
+        $html .= '<span style="font-size:11px">Tageswerte der tatsächlich gemessenen Netzeinspeisung aus Preis-Einspeisefenstern der Einspeiseautomatik.</span><br>';
         if ($highchartsJS === '') {
-            return $html . '<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div><div style="font-size:11px;text-align:center;margin-top:8px">'.$summary.'</div></div>';
+            return $html . '<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
         }
 
-        // Gleicher Initialisierungsweg wie bei den bewährten PV-/Lastprofil-Charts.
-        // Zusätzlich wird bei einem zu frühen HTMLBox-Aufbau mehrfach kurz nachgestartet.
         $html .= '<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div>';
-        $html .= '<div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center;margin-top:4px">'.$summary.'</div>';
+        $html .= '<div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px">';
+        $html .= '<button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button>';
+        $html .= '<span id="'.$chartId.'_date" style="min-width:190px;text-align:center;font-weight:bold"></span>';
+        $html .= '<button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button>';
+        $html .= '<button id="'.$chartId.'_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button>';
+        $html .= '</div>';
+        $html .= '<div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div>';
         $html .= '<script>'.$highchartsJS.'</script><script>(function(){';
-        $html .= 'var rows='.json_encode($rows, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',id='.json_encode($chartId).',chart=null;';
-        $html .= 'function draw(){var el=document.getElementById(id);if(!el||typeof Highcharts==="undefined")return false;try{var cats=[],points=[];for(var i=0;i<rows.length;i++){var r=rows[i];cats.push(r.label);points.push({y:Number(r.kWh)||0,custom:{start:r.start,end:r.end,targetKWh:Number(r.targetKWh)||0,eur:Number(r.eur)||0,priceCt:Number(r.priceCt)||0}});}chart=Highcharts.chart(el,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{enabled:true,itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:cats,lineColor:"#fff",tickColor:"#fff",labels:{rotation:rows.length>8?-45:0,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888",style:{fontFamily:"Tahoma",color:"#fff",fontSize:"11px"},formatter:function(){var c=this.point.custom||{};return "<b>"+(c.start||"")+" - "+(c.end||"")+"</b><br>Einspeisung: <b>"+Highcharts.numberFormat(this.y,2,",",".")+" kWh</b><br>Geplant: "+Highcharts.numberFormat(c.targetKWh||0,2,",",".")+" kWh<br>Erlös: <b>"+Highcharts.numberFormat(c.eur||0,2,",",".")+" €</b><br>Ø Tarif: "+Highcharts.numberFormat(c.priceCt||0,2,",",".")+" ct/kWh";}},plotOptions:{column:{borderWidth:0,groupPadding:.10,pointPadding:.04,dataLabels:{enabled:true,formatter:function(){return this.y>0?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}}},series:[{name:"Einspeisung",data:points}]});return true;}catch(ex){el.innerHTML="<div style=\"font-family:Tahoma;font-size:11px;color:#ffb3b3;padding:8px\">Highcharts-Fehler: "+String(ex&&ex.message?ex.message:ex)+"</div>";return true;}}';
-        $html .= 'function init(n){if(draw())return;if(n>0)setTimeout(function(){init(n-1)},150);}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",function(){init(8)})}else{setTimeout(function(){init(8)},0)}})();</script></div>';
+        $html .= 'var months='.json_encode($months, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',id='.json_encode($chartId).',key='.json_encode('sbo_feed_stats_selected_month_' . $this->InstanceID).',idx=Math.max(0,months.length-1),chart=null;';
+        $html .= 'try{var sm=localStorage.getItem(key);if(sm){for(var si=0;si<months.length;si++){if(months[si].key===sm){idx=si;break;}}}}catch(ex){}';
+        $html .= 'function e(s){return document.getElementById(id+s)}';
+        $html .= 'function fmt(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}';
+        $html .= 'function draw(){var el=e("");if(!el||typeof Highcharts==="undefined"||!months.length)return false;var m=months[idx],cats=[],kwh=[],eur=[];for(var i=0;i<m.rows.length;i++){var r=m.rows[i];cats.push(r.label);kwh.push({y:Number(r.kWh)||0,custom:r});eur.push({y:Number(r.eur)||0,custom:r});}try{localStorage.setItem(key,m.key)}catch(ex){}try{chart=Highcharts.chart(el,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:cats,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:[{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{fontFamily:"Tahoma",color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888",style:{fontFamily:"Tahoma",color:"#fff",fontSize:"11px"},formatter:function(){var p=this.points&&this.points.length?this.points[0].point:null,c=p&&p.custom?p.custom:{};return "<b>"+(c.date||"")+"</b><br>Einspeisung: <b>"+fmt(c.kWh,2)+" kWh</b><br><span style=\"color:#ffe082\">Erlös: <b>"+fmt(c.eur,2)+" €</b></span><br>Ø Tarif: "+fmt(c.avgPriceCt,2)+" ct/kWh<br>Einspeisefenster: "+(Number(c.windows)||0)+(Number(c.targetKWh)>0?"<br>Geplant: "+fmt(c.targetKWh,2)+" kWh":"");}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Einspeisung",yAxis:0,data:kwh,zIndex:2,dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,1)+" kWh":""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Erlös",yAxis:1,data:eur,color:"rgba(255,213,79,.38)",pointPadding:.20,zIndex:1,dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,2)+" €":""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffe082",textOutline:"none"}}}]});var de=e("_date");if(de)de.innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=e("_summary");if(s)s.innerHTML="Monat: <b>"+fmt(m.month.kWh,2)+" kWh / "+fmt(m.month.eur,2)+" €</b> &middot; Jahr: <b>"+fmt(m.year.kWh,2)+" kWh / "+fmt(m.year.eur,2)+" €</b> &middot; Gesamt: <b>"+fmt(m.all.kWh,2)+" kWh / "+fmt(m.all.eur,2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=months.length-1;return true;}catch(ex){el.innerHTML="<div style=\"font-family:Tahoma;font-size:11px;color:#ffb3b3;padding:8px\">Highcharts-Fehler: "+String(ex&&ex.message?ex.message:ex)+"</div>";return true;}}';
+        $html .= 'function init(n){var p=e("_prev"),nx=e("_next"),t=e("_today");if(p)p.onclick=function(){if(idx>0){idx--;draw()}};if(nx)nx.onclick=function(){if(idx<months.length-1){idx++;draw()}};if(t)t.onclick=function(){idx=Math.max(0,months.length-1);draw()};if(draw())return;if(n>0)setTimeout(function(){init(n-1)},150)}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",function(){init(8)})}else{setTimeout(function(){init(8)},0)}})();</script></div>';
         return $html;
     }
+
 
     private function RenderConsumptionProfileChartHTML(array $profile): string
     {
