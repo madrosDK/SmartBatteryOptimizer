@@ -446,3 +446,13 @@ Ab **1.9.78** erfolgt die gezielte Bereinigung ueber **PV-Kalibrierdaten loesche
 
 ### PV-Kalibrierbereinigung per Dialog – 1.9.78
 Der Wartungsbutton **PV-Kalibrierdaten loeschen ...** oeffnet jetzt einen Auswahl-Dialog. Datum sowie Von- und Bis-Zeit werden direkt beim Loeschvorgang gewaehlt; Datum ist beim Oeffnen auf heute, Von auf 00:00 und Bis auf die aktuelle Uhrzeit vorbelegt. Feste Konfigurationsfelder fuer den Loeschzeitraum sind nicht mehr sichtbar.
+
+
+### 1.9.79 – Zeitreihen im IP-Symcon Archiv
+PV-Kalibrierung und Einspeise-Statistik verwenden ab 1.9.79 das **IP-Symcon Archive Control** als primären Langzeitspeicher. Für jede PV-Fläche legt das Modul versteckte archivierte Variablen für **Prognoseleistung** und **Istleistung** an. Gesperrte Kalibrierzeiten (Abregelung oder Einspeisefaktor 0 %) werden mit 0 W geführt und beeinflussen dadurch den Energievergleich nicht. Stunden-, Tages- und Saisonwerte können aus dem Archiv neu aufgebaut werden.
+
+Beim ersten Start von 1.9.79 werden die vorhandenen Kalibrierdaten automatisch übernommen. Aktuelle Energieintervalle werden zeitlich übertragen; bereits saisonal verdichtete Altwerte werden unter Erhalt von Gesamtenergie, Ist/Prognose-Verhältnis, Stundenbezug und Lerntagen in die Archivstruktur migriert. Die alten JSON-Werte bleiben als Sicherheitskopie bestehen.
+
+Auch die Preis-Einspeiseautomatik schreibt abgeschlossene Einspeisefenster in eigene archivierte Variablen (kWh, Erlös, Planmenge und Fensterzähler). Das Monats-Highcharts liest diese Historie anschließend aus dem Archiv. Die Statusvariable **Archiv-Datenspeicher** zeigt den Migrations-/Archivstatus.
+
+Die Funktion **PV-Kalibrierdaten löschen ...** löscht den ausgewählten Zeitraum jetzt direkt aus den archivierten PV-Zeitreihen und reaggregiert die betroffenen Variablen. **PV-Kalibrierung zurücksetzen** leert die PV-Lernarchive vollständig; die Einspeise-Statistik wird dabei nicht gelöscht.

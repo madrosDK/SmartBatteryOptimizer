@@ -163,6 +163,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('PVDebugVisibilityState', 'PV Debug Sichtbarkeit', '', 126);
         $this->RegisterVariableString('ProviderDebugHTML', 'Prognose Provider Debug', '~HTMLBox', 191);
         $this->RegisterVariableString('DataExportStatus', 'Datenspeicher Export', '', 128);
+        $this->RegisterVariableString('ArchiveStorageStatus', 'Archiv-Datenspeicher', '', 129);
         $this->EnableAction('PVDebugVisibilityState');
         $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 123);
         $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 123);
@@ -187,6 +188,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('PVNodeRequestCount', 0);
         $this->RegisterAttributeBoolean('LastAppliedDebugMode', false);
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
+        $this->RegisterAttributeInteger('ArchiveStorageMigrationVersion', 0);
+        $this->RegisterAttributeString('ArchiveStorageStatus', '');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
         $this->RegisterAttributeBoolean('PVCalibrationCurtailmentLatched', false);
         $this->RegisterAttributeInteger('PVCalibrationBelowThresholdSince', 0);
@@ -358,6 +361,9 @@ class SmartBatteryOptimizer extends IPSModule
         $minimumPriceVarID = @$this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt');
         if ($minimumPriceVarID > 0) @IPS_SetName($minimumPriceVarID, 'Mindestpreis Einspeisung');
         $this->InitializeFeedInFactorMemory();
+        // Zeitreihen ab 1.9.79 im IP-Symcon Archive Control verwalten.
+        // Bestehende JSON-Lerndaten/Statistiken werden beim ersten Lauf einmalig uebernommen.
+        $this->EnsureArchiveStorageAndMigration();
 
         $debugMode = $this->ReadPropertyBoolean('DebugMode');
         $lastAppliedDebugMode = $this->ReadAttributeBoolean('LastAppliedDebugMode');
@@ -445,7 +451,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.78';
+        $currentModuleVersion = '1.9.79';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -461,13 +467,13 @@ class SmartBatteryOptimizer extends IPSModule
             'PVDebugVisibilityJSON','ProviderDebugLogJSON','ActionHistoryJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
             'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PVCalibrationExcludedPeriodsJSON','PVCalibrationExclusionActiveReason','PVCalibrationCleanupStatus','PricesJSON','PlanJSON','NightLearningSource',
             'ConsumptionProfileJSON','ConsumptionLearningSource','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
-            'CompletedFeedInPlanKeysJSON','FeedInStatisticsJSON','ActiveFeedInReason','AlphaTestTrace'
+            'CompletedFeedInPlanKeysJSON','FeedInStatisticsJSON','ActiveFeedInReason','AlphaTestTrace','ArchiveStorageStatus'
         ];
         $integerAttributes = [
             'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
             'PVCalibrationBlockedFromTs','PVCalibrationExclusionActiveFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
-            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID'
+            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion'
         ];
         $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
         $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized','FeedInPriceLockActive','FeedInFactorOriginalValid'];
@@ -506,7 +512,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.78',
+            'moduleVersion' => '1.9.79',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1020,7 +1026,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->ForecastDiagnosticStep('05.03 PV-Kalibrierung PVCalibrationJSON lesen START');
         $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
         if (!is_array($calibration)) $calibration = [];
-        $this->ForecastDiagnosticStep('05.04 PV-Kalibrierung PVCalibrationJSON lesen ENDE | Oberflächen=' . count($calibration));
+        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1) {
+            $calibration = $this->BuildPVCalibrationFromArchive($calibration);
+        }
+        $this->ForecastDiagnosticStep('05.04 PV-Kalibrierung Datenspeicher lesen ENDE | Modus=' . ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1 ? 'IP-Symcon Archiv' : 'JSON') . ' | Oberflächen=' . count($calibration));
 
         $this->ForecastDiagnosticStep('05.05 PV-Kalibrierung PVSurfaces lesen START');
         $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
@@ -1045,6 +1054,14 @@ class SmartBatteryOptimizer extends IPSModule
             $this->ForecastDiagnosticStep($prefix . 'Istleistung lesen ENDE | W=' . ($actualW === null ? 'n/a' : round($actualW, 1)));
             $expectedW = isset($surfaceCalibration[$name]['expectedBaseW'])
                 ? (float)$surfaceCalibration[$name]['expectedBaseW'] : 0.0;
+
+            // Archiv ist ab 1.9.79 die primaere Zeitreihenquelle. Bei gesperrter
+            // Kalibrierung bzw. zu kleiner Prognose werden 0 W geschrieben; dadurch
+            // beeinflusst dieser Zeitraum weder Prognose- noch Ist-Energie.
+            if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1) {
+                $archiveValid = !$gate['blocked'] && $actualW !== null && $expectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW');
+                $this->StorePVCalibrationArchivePoint($key, $expectedW, $actualW, $archiveValid);
+            }
 
             if ($gate['blocked']) {
                 if (isset($calibration[$key])) {
@@ -1341,6 +1358,24 @@ class SmartBatteryOptimizer extends IPSModule
         if (count($periods) > 180) $periods = array_slice($periods, -180);
         $this->WriteAttributeString('PVCalibrationExcludedPeriodsJSON', json_encode($periods));
 
+        // Ab 1.9.79 auch die primaeren Archiv-Zeitreihen im gewaehlten Zeitraum bereinigen.
+        // Ein 0-W-Punkt am Beginn verhindert, dass der letzte Wert vor der Luecke durch
+        // das Archive Control in den geloeschten Zeitraum fortgeschrieben wird.
+        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1) {
+            $archiveID = $this->FindArchive();
+            $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+            if ($archiveID > 0 && is_array($surfaces)) {
+                foreach ($surfaces as $idx => $surface) {
+                    foreach (['PVCalExpected_' . $idx, 'PVCalActual_' . $idx] as $ident) {
+                        $varID = (int)@$this->GetIDForIdent($ident); if ($varID <= 0) continue;
+                        @AC_DeleteVariableData($archiveID, $varID, $fromTs, $toTs);
+                        @AC_AddLoggedValues($archiveID, $varID, [['TimeStamp'=>$fromTs,'Value'=>0.0]]);
+                        if (function_exists('AC_ReAggregateVariable')) @AC_ReAggregateVariable($archiveID, $varID);
+                    }
+                }
+            }
+        }
+
         // Diagnose und Prognose-Cache sofort aus den bereinigten Daten neu aufbauen.
         $this->UpdatePVCalibrationState(true);
         $text = 'PV-Kalibrierung bereinigt: ' . date('d.m.Y H:i', $fromTs) . '–' . date('H:i', $toTs)
@@ -1382,6 +1417,24 @@ class SmartBatteryOptimizer extends IPSModule
                 foreach ($enabledSources as $source) $neutralWeights[$source] = $w;
             }
             $this->WriteAttributeString('PVSourceWeightsJSON', json_encode($neutralWeights));
+
+            // Primaere Archivdaten der PV-Kalibrierung ebenfalls leeren und Logging
+            // danach wieder aktivieren. Feed-In-Statistik bleibt davon unberuehrt.
+            if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1) {
+                $archiveID = $this->FindArchive();
+                $surfacesReset = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+                if ($archiveID > 0 && is_array($surfacesReset)) {
+                    foreach ($surfacesReset as $idxReset => $surfaceReset) {
+                        foreach (['PVCalExpected_' . $idxReset, 'PVCalActual_' . $idxReset] as $identReset) {
+                            $varIDReset = (int)@$this->GetIDForIdent($identReset); if ($varIDReset <= 0) continue;
+                            @AC_DeleteVariableData($archiveID, $varIDReset, 0, 0);
+                            @AC_SetLoggingStatus($archiveID, $varIDReset, true);
+                            @AC_SetAggregationType($archiveID, $varIDReset, 0);
+                            SetValue($varIDReset, 0.0);
+                        }
+                    }
+                }
+            }
 
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), 'PV-Kalibrierung zurückgesetzt – Auto-Faktoren 1,000; Anbietergewichtung neutral.');
 
@@ -1735,6 +1788,7 @@ class SmartBatteryOptimizer extends IPSModule
             $stats[] = ['start'=>$startedTs,'end'=>time(),'planKey'=>$key,'targetKWh'=>$target,'deliveredKWh'=>$delivered,'priceCt'=>$priceCt,'revenueEUR'=>$delivered*$priceCt/100.0,'completed'=>$completed,'reason'=>'price','finishReason'=>$reason];
             if (count($stats) > 1500) $stats = array_slice($stats, -1500);
             $this->WriteAttributeString('FeedInStatisticsJSON', json_encode($stats));
+            $this->StoreFeedInStatisticArchive($delivered, $delivered*$priceCt/100.0, $target, time());
         }
         // Anzeige nach jedem Abschluss aktualisieren. Dadurch verschwindet ein eventuell
         // laufender Status sofort, auch wenn das Fenster nicht statistikrelevant war.
@@ -1799,6 +1853,9 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
         if (!is_array($calibration)) $calibration = [];
+        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1) {
+            $calibration = $this->BuildPVCalibrationFromArchive($calibration);
+        }
 
         $sourceHours = ['openmeteo' => [], 'forecastsolar' => [], 'pvnode' => []];
         $surfaceTotalsBySource = ['openmeteo' => [], 'forecastsolar' => []];
@@ -3213,9 +3270,9 @@ class SmartBatteryOptimizer extends IPSModule
     private function GetSurfaceLearningDayCount(string $key): int
     {
         $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
-        if (!is_array($calibration) || !isset($calibration[$key]['energySamples']) || !is_array($calibration[$key]['energySamples'])) {
-            return 0;
-        }
+        if (!is_array($calibration)) $calibration = [];
+        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1) $calibration = $this->BuildPVCalibrationFromArchive($calibration);
+        if (!isset($calibration[$key]['energySamples']) || !is_array($calibration[$key]['energySamples'])) return 0;
         $days = [];
         foreach ($calibration[$key]['energySamples'] as $sample) {
             $ts = (int)($sample['ts'] ?? 0);
@@ -4841,6 +4898,282 @@ class SmartBatteryOptimizer extends IPSModule
         return 0.0;
     }
 
+    private function EnsureArchiveStorageAndMigration(): void
+    {
+        $archiveID = $this->FindArchive();
+        if ($archiveID <= 0) {
+            $text = 'Archive Control nicht gefunden – bisheriger JSON-Datenspeicher bleibt aktiv.';
+            $this->WriteAttributeString('ArchiveStorageStatus', $text);
+            $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
+            return;
+        }
+
+        $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+        if (!is_array($surfaces)) $surfaces = [];
+        foreach ($surfaces as $idx => $surface) {
+            $name = trim((string)($surface['Name'] ?? 'PV'));
+            if ($name === '') $name = 'PV ' . ($idx + 1);
+            $this->MaintainVariable('PVCalExpected_' . $idx, 'PV Kalibrierung Prognose ' . $name, VARIABLETYPE_FLOAT, '~Watt', 300 + $idx * 2, true);
+            $this->MaintainVariable('PVCalActual_' . $idx, 'PV Kalibrierung Ist ' . $name, VARIABLETYPE_FLOAT, '~Watt', 301 + $idx * 2, true);
+            foreach (['PVCalExpected_' . $idx, 'PVCalActual_' . $idx] as $ident) {
+                $varID = @$this->GetIDForIdent($ident);
+                if ($varID <= 0) continue;
+                @IPS_SetHidden($varID, true);
+                try {
+                    if (!AC_GetLoggingStatus($archiveID, $varID)) AC_SetLoggingStatus($archiveID, $varID, true);
+                    if (AC_GetAggregationType($archiveID, $varID) !== 0) AC_SetAggregationType($archiveID, $varID, 0);
+                    if (function_exists('AC_SetGraphStatus')) @AC_SetGraphStatus($archiveID, $varID, false);
+                } catch (Throwable $e) { $this->DebugLog('ArchiveStorage', $e->getMessage(), 0); }
+            }
+        }
+
+        $feedVars = [
+            'FeedInArchiveKWh' => ['Einspeiseautomatik Energie je Fenster', '~Electricity', 360],
+            'FeedInArchiveEUR' => ['Einspeiseautomatik Erlös je Fenster', '', 361],
+            'FeedInArchiveTargetKWh' => ['Einspeiseautomatik Planmenge je Fenster', '~Electricity', 362],
+            'FeedInArchiveWindow' => ['Einspeiseautomatik Fenster', '', 363]
+        ];
+        foreach ($feedVars as $ident => $cfg) {
+            $this->MaintainVariable($ident, $cfg[0], VARIABLETYPE_FLOAT, $cfg[1], $cfg[2], true);
+            $varID = @$this->GetIDForIdent($ident);
+            if ($varID <= 0) continue;
+            @IPS_SetHidden($varID, true);
+            try {
+                if (!AC_GetLoggingStatus($archiveID, $varID)) AC_SetLoggingStatus($archiveID, $varID, true);
+                if (AC_GetAggregationType($archiveID, $varID) !== 0) AC_SetAggregationType($archiveID, $varID, 0);
+                if (function_exists('AC_SetGraphStatus')) @AC_SetGraphStatus($archiveID, $varID, false);
+            } catch (Throwable $e) { $this->DebugLog('ArchiveStorage', $e->getMessage(), 0); }
+        }
+
+        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) {
+            try {
+                $pvCount = $this->MigratePVCalibrationJSONToArchive($archiveID, $surfaces);
+                $feedCount = $this->MigrateFeedInStatisticsJSONToArchive($archiveID);
+                $this->WriteAttributeInteger('ArchiveStorageMigrationVersion', 1);
+                $text = 'Archiv aktiv – vorhandene Daten übernommen: PV ' . $pvCount . ' Intervalle, Einspeisung ' . $feedCount . ' Fenster.';
+                $this->WriteAttributeString('ArchiveStorageStatus', $text);
+                $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
+            } catch (Throwable $e) {
+                $text = 'Archiv-Migration fehlgeschlagen – JSON bleibt als Sicherheitskopie: ' . $e->getMessage();
+                $this->WriteAttributeString('ArchiveStorageStatus', $text);
+                $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
+                $this->DebugLog('ArchiveMigration', $text, 0);
+            }
+        } else {
+            $text = 'Archiv aktiv – PV-Kalibrierung und Einspeise-Statistik werden im IP-Symcon Archiv geführt.';
+            $this->WriteAttributeString('ArchiveStorageStatus', $text);
+            $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
+        }
+    }
+
+    private function GetPVArchiveVariableIDs(string $key): array
+    {
+        $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+        if (!is_array($surfaces)) return [0, 0];
+        foreach ($surfaces as $idx => $surface) {
+            $name = trim((string)($surface['Name'] ?? 'PV'));
+            if ($name === '') $name = 'PV ' . ($idx + 1);
+            if ($this->SurfaceKey($name, $idx) !== $key) continue;
+            return [(int)@$this->GetIDForIdent('PVCalExpected_' . $idx), (int)@$this->GetIDForIdent('PVCalActual_' . $idx)];
+        }
+        return [0, 0];
+    }
+
+    private function AddArchiveLoggedValues(int $archiveID, int $variableID, array $values): void
+    {
+        if ($archiveID <= 0 || $variableID <= 0 || count($values) === 0 || !function_exists('AC_AddLoggedValues')) return;
+        ksort($values);
+        $rows = [];
+        foreach ($values as $ts => $value) $rows[] = ['TimeStamp'=>(int)$ts, 'Value'=>(float)$value];
+        foreach (array_chunk($rows, 2000) as $chunk) AC_AddLoggedValues($archiveID, $variableID, $chunk);
+        if (function_exists('AC_ReAggregateVariable')) @AC_ReAggregateVariable($archiveID, $variableID);
+    }
+
+    private function MigratePVCalibrationJSONToArchive(int $archiveID, array $surfaces): int
+    {
+        $legacy = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
+        if (!is_array($legacy)) return 0;
+        $migrated = 0;
+        foreach ($surfaces as $idx => $surface) {
+            $name = trim((string)($surface['Name'] ?? 'PV'));
+            if ($name === '') $name = 'PV ' . ($idx + 1);
+            $key = $this->SurfaceKey($name, $idx);
+            if (!isset($legacy[$key]) || !is_array($legacy[$key])) continue;
+            $expectedID = (int)@$this->GetIDForIdent('PVCalExpected_' . $idx);
+            $actualID = (int)@$this->GetIDForIdent('PVCalActual_' . $idx);
+            if ($expectedID <= 0 || $actualID <= 0) continue;
+            // Migration idempotent halten: bei einem abgebrochenen ersten Versuch
+            // vorhandene Zielwerte dieser neuen Archivvariablen vor dem Neuimport entfernen.
+            @AC_DeleteVariableData($archiveID, $expectedID, 0, time());
+            @AC_DeleteVariableData($archiveID, $actualID, 0, time());
+            @AC_SetLoggingStatus($archiveID, $expectedID, true);
+            @AC_SetLoggingStatus($archiveID, $actualID, true);
+            $evE = []; $evA = [];
+            $samples = isset($legacy[$key]['energySamples']) && is_array($legacy[$key]['energySamples']) ? $legacy[$key]['energySamples'] : [];
+            usort($samples, function($a,$b){ return ((int)($a['ts']??0)) <=> ((int)($b['ts']??0)); });
+            foreach ($samples as $sample) {
+                $start = (int)($sample['ts'] ?? 0); $end = (int)($sample['endTs'] ?? 0);
+                $exp = (float)($sample['expectedKWh'] ?? 0); $act = (float)($sample['actualKWh'] ?? 0);
+                $dt = $end - $start;
+                if ($start <= 0 || $dt <= 0 || $exp <= 0 || $act < 0) continue;
+                $evE[$end] = 0.0; $evA[$end] = 0.0;
+                $evE[$start] = $exp * 1000.0 * 3600.0 / $dt;
+                $evA[$start] = $act * 1000.0 * 3600.0 / $dt;
+                $migrated++;
+            }
+            // Ältere, bereits saisonal verdichtete Daten besitzen keine exakten Tagesenergien mehr.
+            // Die Gesamtenergie wird deshalb gleichmäßig auf die gespeicherten Lerntage verteilt.
+            // Dadurch bleiben Saison-/Stundenfaktor und Anzahl der Lerntage exakt erhalten.
+            $seasonal = isset($legacy[$key]['seasonalArchive']) && is_array($legacy[$key]['seasonalArchive']) ? $legacy[$key]['seasonalArchive'] : [];
+            foreach ($seasonal as $season => $hours) {
+                if (!is_array($hours)) continue;
+                foreach ($hours as $hour => $entry) {
+                    if (!is_array($entry)) continue;
+                    $days = isset($entry['days']) && is_array($entry['days']) ? array_keys($entry['days']) : [];
+                    $n = count($days); $exp = (float)($entry['expectedKWh'] ?? 0); $act = (float)($entry['actualKWh'] ?? 0);
+                    if ($n <= 0 || $exp <= 0 || $act < 0) continue;
+                    $expPerDay = $exp / $n; $actPerDay = $act / $n;
+                    foreach ($days as $day) {
+                        $start = strtotime((string)$day . ' ' . sprintf('%02d:00:00', (int)$hour));
+                        if ($start === false || $start <= 0) continue;
+                        $end = $start + 3600;
+                        if (!isset($evE[$start])) { $evE[$start] = $expPerDay * 1000.0; $evA[$start] = $actPerDay * 1000.0; $migrated++; }
+                        if (!isset($evE[$end])) { $evE[$end] = 0.0; $evA[$end] = 0.0; }
+                    }
+                }
+            }
+            $this->AddArchiveLoggedValues($archiveID, $expectedID, $evE);
+            $this->AddArchiveLoggedValues($archiveID, $actualID, $evA);
+        }
+        return $migrated;
+    }
+
+    private function MigrateFeedInStatisticsJSONToArchive(int $archiveID): int
+    {
+        $stats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
+        if (!is_array($stats)) return 0;
+        $ids = [
+            'kwh'=>(int)@$this->GetIDForIdent('FeedInArchiveKWh'),
+            'eur'=>(int)@$this->GetIDForIdent('FeedInArchiveEUR'),
+            'target'=>(int)@$this->GetIDForIdent('FeedInArchiveTargetKWh'),
+            'window'=>(int)@$this->GetIDForIdent('FeedInArchiveWindow')
+        ];
+        // Auch die Einspeise-Migration ist wiederholbar, falls der erste Import abbricht.
+        foreach ($ids as $id) { if ($id > 0) { @AC_DeleteVariableData($archiveID, $id, 0, time()); @AC_SetLoggingStatus($archiveID, $id, true); } }
+        $rows = ['kwh'=>[],'eur'=>[],'target'=>[],'window'=>[]]; $count = 0;
+        foreach ($stats as $r) {
+            if (!is_array($r) || (($r['reason'] ?? 'price') !== 'price')) continue;
+            $ts = (int)($r['end'] ?? $r['start'] ?? 0); if ($ts <= 0) continue;
+            // Bei identischen Sekunden nicht überschreiben, sondern minimal versetzen.
+            while (isset($rows['window'][$ts])) $ts++;
+            $rows['kwh'][$ts] = max(0.0, (float)($r['deliveredKWh'] ?? 0));
+            $rows['eur'][$ts] = (float)($r['revenueEUR'] ?? 0);
+            $rows['target'][$ts] = max(0.0, (float)($r['targetKWh'] ?? 0));
+            $rows['window'][$ts] = 1.0; $count++;
+        }
+        foreach ($ids as $k => $id) $this->AddArchiveLoggedValues($archiveID, $id, $rows[$k]);
+        return $count;
+    }
+
+    private function StorePVCalibrationArchivePoint(string $key, float $expectedW, ?float $actualW, bool $valid): void
+    {
+        $archiveID = $this->FindArchive(); if ($archiveID <= 0) return;
+        [$expectedID, $actualID] = $this->GetPVArchiveVariableIDs($key);
+        if ($expectedID <= 0 || $actualID <= 0) return;
+        $ts = time(); $e = $valid ? max(0.0, $expectedW) : 0.0; $a = $valid && $actualW !== null ? max(0.0, $actualW) : 0.0;
+        try {
+            // Bei Leistungszeitreihen genügt der aktuelle Variablenwert: Archive Control
+            // protokolliert Änderungen und kennt deren Dauer. Unveränderte Leistung muss
+            // daher nicht alle 30 Sekunden als zusätzlicher Rohpunkt geschrieben werden.
+            SetValue($expectedID, $e); SetValue($actualID, $a);
+        } catch (Throwable $ex) { $this->DebugLog('PVArchive', $ex->getMessage(), 0); }
+    }
+
+    private function GetArchiveFirstTime(int $archiveID, int $variableID): int
+    {
+        try {
+            $vars = AC_GetAggregationVariables($archiveID, true);
+            foreach ($vars as $v) if ((int)($v['VariableID'] ?? 0) === $variableID) return (int)($v['FirstTime'] ?? 0);
+        } catch (Throwable $e) {}
+        return 0;
+    }
+
+    private function GetArchiveHourlyMap(int $archiveID, int $variableID, int $startTs, int $endTs): array
+    {
+        $out = [];
+        if ($archiveID <= 0 || $variableID <= 0 || $endTs <= $startTs) return $out;
+        $cursor = $startTs;
+        while ($cursor <= $endTs) {
+            $chunkEnd = min($endTs, strtotime('+300 days', $cursor));
+            $rows = @AC_GetAggregatedValues($archiveID, $variableID, 0, $cursor, $chunkEnd, 0);
+            if (is_array($rows)) foreach ($rows as $r) {
+                $ts = (int)($r['TimeStamp'] ?? 0); if ($ts <= 0) continue;
+                $out[$ts] = ['avg'=>(float)($r['Avg'] ?? 0.0),'duration'=>max(0,(int)($r['Duration'] ?? 3600))];
+            }
+            if ($chunkEnd >= $endTs) break;
+            $cursor = $chunkEnd + 1;
+        }
+        ksort($out); return $out;
+    }
+
+    private function BuildPVCalibrationFromArchive(array $legacyCalibration = []): array
+    {
+        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return $legacyCalibration;
+        $archiveID = $this->FindArchive(); if ($archiveID <= 0) return $legacyCalibration;
+        $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true); if (!is_array($surfaces)) return $legacyCalibration;
+        $result = [];
+        $retentionDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'), $this->ReadPropertyInteger('UnknownOrientationLearningDays'));
+        $recentCutoff = time() - $retentionDays * 86400;
+        foreach ($surfaces as $idx => $surface) {
+            $name = trim((string)($surface['Name'] ?? 'PV')); if ($name === '') $name = 'PV ' . ($idx + 1);
+            $key = $this->SurfaceKey($name, $idx);
+            $expectedID = (int)@$this->GetIDForIdent('PVCalExpected_' . $idx); $actualID = (int)@$this->GetIDForIdent('PVCalActual_' . $idx);
+            if ($expectedID <= 0 || $actualID <= 0) { if (isset($legacyCalibration[$key])) $result[$key]=$legacyCalibration[$key]; continue; }
+            $first = $this->GetArchiveFirstTime($archiveID, $expectedID); if ($first <= 0) { if (isset($legacyCalibration[$key])) $result[$key]=$legacyCalibration[$key]; continue; }
+            $eMap = $this->GetArchiveHourlyMap($archiveID, $expectedID, $first, time());
+            $aMap = $this->GetArchiveHourlyMap($archiveID, $actualID, $first, time());
+            $entry = ['factor'=>1.0,'energySamples'=>[],'seasonalArchive'=>[],'storageMode'=>'ip-symcon-archive'];
+            foreach ($eMap as $ts => $er) {
+                $duration = max(1, min(3600, (int)($er['duration'] ?? 3600)));
+                $expKWh = max(0.0, (float)$er['avg']) * $duration / 3600.0 / 1000.0;
+                $ar = $aMap[$ts] ?? ['avg'=>0.0,'duration'=>$duration];
+                $actKWh = max(0.0, (float)$ar['avg']) * $duration / 3600.0 / 1000.0;
+                if ($expKWh <= 0.0) continue;
+                $sample = ['ts'=>(int)$ts,'endTs'=>(int)$ts+$duration,'expectedKWh'=>$expKWh,'actualKWh'=>$actKWh,'hour'=>(int)date('G',(int)$ts),'intervals'=>1];
+                if ((int)$ts >= $recentCutoff) $entry['energySamples'][] = $sample;
+                else $entry['seasonalArchive'] = $this->MergePVSeasonArchive($entry['seasonalArchive'], $sample);
+            }
+            // Integrationspunkt nur fuer die laufende Abtastung im JSON-Cache behalten.
+            if (isset($legacyCalibration[$key]['lastPointTs'])) {
+                foreach (['lastPointTs','lastPointExpectedW','lastPointActualW'] as $f) if (isset($legacyCalibration[$key][$f])) $entry[$f]=$legacyCalibration[$key][$f];
+            }
+            $result[$key] = $this->RecalculatePVCalibrationFactors($entry === [] ? [] : [$key=>$entry], $key)[$key] ?? $entry;
+        }
+        return $result;
+    }
+
+    private function StoreFeedInStatisticArchive(float $delivered, float $revenue, float $target, int $ts): void
+    {
+        $archiveID = $this->FindArchive(); if ($archiveID <= 0 || $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return;
+        $map = ['FeedInArchiveKWh'=>$delivered,'FeedInArchiveEUR'=>$revenue,'FeedInArchiveTargetKWh'=>$target,'FeedInArchiveWindow'=>1.0];
+        foreach ($map as $ident=>$value) {
+            $id=(int)@$this->GetIDForIdent($ident); if($id<=0) continue;
+            try { AC_AddLoggedValues($archiveID,$id,[['TimeStamp'=>$ts,'Value'=>(float)$value]]); } catch(Throwable $e){ $this->DebugLog('FeedInArchive',$e->getMessage(),0); }
+        }
+    }
+
+    private function ReadFeedInStatisticsFromArchive(): array
+    {
+        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return [];
+        $archiveID=$this->FindArchive(); if($archiveID<=0) return [];
+        $ids=['kwh'=>(int)@$this->GetIDForIdent('FeedInArchiveKWh'),'eur'=>(int)@$this->GetIDForIdent('FeedInArchiveEUR'),'target'=>(int)@$this->GetIDForIdent('FeedInArchiveTargetKWh'),'window'=>(int)@$this->GetIDForIdent('FeedInArchiveWindow')];
+        if(min($ids)<=0) return [];
+        $maps=[];
+        foreach($ids as $k=>$id){ $rows=@AC_GetLoggedValues($archiveID,$id,0,time(),0); $maps[$k]=[]; if(is_array($rows)) foreach($rows as $r)$maps[$k][(int)$r['TimeStamp']]=(float)$r['Value']; }
+        $out=[]; foreach($maps['window'] as $ts=>$one){ $kwh=(float)($maps['kwh'][$ts]??0); $eur=(float)($maps['eur'][$ts]??0); $out[]=['start'=>$ts,'end'=>$ts,'targetKWh'=>(float)($maps['target'][$ts]??0),'deliveredKWh'=>$kwh,'priceCt'=>$kwh>0?$eur/$kwh*100.0:0.0,'revenueEUR'=>$eur,'completed'=>true,'reason'=>'price','finishReason'=>'Archiv']; }
+        usort($out,function($a,$b){return ((int)$a['start'])<=>((int)$b['start']);}); return $out;
+    }
+
     private function FindArchive(): int
     {
         $ids = IPS_GetInstanceListByModuleID(self::ARCHIVE_GUID);
@@ -5286,8 +5619,11 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderFeedInStatisticsHTML(): string
     {
-        $allStats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
-        if (!is_array($allStats)) $allStats = [];
+        $allStats = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1 ? $this->ReadFeedInStatisticsFromArchive() : [];
+        if (!is_array($allStats) || count($allStats) === 0) {
+            $allStats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
+            if (!is_array($allStats)) $allStats = [];
+        }
 
         // Ausschließlich Preis-Einspeisefenster der Einspeiseautomatik auswerten.
         // PV-Speicherfreihaltung / Abregelungsschutz bleibt vollständig außen vor.
