@@ -451,7 +451,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.79';
+        $currentModuleVersion = '1.9.80';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -512,7 +512,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.79',
+            'moduleVersion' => '1.9.80',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -908,8 +908,8 @@ class SmartBatteryOptimizer extends IPSModule
     private function RenderPersistentDetailsHTML(string $storageKey, string $title, string $body, string $subtitle = ''): string
     {
         $id = 'sbo_details_' . md5($storageKey . '_' . $this->InstanceID);
-        $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff;background:#181818;padding:8px">';
-        $html .= '<details id="' . $id . '"><summary style="cursor:pointer;font-family:Tahoma;font-size:14px;font-weight:bold;padding:4px 0">' . htmlspecialchars($title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</summary>';
+        $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;color:#fff;background:#181818;padding:8px">';
+        $html .= '<details id="' . $id . '"><summary style="cursor:pointer;font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:14px;font-weight:bold;padding:4px 0">' . htmlspecialchars($title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</summary>';
         if ($subtitle !== '') $html .= '<div style="font-size:11px;opacity:.75;margin:2px 0 6px">' . htmlspecialchars($subtitle, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</div>';
         $html .= $body . '</details>';
         $html .= '<script>(function(){var d=document.getElementById(' . json_encode($id) . '),k=' . json_encode($storageKey . '_' . $this->InstanceID) . ';if(!d)return;try{var v=localStorage.getItem(k);d.open=(v===null)?true:(v==="1");}catch(e){d.open=true;}d.addEventListener("toggle",function(){try{localStorage.setItem(k,d.open?"1":"0");}catch(e){}});})();</script></div>';
@@ -1913,7 +1913,12 @@ class SmartBatteryOptimizer extends IPSModule
                 foreach ($data['hourly']['time'] as $i => $timeStr) {
                     $dt = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i', (string)$timeStr, $openMeteoTimezone);
                     if ($dt === false) $dt = new DateTimeImmutable((string)$timeStr, $openMeteoTimezone);
-                    $ts = $dt->getTimestamp();
+                    // Open-Meteo kennzeichnet global_tilted_irradiance mit dem ENDE des
+                    // Intervalls: der Stundenwert ist der Mittelwert der vorhergehenden Stunde.
+                    // Intern verwenden alle anderen Provider und die Ist-/Kalibrierungsdaten den
+                    // Beginn des Stundenintervalls. Deshalb hier zentral um eine Stunde nach vorn
+                    // auf den Intervallbeginn normalisieren (z. B. API 13:00 => 12:00-13:00).
+                    $ts = $dt->getTimestamp() - 3600;
                     $gti = max(0.0, (float)$data['hourly']['global_tilted_irradiance'][$i]);
                     $basePowerKW = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
                     // Providerlinie bleibt Rohprognose; PV-Auto wird erst nach der Quellengewichtung angewendet.
@@ -4945,16 +4950,40 @@ class SmartBatteryOptimizer extends IPSModule
             } catch (Throwable $e) { $this->DebugLog('ArchiveStorage', $e->getMessage(), 0); }
         }
 
-        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) {
+        $migrationVersion = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion');
+        if ($migrationVersion < 1) {
             try {
+                // Ab 1.9.80 wird Open-Meteo korrekt dem vorhergehenden Stundenintervall
+                // zugeordnet. Die Erstübernahme schreibt die Prognose-Zeitreihe daher bereits
+                // mit korrigierter Stundenlage ins Archiv.
                 $pvCount = $this->MigratePVCalibrationJSONToArchive($archiveID, $surfaces);
                 $feedCount = $this->MigrateFeedInStatisticsJSONToArchive($archiveID);
-                $this->WriteAttributeInteger('ArchiveStorageMigrationVersion', 1);
-                $text = 'Archiv aktiv – vorhandene Daten übernommen: PV ' . $pvCount . ' Intervalle, Einspeisung ' . $feedCount . ' Fenster.';
+                $this->MigrateOpenMeteoSourceHistoryToIntervalStart();
+                $this->WriteAttributeInteger('ArchiveStorageMigrationVersion', 2);
+                $text = 'Archiv aktiv – vorhandene Daten übernommen: PV ' . $pvCount . ' Intervalle, Einspeisung ' . $feedCount . ' Fenster; Open-Meteo Stundenlage korrigiert.';
                 $this->WriteAttributeString('ArchiveStorageStatus', $text);
                 $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
             } catch (Throwable $e) {
                 $text = 'Archiv-Migration fehlgeschlagen – JSON bleibt als Sicherheitskopie: ' . $e->getMessage();
+                $this->WriteAttributeString('ArchiveStorageStatus', $text);
+                $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
+                $this->DebugLog('ArchiveMigration', $text, 0);
+            }
+        } elseif ($migrationVersion < 2) {
+            try {
+                // Einmalige Korrektur für Installationen, die 1.9.79 bereits genutzt haben:
+                // JSON ist weiterhin die Sicherheitskopie der gelernten Energieintervalle.
+                // Daraus werden die PV-Archivvariablen neu aufgebaut; nur die Open-Meteo-
+                // Prognose wird um eine Stunde auf den tatsächlichen Intervallbeginn gelegt,
+                // die gemessene Ist-Zeitreihe bleibt zeitlich unverändert.
+                $pvCount = $this->MigratePVCalibrationJSONToArchive($archiveID, $surfaces);
+                $this->MigrateOpenMeteoSourceHistoryToIntervalStart();
+                $this->WriteAttributeInteger('ArchiveStorageMigrationVersion', 2);
+                $text = 'Archiv aktiv – Open-Meteo Stundenlage korrigiert; ' . $pvCount . ' PV-Kalibrierintervalle übernommen.';
+                $this->WriteAttributeString('ArchiveStorageStatus', $text);
+                $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
+            } catch (Throwable $e) {
+                $text = 'Open-Meteo Archivkorrektur fehlgeschlagen – vorhandene Daten bleiben erhalten: ' . $e->getMessage();
                 $this->WriteAttributeString('ArchiveStorageStatus', $text);
                 $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
                 $this->DebugLog('ArchiveMigration', $text, 0);
@@ -5016,8 +5045,14 @@ class SmartBatteryOptimizer extends IPSModule
                 $exp = (float)($sample['expectedKWh'] ?? 0); $act = (float)($sample['actualKWh'] ?? 0);
                 $dt = $end - $start;
                 if ($start <= 0 || $dt <= 0 || $exp <= 0 || $act < 0) continue;
-                $evE[$end] = 0.0; $evA[$end] = 0.0;
-                $evE[$start] = $exp * 1000.0 * 3600.0 / $dt;
+                $expectedStart = $start - 3600;
+                $expectedEnd = $end - 3600;
+                if ($expectedStart > 0) {
+                    $evE[$expectedEnd] = 0.0;
+                    $evE[$expectedStart] = $exp * 1000.0 * 3600.0 / $dt;
+                }
+                // Istwerte bleiben an ihrem real gemessenen Zeitpunkt.
+                $evA[$end] = 0.0;
                 $evA[$start] = $act * 1000.0 * 3600.0 / $dt;
                 $migrated++;
             }
@@ -5037,8 +5072,12 @@ class SmartBatteryOptimizer extends IPSModule
                         $start = strtotime((string)$day . ' ' . sprintf('%02d:00:00', (int)$hour));
                         if ($start === false || $start <= 0) continue;
                         $end = $start + 3600;
-                        if (!isset($evE[$start])) { $evE[$start] = $expPerDay * 1000.0; $evA[$start] = $actPerDay * 1000.0; $migrated++; }
-                        if (!isset($evE[$end])) { $evE[$end] = 0.0; $evA[$end] = 0.0; }
+                        $expectedStart = $start - 3600;
+                        $expectedEnd = $end - 3600;
+                        if ($expectedStart > 0 && !isset($evE[$expectedStart])) { $evE[$expectedStart] = $expPerDay * 1000.0; $migrated++; }
+                        if ($expectedEnd > 0 && !isset($evE[$expectedEnd])) $evE[$expectedEnd] = 0.0;
+                        if (!isset($evA[$start])) $evA[$start] = $actPerDay * 1000.0;
+                        if (!isset($evA[$end])) $evA[$end] = 0.0;
                     }
                 }
             }
@@ -5046,6 +5085,35 @@ class SmartBatteryOptimizer extends IPSModule
             $this->AddArchiveLoggedValues($archiveID, $actualID, $evA);
         }
         return $migrated;
+    }
+
+    private function MigrateOpenMeteoSourceHistoryToIntervalStart(): void
+    {
+        $history = json_decode($this->ReadAttributeString('PVSourceForecastHistoryJSON'), true);
+        if (!is_array($history) || !isset($history['openmeteo']) || !is_array($history['openmeteo'])) return;
+
+        $shifted = [];
+        foreach ($history['openmeteo'] as $date => $hours) {
+            if (!is_array($hours)) continue;
+            foreach ($hours as $hour => $value) {
+                if ($value === null) continue;
+                $ts = strtotime((string)$date . ' ' . sprintf('%02d:00:00', (int)$hour));
+                if ($ts === false) continue;
+                $targetTs = $ts - 3600;
+                $targetDate = date('Y-m-d', $targetTs);
+                $targetHour = (int)date('G', $targetTs);
+                if (!isset($shifted[$targetDate])) $shifted[$targetDate] = array_fill(0, 24, null);
+                $shifted[$targetDate][$targetHour] = $value;
+            }
+        }
+        ksort($shifted);
+        $history['openmeteo'] = $shifted;
+        $this->WriteAttributeString('PVSourceForecastHistoryJSON', json_encode($history));
+        // Nach Änderung der Zeitbasis alte automatisch gelernte Provider-Gewichte nicht
+        // weiterverwenden; ab jetzt werden sie auf der korrigierten Stundenlage neu gelernt.
+        $this->WriteAttributeInteger('PVSourceWeightLearningResetTs', time());
+        $this->WriteAttributeString('PVSourceWeightsJSON', '{}');
+        $this->DebugLog('Open-Meteo', 'Gespeicherte Quellenhistorie um 1 Stunde auf den Intervallbeginn verschoben; Provider-Gewichte lernen neu.');
     }
 
     private function MigrateFeedInStatisticsJSONToArchive(int $archiveID): int
@@ -5221,7 +5289,7 @@ class SmartBatteryOptimizer extends IPSModule
         if (!is_array($history)) $history = [];
         $tomorrow = date('Y-m-d', strtotime('tomorrow'));
         $labels = ['openmeteo'=>'Open-Meteo','forecastsolar'=>'Forecast.Solar','pvnode'=>'pvnode'];
-        $body = '<table style="width:100%;border-collapse:collapse;font-family:Tahoma;font-size:12px"><tr style="border-bottom:1px solid #666"><th style="text-align:left;padding:4px">Anbieter</th>';
+        $body = '<table style="width:100%;border-collapse:collapse;font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px"><tr style="border-bottom:1px solid #666"><th style="text-align:left;padding:4px">Anbieter</th>';
         foreach ($surfaceNames as $name) $body .= '<th style="text-align:right;padding:4px">' . htmlspecialchars($name) . ' morgen</th>';
         $body .= '<th style="text-align:right;padding:4px">Gesamt morgen</th><th style="text-align:left;padding:4px">Status</th></tr>';
         foreach ($labels as $source => $label) {
@@ -5347,8 +5415,8 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderPlanHTML(array $forecast, array $prices, array $plan): string
     {
-        $html = '<div style="font-family:Tahoma;font-size:12px">';
-        $html .= '<details><summary style="cursor:pointer;font-family:Tahoma;font-size:12px;font-weight:bold;padding:6px 0">Einspeiseplan anzeigen / ausblenden</summary>';
+        $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px">';
+        $html .= '<details><summary style="cursor:pointer;font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;font-weight:bold;padding:6px 0">Einspeiseplan anzeigen / ausblenden</summary>';
 
         $displayHours = max(24, min(72, $this->ReadPropertyInteger('PriceDisplayHours')));
         $now = time();
@@ -5507,9 +5575,9 @@ class SmartBatteryOptimizer extends IPSModule
         $cellValue = 'padding:4px 0;color:#fff;font-weight:bold;vertical-align:top';
         $sectionStyle = 'font-size:12px;font-weight:bold;color:#fff;padding:8px 0 3px 0;border-bottom:1px solid rgba(255,255,255,.16)';
 
-        $html = '<div style="font-family:Tahoma;color:#fff;font-size:12px;line-height:1.35">';
+        $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff;font-size:12px;line-height:1.35">';
         $html .= '<div style="font-size:15px;font-weight:bold;margin-bottom:6px">Börsenpreis-Speicheroptimierung</div>';
-        $html .= '<table style="border-collapse:collapse;width:100%;max-width:760px;font-family:Tahoma;font-size:12px;color:#fff">';
+        $html .= '<table style="border-collapse:collapse;width:100%;max-width:760px;font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;color:#fff">';
 
         $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">Batterie</td></tr>';
         $html .= '<tr>';
@@ -5726,7 +5794,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $highchartsJS = $this->GetHighchartsJavaScript();
         $chartId = 'sbo_feed_stats_' . $this->InstanceID;
-        $html = '<div style="font-family:Tahoma;color:#fff;width:100%"><b>Einspeise-Statistik – Einspeiseautomatik</b><br>';
+        $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff;width:100%"><b>Einspeise-Statistik – Einspeiseautomatik</b><br>';
         $html .= '<span style="font-size:11px">Tageswerte der tatsächlich gemessenen Netzeinspeisung aus Preis-Einspeisefenstern der Einspeiseautomatik.</span><br>';
         if ($highchartsJS === '') {
             return $html . '<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
@@ -5734,18 +5802,18 @@ class SmartBatteryOptimizer extends IPSModule
 
         $html .= '<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div>';
         $html .= '<div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px">';
-        $html .= '<button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button>';
+        $html .= '<button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px">&#8592;</button>';
         $html .= '<span id="'.$chartId.'_date" style="min-width:190px;text-align:center;font-weight:bold"></span>';
-        $html .= '<button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button>';
-        $html .= '<button id="'.$chartId.'_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button>';
+        $html .= '<button id="'.$chartId.'_next" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px">&#8594;</button>';
+        $html .= '<button id="'.$chartId.'_today" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button>';
         $html .= '</div>';
-        $html .= '<div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div>';
+        $html .= '<div id="'.$chartId.'_summary" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#fff;text-align:center"></div>';
         $html .= '<script>'.$highchartsJS.'</script><script>(function(){';
         $html .= 'var months='.json_encode($months, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',id='.json_encode($chartId).',key='.json_encode('sbo_feed_stats_selected_month_' . $this->InstanceID).',idx=Math.max(0,months.length-1),chart=null;';
         $html .= 'try{var sm=localStorage.getItem(key);if(sm){for(var si=0;si<months.length;si++){if(months[si].key===sm){idx=si;break;}}}}catch(ex){}';
         $html .= 'function e(s){return document.getElementById(id+s)}';
         $html .= 'function fmt(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}';
-        $html .= 'function draw(){var el=e("");if(!el||typeof Highcharts==="undefined"||!months.length)return false;var m=months[idx],cats=[],kwh=[],eur=[];for(var i=0;i<m.rows.length;i++){var r=m.rows[i];cats.push(r.label);kwh.push({y:Number(r.kWh)||0,custom:r});eur.push({y:Number(r.eur)||0,custom:r});}try{localStorage.setItem(key,m.key)}catch(ex){}try{chart=Highcharts.chart(el,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:cats,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:[{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{fontFamily:"Tahoma",color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888",style:{fontFamily:"Tahoma",color:"#fff",fontSize:"11px"},formatter:function(){var p=this.points&&this.points.length?this.points[0].point:null,c=p&&p.custom?p.custom:{};return "<b>"+(c.date||"")+"</b><br>Einspeisung: <b>"+fmt(c.kWh,2)+" kWh</b><br><span style=\"color:#ffe082\">Erlös: <b>"+fmt(c.eur,2)+" €</b></span><br>Ø Tarif: "+fmt(c.avgPriceCt,2)+" ct/kWh<br>Einspeisefenster: "+(Number(c.windows)||0)+(Number(c.targetKWh)>0?"<br>Geplant: "+fmt(c.targetKWh,2)+" kWh":"");}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Einspeisung",yAxis:0,data:kwh,zIndex:2,events:{mouseOver:function(){var me=this;this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:s===me?1:.22});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:s===me?1:.22})})},mouseOut:function(){this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:1});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:1})})}},dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,1)+" kWh":""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Erlös",yAxis:1,data:eur,color:"rgba(255,213,79,.42)",pointPadding:.20,zIndex:3,events:{mouseOver:function(){var me=this;this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:s===me?1:.22});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:s===me?1:.22})})},mouseOut:function(){this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:1});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:1})})}},dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,2)+" €":""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffe082",textOutline:"none"}}}]});var de=e("_date");if(de)de.innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=e("_summary");if(s)s.innerHTML="Monat: <b>"+fmt(m.month.kWh,2)+" kWh / "+fmt(m.month.eur,2)+" €</b> &middot; Jahr: <b>"+fmt(m.year.kWh,2)+" kWh / "+fmt(m.year.eur,2)+" €</b> &middot; Gesamt: <b>"+fmt(m.all.kWh,2)+" kWh / "+fmt(m.all.eur,2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=months.length-1;return true;}catch(ex){el.innerHTML="<div style=\"font-family:Tahoma;font-size:11px;color:#ffb3b3;padding:8px\">Highcharts-Fehler: "+String(ex&&ex.message?ex.message:ex)+"</div>";return true;}}';
+        $html .= 'function draw(){var el=e("");if(!el||typeof Highcharts==="undefined"||!months.length)return false;var m=months[idx],cats=[],kwh=[],eur=[];for(var i=0;i<m.rows.length;i++){var r=m.rows[i];cats.push(r.label);kwh.push({y:Number(r.kWh)||0,custom:r});eur.push({y:Number(r.eur)||0,custom:r});}try{localStorage.setItem(key,m.key)}catch(ex){}try{chart=Highcharts.chart(el,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:cats,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff"}}},yAxis:[{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#fff"}},labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#fff",fontSize:"11px"},formatter:function(){var p=this.points&&this.points.length?this.points[0].point:null,c=p&&p.custom?p.custom:{};return "<b>"+(c.date||"")+"</b><br>Einspeisung: <b>"+fmt(c.kWh,2)+" kWh</b><br><span style=\"color:#ffe082\">Erlös: <b>"+fmt(c.eur,2)+" €</b></span><br>Ø Tarif: "+fmt(c.avgPriceCt,2)+" ct/kWh<br>Einspeisefenster: "+(Number(c.windows)||0)+(Number(c.targetKWh)>0?"<br>Geplant: "+fmt(c.targetKWh,2)+" kWh":"");}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Einspeisung",yAxis:0,data:kwh,zIndex:2,events:{mouseOver:function(){var me=this;this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:s===me?1:.22});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:s===me?1:.22})})},mouseOut:function(){this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:1});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:1})})}},dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,1)+" kWh":""},style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Erlös",yAxis:1,data:eur,color:"rgba(255,213,79,.42)",pointPadding:.20,zIndex:3,events:{mouseOver:function(){var me=this;this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:s===me?1:.22});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:s===me?1:.22})})},mouseOut:function(){this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:1});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:1})})}},dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,2)+" €":""},style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"9px",fontWeight:"normal",color:"#ffe082",textOutline:"none"}}}]});var de=e("_date");if(de)de.innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=e("_summary");if(s)s.innerHTML="Monat: <b>"+fmt(m.month.kWh,2)+" kWh / "+fmt(m.month.eur,2)+" €</b> &middot; Jahr: <b>"+fmt(m.year.kWh,2)+" kWh / "+fmt(m.year.eur,2)+" €</b> &middot; Gesamt: <b>"+fmt(m.all.kWh,2)+" kWh / "+fmt(m.all.eur,2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=months.length-1;return true;}catch(ex){el.innerHTML="<div style=\"font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#ffb3b3;padding:8px\">Highcharts-Fehler: "+String(ex&&ex.message?ex.message:ex)+"</div>";return true;}}';
         $html .= 'function init(n){var p=e("_prev"),nx=e("_next"),t=e("_today");if(p)p.onclick=function(){if(idx>0){idx--;draw()}};if(nx)nx.onclick=function(){if(idx<months.length-1){idx++;draw()}};if(t)t.onclick=function(){idx=Math.max(0,months.length-1);draw()};if(draw())return;if(n>0)setTimeout(function(){init(n-1)},150)}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",function(){init(8)})}else{setTimeout(function(){init(8)},0)}})();</script></div>';
         return $html;
     }
@@ -5789,10 +5857,10 @@ class SmartBatteryOptimizer extends IPSModule
                 'rows'=>$rows
             ];
         }
-        $html='<div style="font-family:Tahoma;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
+        $html='<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
         if($highchartsJS==='') return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
-        $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8592;</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px">&#8594;</button><button id="'.$chartId.'_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
-        $html.='var days='.json_encode($days).',id='.json_encode($chartId).',key='.json_encode('sbo_consumption_selected_day_' . $this->InstanceID).',idx=Math.max(0,days.length-1),chart=null;try{var sd=localStorage.getItem(key);if(sd){for(var si=0;si<days.length;si++){if(days[si].date===sd){idx=si;break;}}}}catch(e){}function e(s){return document.getElementById(id+s)}function draw(){if(days.length){try{localStorage.setItem(key,days[idx].date)}catch(e){}}if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#fff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; <span style=\"color:#ffe082\">Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b></span>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};e("_today").onclick=function(){var t=new Date(),y=t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0");for(var q=0;q<days.length;q++){if(days[q].date===y){idx=q;break;}}draw()};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
+        $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px">&#8592;</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px">&#8594;</button><button id="'.$chartId.'_today" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
+        $html.='var days='.json_encode($days).',id='.json_encode($chartId).',key='.json_encode('sbo_consumption_selected_day_' . $this->InstanceID).',idx=Math.max(0,days.length-1),chart=null;try{var sd=localStorage.getItem(key);if(sd){for(var si=0;si<days.length;si++){if(days[si].date===sd){idx=si;break;}}}}catch(e){}function e(s){return document.getElementById(id+s)}function draw(){if(days.length){try{localStorage.setItem(key,days[idx].date)}catch(e){}}if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#fff"}},labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; <span style=\"color:#ffe082\">Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b></span>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};e("_today").onclick=function(){var t=new Date(),y=t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0");for(var q=0;q<days.length;q++){if(days[q].date===y){idx=q;break;}}draw()};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
         return $html;
     }
 
@@ -5898,19 +5966,19 @@ class SmartBatteryOptimizer extends IPSModule
             $dataJson = '[]';
         }
 
-        $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
+        $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;color:#fff">';
         $html .= '<b>PV-Prognose – Prognose und Ist-Produktion</b><br>';
         $html .= '<span style="font-size:11px;color:#bbb">Aktualisiert: ' . date('d.m.Y H:i:s') . ' &middot; Darstellung 06:00–22:00 Uhr' . ($debugMode ? ' &middot; Debug-Quellenserien verfügbar' : '') . '</span><br>';
 
         if ($highchartsJS !== '') {
             $html .= '<div id="' . $chartId . '" style="width:100%;height:410px;margin-top:8px;margin-bottom:6px"></div>';
             $html .= '<div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px 0">';
-            $html .= '<button id="' . $chartId . '_prev" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button>';
+            $html .= '<button id="' . $chartId . '_prev" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button>';
             $html .= '<span id="' . $chartId . '_date" style="min-width:150px;text-align:center;font-weight:bold"></span>';
-            $html .= '<button id="' . $chartId . '_next" type="button" style="font-family:Tahoma;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button>';
-            $html .= '<button id="' . $chartId . '_today" type="button" style="font-family:Tahoma;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Heute</button>';
+            $html .= '<button id="' . $chartId . '_next" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button>';
+            $html .= '<button id="' . $chartId . '_today" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Heute</button>';
             $html .= '</div>';
-            $html .= '<div id="' . $chartId . '_summary" style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px;text-align:center"></div>';
+            $html .= '<div id="' . $chartId . '_summary" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#fff;margin-bottom:8px;text-align:center"></div>';
             $html .= '<script>' . $highchartsJS . '</script>';
             $html .= '<script>(function(){';
             $html .= 'var days=' . $dataJson . ';';
@@ -5934,15 +6002,15 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'var d=days[idx];try{localStorage.setItem(selectedDayKey,d.date);}catch(e){}var categories=[];var forecastData=[];var actualData=[];var sourceData={};';
             $html .= 'for(var src in d.sourceLabels){if(Object.prototype.hasOwnProperty.call(d.sourceLabels,src)){sourceData[src]=[];}}';
             $html .= 'for(var j=0;j<d.rows.length;j++){var r=d.rows[j];categories.push(r.label);forecastData.push({y:r.forecastKWh,custom:r});actualData.push(r.actualKWh===null?null:{y:r.actualKWh,custom:r});for(var src2 in sourceData){var sv=(r.sourceKWh&&Object.prototype.hasOwnProperty.call(r.sourceKWh,src2))?r.sourceKWh[src2]:null;sourceData[src2].push(sv===null?null:{y:sv,custom:r});}}';
-            $html .= 'var chartSeries=[{name:"PV-Prognose kombiniert",data:forecastData,zIndex:1,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},{name:"Ist-Produktion",data:actualData,color:"rgba(255,213,79,0.38)",zIndex:3,pointPadding:0.20,dataLabels:{enabled:false}}];';
+            $html .= 'var chartSeries=[{name:"PV-Prognose kombiniert",data:forecastData,zIndex:1,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return this.y>=0.25?Highcharts.numberFormat(this.y,1,",","."):"";},style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"9px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}},{name:"Ist-Produktion",data:actualData,color:"rgba(255,213,79,0.38)",zIndex:3,pointPadding:0.20,dataLabels:{enabled:false}}];';
             $html .= 'for(var src3 in sourceData){if(Object.prototype.hasOwnProperty.call(sourceData,src3)){var vis=Object.prototype.hasOwnProperty.call(debugVisibility,src3)?!!debugVisibility[src3]:true;chartSeries.push({name:d.sourceLabels[src3],type:"line",data:sourceData[src3],visible:vis,zIndex:5,lineWidth:2,marker:{enabled:true,radius:2},custom:{sourceKey:src3},events:{show:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){debugVisibility[key]=true;saveVisibility(debugVisibility);}},hide:function(){var key=this.options.custom&&this.options.custom.sourceKey;if(key){debugVisibility[key]=false;saveVisibility(debugVisibility);}}},dataLabels:{enabled:false}});}}';
             $html .= 'chart=chart=Highcharts.chart(chartId,{';
-            $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
+            $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff"}},';
             $html .= 'title:{text:null},credits:{enabled:false},';
-            $html .= 'legend:{enabled:true,itemStyle:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff",fontWeight:"normal"},itemHoverStyle:{color:"#ffffff"}},';
-            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",tickInterval:1,labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
-            $html .= 'yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)"},';
-            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+d.label+" "+this.point.custom.label+"</b><br>"+this.series.name+": <b>"+Highcharts.numberFormat(this.y,2,",",".")+" kWh</b></span>";}},';
+            $html .= 'legend:{enabled:true,itemStyle:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffffff",fontWeight:"normal"},itemHoverStyle:{color:"#ffffff"}},';
+            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",tickInterval:1,labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffffff"}}},';
+            $html .= 'yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)"},';
+            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff",fontSize:"11px"},formatter:function(){return "<span style=\\"font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff\\"><b>"+d.label+" "+this.point.custom.label+"</b><br>"+this.series.name+": <b>"+Highcharts.numberFormat(this.y,2,",",".")+" kWh</b></span>";}},';
             $html .= 'plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:0.06,pointPadding:0.02}},';
             $html .= 'series:chartSeries';
             $html .= '});';
@@ -6001,7 +6069,7 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $cal = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
         $days = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
-        $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
+        $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;color:#fff">';
         $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = tatsächlich erzeugte Energie / prognostizierte Energie vor Auto-Faktor. Beide Werte werden über identische Zeitintervalle in kWh integriert und über die letzten ' . $days . ' Tage summiert.</span><br>';
         $gate = $this->GetPVCalibrationFeedInGate();
         if ($this->ReadPropertyBoolean('DebugMode')) {
@@ -6030,7 +6098,7 @@ class SmartBatteryOptimizer extends IPSModule
             . 'Kombinierte Prognose vor Auto: <b>' . number_format($beforeAuto, 2, ',', '.') . ' kWh</b>'
             . ' | Referenz-Gesamtfaktor (energiegewichtet): <b>' . number_format($plantFactor, 3, ',', '.') . '</b>'
             . ' | Prognose nach Auto: <b>' . number_format($afterAuto, 2, ',', '.') . ' kWh</b></div>';
-        $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma;font-size:11px;color:#fff">';
+        $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#fff">';
         $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist-Erzeugung</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist / Prognose</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Intervalle</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Lernzeitraum</th></tr>';
         $surfaceHourFactors = is_array($forecast['surfaceHourlyFactors'] ?? null) ? $forecast['surfaceHourlyFactors'] : [];
         $currentHour = (int)date('G');
@@ -6162,7 +6230,7 @@ class SmartBatteryOptimizer extends IPSModule
         $chartJson = json_encode($chartRows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($chartJson === false) $chartJson = '[]';
 
-        $html = '<div style="font-family:Tahoma;font-size:12px;color:#fff">';
+        $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;color:#fff">';
         $html .= '<b>Einspeisevergütung – Stundenmittel der nächsten ' . $displayHours . ' Stunden</b><br>';
         $html .= '<span style="font-size:11px;color:#bbb">Aktualisiert: ' . date('d.m.Y H:i:s') . '</span><br>';
         if ($highchartsJS !== '') {
@@ -6175,12 +6243,12 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'var categories=rows.map(function(r){return r.label;});';
             $html .= 'var market=rows.map(function(r){if(!r.known){return {y:null,custom:r};}return {y:r.priceCt,color:r.reason==="pv_space"?"#e0a000":(r.selected?"#38a169":(r.priceCt<0?"#d9534f":"#4e8fd3")),custom:r};});';
             $html .= 'Highcharts.chart(' . json_encode($chartId) . ',{';
-            $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma",color:"#ffffff"}},';
-            $html .= 'title:{text:null,style:{fontFamily:"Tahoma",color:"#ffffff"}},credits:{enabled:false},legend:{enabled:false,itemStyle:{fontFamily:"Tahoma",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
-            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}},';
-            $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis Einspeisung ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontFamily:"Tahoma",fontSize:"10px",color:"#ffffff"}}}]},';
-            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma;color:#fff\\"><b>"+r.label+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
-            $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return Highcharts.numberFormat(this.y,2,",",".")+" ct";},style:{fontFamily:"Tahoma",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
+            $html .= 'chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff"}},';
+            $html .= 'title:{text:null,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff"}},credits:{enabled:false},legend:{enabled:false,itemStyle:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
+            $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffffff"}}},';
+            $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis Einspeisung ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffffff"}}}]},';
+            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff\\"><b>"+r.label+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
+            $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return Highcharts.numberFormat(this.y,2,",",".")+" ct";},style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
             $html .= 'series:[{name:"Einspeisevergütung",data:market}]';
             $html .= '});}';
             $html .= 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",renderSBOChart);}else{setTimeout(renderSBOChart,0);}';
@@ -6192,7 +6260,7 @@ class SmartBatteryOptimizer extends IPSModule
         $priceAvailabilityText = $missingHours > 0
             ? ' Für ' . $missingHours . ' der nächsten ' . $displayHours . ' Stunden sind vom Preisportal noch keine veröffentlichten Werte vorhanden; diese Stunden werden beim nächsten Abruf automatisch ergänzt.'
             : ' Für alle nächsten ' . $displayHours . ' Stunden liegen Preiswerte vor.';
-        $html .= '<div style="font-family:Tahoma;font-size:11px;color:#fff;margin-bottom:8px">Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden.' . htmlspecialchars($priceAvailabilityText) . '</div>';
+        $html .= '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#fff;margin-bottom:8px">Grün = Preisoptimierung, Gelb = Speicher für PV freihalten, Rot = negative Einspeisevergütung, Blau = übrige Stunden.' . htmlspecialchars($priceAvailabilityText) . '</div>';
         return $html . '</div>';
     }
 

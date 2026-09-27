@@ -11,7 +11,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.9.78 / Build 149**
+**1.9.80 / Build 151**
 
 ## Neu in 1.2.3
 
@@ -25,7 +25,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 - HTML-Ausgabe in drei eigene IP-Symcon-HTMLBox-Variablen aufgeteilt: `Übersicht`, `Börsenpreis Diagramm` und `Einspeiseplan`.
 - Das Highcharts-Diagramm liegt damit vollständig in der eigenen Variable `Börsenpreis Diagramm`.
-- Sämtliche Highcharts-Beschriftungen werden in weißer Schrift und Tahoma dargestellt.
+- Sämtliche Highcharts-Beschriftungen werden in weißer Schrift dargestellt. Bevorzugt wird Tahoma; auf Geräten ohne Tahoma greift ein plattformgerechter Font-Fallback.
 - Über jedem Preisbalken wird der effektive Einspeisepreis direkt in ct angezeigt.
 - Fallback-Balkengrafik ohne Highcharts: Wenn `highcharts.js` fehlt oder nicht lesbar ist, bleibt die Anzeige funktionsfähig und zeigt die Einspeisevergütung als reine HTML/CSS-Balkengrafik.
 - Einspeisevergütung als Highcharts-Balkendiagramm in einer eigenen HTMLBox.
@@ -87,7 +87,7 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 - Pro Stunde wird der Mittelwert aus den verfügbaren echten 15-Minuten-EPEX-Werten berechnet.
 - Der Stundenpreis steht wieder direkt über jedem Balken.
 - Keine überlagerte Liniengrafik.
-- Tahoma und weiße Beschriftungen bleiben bestehen.
+- Weiße Beschriftungen und der plattformübergreifende Font-Fallback bleiben bestehen.
 - Planung und AlphaESS-Dispatch arbeiten weiterhin mit den echten 15-Minuten-Werten.
 
 
@@ -456,3 +456,9 @@ Beim ersten Start von 1.9.79 werden die vorhandenen Kalibrierdaten automatisch �
 Auch die Preis-Einspeiseautomatik schreibt abgeschlossene Einspeisefenster in eigene archivierte Variablen (kWh, Erlös, Planmenge und Fensterzähler). Das Monats-Highcharts liest diese Historie anschließend aus dem Archiv. Die Statusvariable **Archiv-Datenspeicher** zeigt den Migrations-/Archivstatus.
 
 Die Funktion **PV-Kalibrierdaten löschen ...** löscht den ausgewählten Zeitraum jetzt direkt aus den archivierten PV-Zeitreihen und reaggregiert die betroffenen Variablen. **PV-Kalibrierung zurücksetzen** leert die PV-Lernarchive vollständig; die Einspeise-Statistik wird dabei nicht gelöscht.
+
+
+### 1.9.80 – Open-Meteo Zeitbasis und Apple-Schriftfallback
+Open-Meteo liefert `global_tilted_irradiance` als Mittelwert der **vorhergehenden Stunde**. SmartBatteryOptimizer ordnet den Wert deshalb ab 1.9.80 bereits beim Einlesen dem Stundenintervall zu, das eine Stunde vor dem API-Zeitstempel beginnt. Diese Zeitbasis gilt einheitlich für Anbieterlinie, kombinierte Prognose, Quellengewichtung und PV-Kalibrierung. Bestehende Archiv-Kalibrierdaten werden automatisch übernommen und die Prognose-Zeitreihe einmalig auf die korrigierte Stundenlage gebracht; Istwerte bleiben unverändert.
+
+Für HTMLBoxen und Highcharts wird nun `Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif` verwendet. Auf Windows bleibt Tahoma die erste Wahl; iPhone und iPad verwenden automatisch eine verfügbare Apple-Systemschrift.
