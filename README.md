@@ -11,7 +11,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.9.76 / Build 147**
+**1.9.77 / Build 148**
 
 ## Neu in 1.2.3
 
@@ -437,3 +437,8 @@ Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig sc
 Bei der Preis-Einspeisung wird die theoretische Batterie-/Wechselrichterleistung nicht mehr 1:1 als mögliche Netzeinspeisung angesetzt. Für den jeweiligen Zeitpunkt wird das gelernte stündliche Lastprofil abgezogen. Zusätzlich werden die konfigurierte maximale Entladeleistung und die effektive Netzeinspeisegrenze berücksichtigt.
 
 Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und dem Lastprofil eine neue Restlaufzeit berechnet. Die AlphaESS Dispatch Time wird auf diese Restlaufzeit zuzüglich 30 % Sicherheitsreserve gesetzt.
+
+### PV-Kalibrierung bei Einspeisefaktor 0 % – 1.9.77
+Sobald die konfigurierte **Variable Einspeisefaktor (%)** auf `0 %` steht, wird die PV-Autokalibrierung pausiert. Das gilt sowohl fuer die automatische Preissperre durch **Mindestpreis Einspeisung** als auch fuer eine manuell auf 0 % gesetzte Einspeisefreigabe. Der Sperrzeitraum wird protokolliert; ab Sperrbeginn werden keine PV-Lernintervalle verwendet. Beim Wiederfreigeben beginnt die Integration mit einem neuen Messpunkt, damit kein Intervall ueber die Sperrgrenze hinweg entsteht.
+
+Unter der PV-Kalibrierung gibt es zusaetzlich eine gezielte Bereinigung. Datum (leer = heute), Von- und Bis-Zeit koennen angegeben und mit **PV-Kalibrierdaten Zeitraum loeschen** entfernt werden. Anschliessend werden Gesamt- und Stundenfaktoren aus den verbleibenden Daten neu berechnet. Fuer die Bereinigung der am 27.09.2026 ab 10:00 Uhr ungueltigen Werte sind die Standardfelder bereits auf `heute`, `10:00` bis `23:59` ausgelegt.

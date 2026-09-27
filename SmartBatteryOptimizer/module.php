@@ -31,6 +31,11 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('PVCalibrationPollSeconds', 30);
         $this->RegisterPropertyInteger('PVCalibrationCurtailmentMajorityPct', 75);
         $this->RegisterPropertyBoolean('PVCalibrationFeedInInvert', false);
+        // Wartung: gezieltes Entfernen ungueltiger PV-Kalibrierintervalle.
+        // Leeres Datum bedeutet 'heute'; Zeiten im Format HH:MM.
+        $this->RegisterPropertyString('PVCalibrationCleanupDate', '');
+        $this->RegisterPropertyString('PVCalibrationCleanupFrom', '10:00');
+        $this->RegisterPropertyString('PVCalibrationCleanupTo', '23:59');
         $this->RegisterPropertyString('PVSurfaces', json_encode([
             ['Active' => true, 'Name' => 'Süd', 'KWp' => 10.0, 'OrientationKnown' => true, 'Azimuth' => 0, 'Tilt' => 25, 'Factor' => 1.0, 'AutoCalibrate' => true, 'PVVariable1' => 0, 'PVVariable2' => 0, 'PVVariable3' => 0]
         ]));
@@ -191,6 +196,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('PVCalibrationBlockedFromTs', 0);
         $this->RegisterAttributeString('PVCalibrationCurtailmentSamplesJSON', '[]');
         $this->RegisterAttributeInteger('PVCalibrationLockUntil', 0);
+        $this->RegisterAttributeInteger('PVCalibrationExclusionActiveFromTs', 0);
+        $this->RegisterAttributeString('PVCalibrationExclusionActiveReason', '');
+        $this->RegisterAttributeString('PVCalibrationExcludedPeriodsJSON', '[]');
+        $this->RegisterAttributeString('PVCalibrationCleanupStatus', '');
         $this->RegisterAttributeInteger('CalculationLockUntil', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeString('PlanJSON', '[]');
@@ -418,7 +427,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.76';
+        $currentModuleVersion = '1.9.77';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -432,14 +441,14 @@ class SmartBatteryOptimizer extends IPSModule
         $stringAttributes = [
             'ForecastJSON','PVForecastHistoryJSON','PVSourceForecastHistoryJSON','ForecastSolarSurfaceCacheJSON',
             'PVDebugVisibilityJSON','ProviderDebugLogJSON','ActionHistoryJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
-            'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PricesJSON','PlanJSON','NightLearningSource',
+            'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PVCalibrationExcludedPeriodsJSON','PVCalibrationExclusionActiveReason','PVCalibrationCleanupStatus','PricesJSON','PlanJSON','NightLearningSource',
             'ConsumptionProfileJSON','ConsumptionLearningSource','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
             'CompletedFeedInPlanKeysJSON','FeedInStatisticsJSON','ActiveFeedInReason','AlphaTestTrace'
         ];
         $integerAttributes = [
             'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
-            'PVCalibrationBlockedFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
+            'PVCalibrationBlockedFromTs','PVCalibrationExclusionActiveFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
             'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID'
         ];
         $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
@@ -479,7 +488,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.69',
+            'moduleVersion' => '1.9.77',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -795,6 +804,7 @@ class SmartBatteryOptimizer extends IPSModule
                     $this->WriteAttributeFloat('FeedInFactorOriginalValue', (float)GetValue($variableID));
                     $this->WriteAttributeBoolean('FeedInFactorOriginalValid', true);
                 }
+                $this->StartPVCalibrationExclusion('Mindestpreis Einspeisung – Einspeisefaktor 0 %', time());
                 if (abs((float)GetValue($variableID)) > 0.0001) {
                     $this->WriteFeedInFactorVariable($variableID, 0.0);
                 }
@@ -806,6 +816,7 @@ class SmartBatteryOptimizer extends IPSModule
                     $this->WriteFeedInFactorVariable($variableID, $this->ReadAttributeFloat('FeedInFactorOriginalValue'));
                 }
                 $this->WriteAttributeBoolean('FeedInPriceLockActive', false);
+                $this->FinishPVCalibrationExclusion(time());
             }
             // Außerhalb einer Preissperre folgt der gespeicherte Rückstellwert einer
             // manuellen Änderung des Einspeisefaktors automatisch.
@@ -1219,6 +1230,72 @@ class SmartBatteryOptimizer extends IPSModule
         }
     }
 
+    public function CleanupPVCalibrationPeriod()
+    {
+        $dateText = trim($this->ReadPropertyString('PVCalibrationCleanupDate'));
+        $fromText = trim($this->ReadPropertyString('PVCalibrationCleanupFrom'));
+        $toText = trim($this->ReadPropertyString('PVCalibrationCleanupTo'));
+        if ($dateText === '') $dateText = date('Y-m-d');
+        if ($fromText === '') $fromText = '00:00';
+        if ($toText === '') $toText = '23:59';
+
+        $dateTs = strtotime($dateText . ' 00:00:00');
+        if ($dateTs === false) throw new Exception('Ungueltiges Bereinigungsdatum: ' . $dateText);
+        if (!preg_match('/^(?:[01]\\d|2[0-3]):[0-5]\\d$/', $fromText)) throw new Exception('Ungueltige Von-Zeit: ' . $fromText);
+        if (!preg_match('/^(?:[01]\\d|2[0-3]):[0-5]\\d$/', $toText)) throw new Exception('Ungueltige Bis-Zeit: ' . $toText);
+        $day = date('Y-m-d', $dateTs);
+        $fromTs = strtotime($day . ' ' . $fromText . ':00');
+        $toTs = strtotime($day . ' ' . $toText . ':59');
+        if ($fromTs === false || $toTs === false || $toTs < $fromTs) throw new Exception('Bereinigungszeitraum ist ungueltig.');
+
+        $this->SetActionFeedback('PV-Kalibrierdaten werden fuer ' . date('d.m.Y H:i', $fromTs) . '–' . date('H:i', $toTs) . ' bereinigt ...');
+        try {
+            $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
+            if (!is_array($calibration)) $calibration = [];
+            $removed = 0;
+            foreach (array_keys($calibration) as $key) {
+                if (!is_array($calibration[$key])) continue;
+                $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
+                $kept = [];
+                foreach ($samples as $sample) {
+                    $sampleStart = (int)($sample['ts'] ?? 0);
+                    $sampleEnd = (int)($sample['endTs'] ?? $sampleStart);
+                    $overlaps = ($sampleEnd >= $fromTs && $sampleStart <= $toTs);
+                    if ($overlaps) { $removed++; continue; }
+                    $kept[] = $sample;
+                }
+                $calibration[$key]['energySamples'] = $kept;
+                // Ein Integrationspunkt aus dem geloeschten Zeitraum darf nicht als
+                // Startpunkt fuer das naechste gueltige Intervall weiterleben.
+                $lastPointTs = (int)($calibration[$key]['lastPointTs'] ?? 0);
+                if ($lastPointTs >= $fromTs && $lastPointTs <= $toTs) {
+                    unset($calibration[$key]['lastPointTs'], $calibration[$key]['lastPointExpectedW'], $calibration[$key]['lastPointActualW']);
+                }
+                $calibration = $this->RecalculatePVCalibrationFactors($calibration, (string)$key);
+            }
+            $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
+            $periods = json_decode($this->ReadAttributeString('PVCalibrationExcludedPeriodsJSON'), true);
+            if (!is_array($periods)) $periods = [];
+            $periods[] = ['fromTs'=>$fromTs, 'toTs'=>$toTs, 'reason'=>'Manuelle Kalibrierbereinigung'];
+            if (count($periods) > 180) $periods = array_slice($periods, -180);
+            $this->WriteAttributeString('PVCalibrationExcludedPeriodsJSON', json_encode($periods));
+
+            // Diagnose und Prognose-Cache sofort aus den bereinigten Daten neu aufbauen.
+            $this->UpdatePVCalibrationState(true);
+            $text = 'PV-Kalibrierung bereinigt: ' . date('d.m.Y H:i', $fromTs) . '–' . date('H:i', $toTs)
+                . ' | entfernte Intervalle: ' . $removed . '. Faktoren wurden neu berechnet.';
+            $this->WriteAttributeString('PVCalibrationCleanupStatus', $text);
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
+        } catch (Throwable $e) {
+            $text = 'PV-Kalibrierung bereinigen fehlgeschlagen: ' . $e->getMessage();
+            $this->WriteAttributeString('PVCalibrationCleanupStatus', $text);
+            $this->SetActionFeedback($text);
+            echo $text;
+        }
+    }
+
     public function ResetPVCalibration()
     {
         $this->SetActionFeedback('PV-Kalibrierung und Prognose-Gewichtung werden zurückgesetzt ...');
@@ -1226,6 +1303,9 @@ class SmartBatteryOptimizer extends IPSModule
             // PV-Flächenkalibrierung / Stundenfaktoren zurücksetzen.
             $this->WriteAttributeString('PVCalibrationJSON', '{}');
             $this->WriteAttributeInteger('PVCalibrationEnergyVersion', 1);
+            $this->WriteAttributeInteger('PVCalibrationExclusionActiveFromTs', 0);
+            $this->WriteAttributeString('PVCalibrationExclusionActiveReason', '');
+            $this->WriteAttributeString('PVCalibrationExcludedPeriodsJSON', '[]');
 
             // Auch das automatische Anbieter-Lernen zurücksetzen. Die Quellenhistorie
             // bleibt für die Debug-Linien erhalten; ein Reset-Zeitstempel verhindert,
@@ -2349,8 +2429,90 @@ class SmartBatteryOptimizer extends IPSModule
         return $count > 0 ? $sum : null;
     }
 
+    private function StartPVCalibrationExclusion(string $reason, ?int $fromTs = null): int
+    {
+        $fromTs = $fromTs ?? time();
+        $activeFrom = $this->ReadAttributeInteger('PVCalibrationExclusionActiveFromTs');
+        if ($activeFrom <= 0) {
+            $activeFrom = max(1, $fromTs);
+            $this->WriteAttributeInteger('PVCalibrationExclusionActiveFromTs', $activeFrom);
+            $this->WriteAttributeString('PVCalibrationExclusionActiveReason', $reason);
+        } elseif ($this->ReadAttributeString('PVCalibrationExclusionActiveReason') === '' && $reason !== '') {
+            $this->WriteAttributeString('PVCalibrationExclusionActiveReason', $reason);
+        }
+        return $activeFrom;
+    }
+
+    private function FinishPVCalibrationExclusion(?int $toTs = null): void
+    {
+        $fromTs = $this->ReadAttributeInteger('PVCalibrationExclusionActiveFromTs');
+        if ($fromTs <= 0) return;
+        $toTs = $toTs ?? time();
+        $reason = $this->ReadAttributeString('PVCalibrationExclusionActiveReason');
+        $periods = json_decode($this->ReadAttributeString('PVCalibrationExcludedPeriodsJSON'), true);
+        if (!is_array($periods)) $periods = [];
+        $periods[] = ['fromTs'=>$fromTs, 'toTs'=>max($fromTs, $toTs), 'reason'=>$reason];
+        // Nur die letzten 180 Sperrperioden behalten; die Kalibrierdaten selbst haben
+        // ohnehin eine deutlich kuerzere Aufbewahrungszeit.
+        if (count($periods) > 180) $periods = array_slice($periods, -180);
+        $this->WriteAttributeString('PVCalibrationExcludedPeriodsJSON', json_encode($periods));
+        $this->WriteAttributeInteger('PVCalibrationExclusionActiveFromTs', 0);
+        $this->WriteAttributeString('PVCalibrationExclusionActiveReason', '');
+    }
+
+    private function GetFeedInFactorCalibrationBlock(): array
+    {
+        $variableID = $this->ReadPropertyInteger('FeedInFactorVariable');
+        if ($variableID <= 0 || !@IPS_VariableExists($variableID)) {
+            return ['blocked'=>false, 'configured'=>false, 'value'=>null, 'blockedFromTs'=>0, 'text'=>''];
+        }
+        try {
+            $variable = @IPS_GetVariable($variableID);
+            $type = is_array($variable) ? (int)($variable['VariableType'] ?? -1) : -1;
+            if ($type !== 1 && $type !== 2) {
+                return ['blocked'=>false, 'configured'=>true, 'value'=>null, 'blockedFromTs'=>0, 'text'=>'Einspeisefaktor nicht numerisch'];
+            }
+            $value = (float)GetValue($variableID);
+        } catch (Throwable $e) {
+            return ['blocked'=>false, 'configured'=>true, 'value'=>null, 'blockedFromTs'=>0, 'text'=>'Einspeisefaktor nicht lesbar'];
+        }
+
+        if ($value <= 0.0001) {
+            $reason = $this->ReadAttributeBoolean('FeedInPriceLockActive')
+                ? 'Mindestpreis Einspeisung – Einspeisefaktor 0 %'
+                : 'Einspeisefaktor 0 %';
+            $fromTs = $this->StartPVCalibrationExclusion($reason);
+            return [
+                'blocked'=>true, 'configured'=>true, 'value'=>$value,
+                'blockedFromTs'=>$fromTs,
+                'text'=>'Lernen pausiert – Einspeisefaktor 0 %'
+                    . ($this->ReadAttributeBoolean('FeedInPriceLockActive') ? ' / Mindestpreis Einspeisung' : '')
+            ];
+        }
+
+        // Ist keine Preis-Sperre mehr aktiv und der Faktor wieder groesser 0, endet
+        // der automatisch protokollierte Ausschlusszeitraum.
+        if (!$this->ReadAttributeBoolean('FeedInPriceLockActive') && $this->ReadAttributeInteger('PVCalibrationExclusionActiveFromTs') > 0) {
+            $this->FinishPVCalibrationExclusion(time());
+        }
+        return ['blocked'=>false, 'configured'=>true, 'value'=>$value, 'blockedFromTs'=>0, 'text'=>''];
+    }
+
     private function GetPVCalibrationFeedInGate(): array
     {
+        // Eine auf 0 % gesetzte Einspeisefreigabe begrenzt die reale PV-Erzeugung.
+        // Solche Werte duerfen niemals als Prognosefehler gelernt werden.
+        $factorBlock = $this->GetFeedInFactorCalibrationBlock();
+        if (!empty($factorBlock['blocked'])) {
+            return [
+                'blocked'=>true, 'configured'=>true, 'gridW'=>null, 'feedInW'=>null,
+                'batteryPowerW'=>null, 'thresholdW'=>null,
+                'blockedFromTs'=>(int)($factorBlock['blockedFromTs'] ?? time()),
+                'windowHighPct'=>0.0, 'windowLowPct'=>0.0, 'majorityPct'=>100,
+                'windowReady'=>true, 'text'=>(string)($factorBlock['text'] ?? 'Lernen pausiert – Einspeisefaktor 0 %')
+            ];
+        }
+
         $variableID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
         if ($variableID <= 0 || !@IPS_VariableExists($variableID)) {
             return ['blocked'=>false,'configured'=>false,'gridW'=>null,'feedInW'=>null,'thresholdW'=>null,'text'=>''];

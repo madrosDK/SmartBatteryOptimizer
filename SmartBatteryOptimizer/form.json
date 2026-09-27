@@ -192,6 +192,25 @@
                     "caption": "Vorzeichen invertieren (aktivieren, wenn Einspeisung als negativer Netzbezug geliefert wird)"
                 },
                 {
+                    "type": "Label",
+                    "caption": "Kalibrierdaten bereinigen: Ungültige Lernintervalle können gezielt entfernt werden. Leeres Datum = heute. Nach dem Löschen werden Gesamt- und Stundenfaktoren sofort aus den verbleibenden Daten neu berechnet."
+                },
+                {
+                    "type": "ValidationTextBox",
+                    "name": "PVCalibrationCleanupDate",
+                    "caption": "Bereinigung Datum (YYYY-MM-DD; leer = heute)"
+                },
+                {
+                    "type": "ValidationTextBox",
+                    "name": "PVCalibrationCleanupFrom",
+                    "caption": "Bereinigung von (HH:MM)"
+                },
+                {
+                    "type": "ValidationTextBox",
+                    "name": "PVCalibrationCleanupTo",
+                    "caption": "Bereinigung bis (HH:MM)"
+                },
+                {
                     "type": "List",
                     "name": "PVSurfaces",
                     "caption": "PV-Flächen",
@@ -836,6 +855,11 @@
             "type": "Button",
             "caption": "PV-Kalibrierung / Auto-Faktoren zurücksetzen",
             "onClick": "SBO_ResetPVCalibration($id);"
+        },
+        {
+            "type": "Button",
+            "caption": "PV-Kalibrierdaten Zeitraum löschen",
+            "onClick": "SBO_CleanupPVCalibrationPeriod($id);"
         },
         {
             "type": "Button",
