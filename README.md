@@ -11,7 +11,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.9.77 / Build 148**
+**1.9.78 / Build 149**
 
 ## Neu in 1.2.3
 
@@ -441,4 +441,8 @@ Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss geme
 ### PV-Kalibrierung bei Einspeisefaktor 0 % – 1.9.77
 Sobald die konfigurierte **Variable Einspeisefaktor (%)** auf `0 %` steht, wird die PV-Autokalibrierung pausiert. Das gilt sowohl fuer die automatische Preissperre durch **Mindestpreis Einspeisung** als auch fuer eine manuell auf 0 % gesetzte Einspeisefreigabe. Der Sperrzeitraum wird protokolliert; ab Sperrbeginn werden keine PV-Lernintervalle verwendet. Beim Wiederfreigeben beginnt die Integration mit einem neuen Messpunkt, damit kein Intervall ueber die Sperrgrenze hinweg entsteht.
 
-Unter der PV-Kalibrierung gibt es zusaetzlich eine gezielte Bereinigung. Datum (leer = heute), Von- und Bis-Zeit koennen angegeben und mit **PV-Kalibrierdaten Zeitraum loeschen** entfernt werden. Anschliessend werden Gesamt- und Stundenfaktoren aus den verbleibenden Daten neu berechnet. Fuer die Bereinigung der am 27.09.2026 ab 10:00 Uhr ungueltigen Werte sind die Standardfelder bereits auf `heute`, `10:00` bis `23:59` ausgelegt.
+Ab **1.9.78** erfolgt die gezielte Bereinigung ueber **PV-Kalibrierdaten loeschen ...**. Beim Klick oeffnet sich ein Dialog mit Datum sowie Von-/Bis-Zeit. Erst der Button **Loeschen** im Dialog entfernt die ueberlappenden PV-Kalibrierintervalle. Anschliessend werden Gesamt- und Stundenfaktoren sofort aus den verbleibenden Daten neu berechnet. Die bisherigen festen Bereinigungsfelder in der Konfiguration entfallen.
+
+
+### PV-Kalibrierbereinigung per Dialog – 1.9.78
+Der Wartungsbutton **PV-Kalibrierdaten loeschen ...** oeffnet jetzt einen Auswahl-Dialog. Datum sowie Von- und Bis-Zeit werden direkt beim Loeschvorgang gewaehlt; Datum ist beim Oeffnen auf heute, Von auf 00:00 und Bis auf die aktuelle Uhrzeit vorbelegt. Feste Konfigurationsfelder fuer den Loeschzeitraum sind nicht mehr sichtbar.

@@ -31,8 +31,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('PVCalibrationPollSeconds', 30);
         $this->RegisterPropertyInteger('PVCalibrationCurtailmentMajorityPct', 75);
         $this->RegisterPropertyBoolean('PVCalibrationFeedInInvert', false);
-        // Wartung: gezieltes Entfernen ungueltiger PV-Kalibrierintervalle.
-        // Leeres Datum bedeutet 'heute'; Zeiten im Format HH:MM.
+        // Legacy-Eigenschaften fuer Abwaertskompatibilitaet. Die Bedienung erfolgt ab 1.9.78 ueber einen Popup-Dialog.
         $this->RegisterPropertyString('PVCalibrationCleanupDate', '');
         $this->RegisterPropertyString('PVCalibrationCleanupFrom', '10:00');
         $this->RegisterPropertyString('PVCalibrationCleanupTo', '23:59');
@@ -301,6 +300,25 @@ class SmartBatteryOptimizer extends IPSModule
         };
 
         $setVisibility($form);
+
+        // Popup zur gezielten PV-Kalibrierbereinigung: beim Oeffnen der
+        // Konfiguration sinnvolle Startwerte vorbelegen. Diese Felder sind
+        // reine Aktionsfelder und werden nicht als Instanz-Properties gespeichert.
+        $today = ['year' => (int)date('Y'), 'month' => (int)date('n'), 'day' => (int)date('j')];
+        $fromDefault = ['hour' => 0, 'minute' => 0, 'second' => 0];
+        $toDefault = ['hour' => (int)date('G'), 'minute' => (int)date('i'), 'second' => 0];
+        $setCleanupDefaults = function (&$node) use (&$setCleanupDefaults, $today, $fromDefault, $toDefault) {
+            if (!is_array($node)) return;
+            if (($node['name'] ?? '') === 'CleanupDialogDate') $node['value'] = $today;
+            if (($node['name'] ?? '') === 'CleanupDialogFrom') $node['value'] = $fromDefault;
+            if (($node['name'] ?? '') === 'CleanupDialogTo') $node['value'] = $toDefault;
+            foreach ($node as &$value) {
+                if (is_array($value)) $setCleanupDefaults($value);
+            }
+            unset($value);
+        };
+        $setCleanupDefaults($form);
+
         return json_encode($form, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 
@@ -427,7 +445,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.77';
+        $currentModuleVersion = '1.9.78';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -488,7 +506,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.77',
+            'moduleVersion' => '1.9.78',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1232,13 +1250,57 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function CleanupPVCalibrationPeriod()
     {
+        // Legacy-Aufruf fuer bestehende externe Skripte. Die Konfigurationsseite
+        // verwendet ab 1.9.78 den Popup-Dialog und CleanupPVCalibrationPeriodSelection().
         $dateText = trim($this->ReadPropertyString('PVCalibrationCleanupDate'));
         $fromText = trim($this->ReadPropertyString('PVCalibrationCleanupFrom'));
         $toText = trim($this->ReadPropertyString('PVCalibrationCleanupTo'));
         if ($dateText === '') $dateText = date('Y-m-d');
         if ($fromText === '') $fromText = '00:00';
         if ($toText === '') $toText = '23:59';
+        try {
+            $text = $this->CleanupPVCalibrationPeriodByText($dateText, $fromText, $toText);
+        } catch (Throwable $e) {
+            $text = 'PV-Kalibrierung bereinigen fehlgeschlagen: ' . $e->getMessage();
+            $this->WriteAttributeString('PVCalibrationCleanupStatus', $text);
+            $this->SetActionFeedback($text);
+        }
+        echo $text;
+    }
 
+    public function CleanupPVCalibrationPeriodSelection(string $dateJson, string $fromJson, string $toJson)
+    {
+        try {
+            $date = json_decode($dateJson, true);
+            $from = json_decode($fromJson, true);
+            $to = json_decode($toJson, true);
+            if (!is_array($date) || !is_array($from) || !is_array($to)) {
+                throw new Exception('Datum oder Uhrzeit konnte nicht gelesen werden.');
+            }
+            $year = (int)($date['year'] ?? 0);
+            $month = (int)($date['month'] ?? 0);
+            $day = (int)($date['day'] ?? 0);
+            if ($year <= 0 || $month <= 0 || $day <= 0 || !checkdate($month, $day, $year)) {
+                throw new Exception('Bitte ein gueltiges Datum auswaehlen.');
+            }
+            $fh = (int)($from['hour'] ?? -1);
+            $fm = (int)($from['minute'] ?? -1);
+            $th = (int)($to['hour'] ?? -1);
+            $tm = (int)($to['minute'] ?? -1);
+            if ($fh < 0 || $fh > 23 || $fm < 0 || $fm > 59 || $th < 0 || $th > 23 || $tm < 0 || $tm > 59) {
+                throw new Exception('Bitte gueltige Von-/Bis-Zeiten auswaehlen.');
+            }
+            $dateText = sprintf('%04d-%02d-%02d', $year, $month, $day);
+            $fromText = sprintf('%02d:%02d', $fh, $fm);
+            $toText = sprintf('%02d:%02d', $th, $tm);
+            return $this->CleanupPVCalibrationPeriodByText($dateText, $fromText, $toText);
+        } catch (Throwable $e) {
+            return 'FEHLER:' . $e->getMessage();
+        }
+    }
+
+    private function CleanupPVCalibrationPeriodByText(string $dateText, string $fromText, string $toText): string
+    {
         $dateTs = strtotime($dateText . ' 00:00:00');
         if ($dateTs === false) throw new Exception('Ungueltiges Bereinigungsdatum: ' . $dateText);
         if (!preg_match('/^(?:[01]\\d|2[0-3]):[0-5]\\d$/', $fromText)) throw new Exception('Ungueltige Von-Zeit: ' . $fromText);
@@ -1249,51 +1311,44 @@ class SmartBatteryOptimizer extends IPSModule
         if ($fromTs === false || $toTs === false || $toTs < $fromTs) throw new Exception('Bereinigungszeitraum ist ungueltig.');
 
         $this->SetActionFeedback('PV-Kalibrierdaten werden fuer ' . date('d.m.Y H:i', $fromTs) . '–' . date('H:i', $toTs) . ' bereinigt ...');
-        try {
-            $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
-            if (!is_array($calibration)) $calibration = [];
-            $removed = 0;
-            foreach (array_keys($calibration) as $key) {
-                if (!is_array($calibration[$key])) continue;
-                $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
-                $kept = [];
-                foreach ($samples as $sample) {
-                    $sampleStart = (int)($sample['ts'] ?? 0);
-                    $sampleEnd = (int)($sample['endTs'] ?? $sampleStart);
-                    $overlaps = ($sampleEnd >= $fromTs && $sampleStart <= $toTs);
-                    if ($overlaps) { $removed++; continue; }
-                    $kept[] = $sample;
-                }
-                $calibration[$key]['energySamples'] = $kept;
-                // Ein Integrationspunkt aus dem geloeschten Zeitraum darf nicht als
-                // Startpunkt fuer das naechste gueltige Intervall weiterleben.
-                $lastPointTs = (int)($calibration[$key]['lastPointTs'] ?? 0);
-                if ($lastPointTs >= $fromTs && $lastPointTs <= $toTs) {
-                    unset($calibration[$key]['lastPointTs'], $calibration[$key]['lastPointExpectedW'], $calibration[$key]['lastPointActualW']);
-                }
-                $calibration = $this->RecalculatePVCalibrationFactors($calibration, (string)$key);
+        $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
+        if (!is_array($calibration)) $calibration = [];
+        $removed = 0;
+        foreach (array_keys($calibration) as $key) {
+            if (!is_array($calibration[$key])) continue;
+            $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
+            $kept = [];
+            foreach ($samples as $sample) {
+                $sampleStart = (int)($sample['ts'] ?? 0);
+                $sampleEnd = (int)($sample['endTs'] ?? $sampleStart);
+                $overlaps = ($sampleEnd >= $fromTs && $sampleStart <= $toTs);
+                if ($overlaps) { $removed++; continue; }
+                $kept[] = $sample;
             }
-            $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
-            $periods = json_decode($this->ReadAttributeString('PVCalibrationExcludedPeriodsJSON'), true);
-            if (!is_array($periods)) $periods = [];
-            $periods[] = ['fromTs'=>$fromTs, 'toTs'=>$toTs, 'reason'=>'Manuelle Kalibrierbereinigung'];
-            if (count($periods) > 180) $periods = array_slice($periods, -180);
-            $this->WriteAttributeString('PVCalibrationExcludedPeriodsJSON', json_encode($periods));
-
-            // Diagnose und Prognose-Cache sofort aus den bereinigten Daten neu aufbauen.
-            $this->UpdatePVCalibrationState(true);
-            $text = 'PV-Kalibrierung bereinigt: ' . date('d.m.Y H:i', $fromTs) . '–' . date('H:i', $toTs)
-                . ' | entfernte Intervalle: ' . $removed . '. Faktoren wurden neu berechnet.';
-            $this->WriteAttributeString('PVCalibrationCleanupStatus', $text);
-            SetValue($this->GetIDForIdent('StatusText'), $text);
-            $this->SetActionFeedback($text);
-            echo $text;
-        } catch (Throwable $e) {
-            $text = 'PV-Kalibrierung bereinigen fehlgeschlagen: ' . $e->getMessage();
-            $this->WriteAttributeString('PVCalibrationCleanupStatus', $text);
-            $this->SetActionFeedback($text);
-            echo $text;
+            $calibration[$key]['energySamples'] = $kept;
+            // Ein Integrationspunkt aus dem geloeschten Zeitraum darf nicht als
+            // Startpunkt fuer das naechste gueltige Intervall weiterleben.
+            $lastPointTs = (int)($calibration[$key]['lastPointTs'] ?? 0);
+            if ($lastPointTs >= $fromTs && $lastPointTs <= $toTs) {
+                unset($calibration[$key]['lastPointTs'], $calibration[$key]['lastPointExpectedW'], $calibration[$key]['lastPointActualW']);
+            }
+            $calibration = $this->RecalculatePVCalibrationFactors($calibration, (string)$key);
         }
+        $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
+        $periods = json_decode($this->ReadAttributeString('PVCalibrationExcludedPeriodsJSON'), true);
+        if (!is_array($periods)) $periods = [];
+        $periods[] = ['fromTs'=>$fromTs, 'toTs'=>$toTs, 'reason'=>'Manuelle Kalibrierbereinigung'];
+        if (count($periods) > 180) $periods = array_slice($periods, -180);
+        $this->WriteAttributeString('PVCalibrationExcludedPeriodsJSON', json_encode($periods));
+
+        // Diagnose und Prognose-Cache sofort aus den bereinigten Daten neu aufbauen.
+        $this->UpdatePVCalibrationState(true);
+        $text = 'PV-Kalibrierung bereinigt: ' . date('d.m.Y H:i', $fromTs) . '–' . date('H:i', $toTs)
+            . ' | entfernte Intervalle: ' . $removed . '. Faktoren wurden neu berechnet.';
+        $this->WriteAttributeString('PVCalibrationCleanupStatus', $text);
+        SetValue($this->GetIDForIdent('StatusText'), $text);
+        $this->SetActionFeedback($text);
+        return $text;
     }
 
     public function ResetPVCalibration()

@@ -193,22 +193,7 @@
                 },
                 {
                     "type": "Label",
-                    "caption": "Kalibrierdaten bereinigen: Ungültige Lernintervalle können gezielt entfernt werden. Leeres Datum = heute. Nach dem Löschen werden Gesamt- und Stundenfaktoren sofort aus den verbleibenden Daten neu berechnet."
-                },
-                {
-                    "type": "ValidationTextBox",
-                    "name": "PVCalibrationCleanupDate",
-                    "caption": "Bereinigung Datum (YYYY-MM-DD; leer = heute)"
-                },
-                {
-                    "type": "ValidationTextBox",
-                    "name": "PVCalibrationCleanupFrom",
-                    "caption": "Bereinigung von (HH:MM)"
-                },
-                {
-                    "type": "ValidationTextBox",
-                    "name": "PVCalibrationCleanupTo",
-                    "caption": "Bereinigung bis (HH:MM)"
+                    "caption": "Kalibrierdaten bereinigen: Über den Button unten Datum sowie Von-/Bis-Zeit auswählen. Nach dem Löschen werden Gesamt- und Stundenfaktoren sofort aus den verbleibenden Daten neu berechnet."
                 },
                 {
                     "type": "List",
@@ -857,9 +842,47 @@
             "onClick": "SBO_ResetPVCalibration($id);"
         },
         {
-            "type": "Button",
-            "caption": "PV-Kalibrierdaten Zeitraum löschen",
-            "onClick": "SBO_CleanupPVCalibrationPeriod($id);"
+            "type": "PopupButton",
+            "name": "PVCalibrationCleanupPopup",
+            "caption": "PV-Kalibrierdaten löschen ...",
+            "popup": {
+                "caption": "PV-Kalibrierdaten Zeitraum löschen",
+                "closeCaption": "Abbrechen",
+                "items": [
+                    {
+                        "type": "Label",
+                        "caption": "Datum und Zeitraum auswählen. Es werden nur PV-Kalibrierintervalle entfernt, die diesen Zeitraum überlappen."
+                    },
+                    {
+                        "type": "SelectDate",
+                        "name": "CleanupDialogDate",
+                        "caption": "Datum"
+                    },
+                    {
+                        "type": "RowLayout",
+                        "items": [
+                            {
+                                "type": "SelectTime",
+                                "name": "CleanupDialogFrom",
+                                "caption": "Von",
+                                "width": "50%"
+                            },
+                            {
+                                "type": "SelectTime",
+                                "name": "CleanupDialogTo",
+                                "caption": "Bis",
+                                "width": "50%"
+                            }
+                        ]
+                    }
+                ],
+                "buttons": [
+                    {
+                        "caption": "Löschen",
+                        "onClick": "$msg = SBO_CleanupPVCalibrationPeriodSelection($id, json_encode($CleanupDialogDate), json_encode($CleanupDialogFrom), json_encode($CleanupDialogTo)); if (strpos($msg, 'FEHLER:') === 0) { echo substr($msg, 7); } else { echo 'MESSAGE:' . $msg; }"
+                    }
+                ]
+            }
         },
         {
             "type": "Button",
