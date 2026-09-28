@@ -193,7 +193,7 @@
                 },
                 {
                     "type": "Label",
-                    "caption": "Kalibrierdaten bereinigen: Über den Button unten Datum sowie Von-/Bis-Zeit auswählen. Nach dem Löschen werden Gesamt- und Stundenfaktoren sofort aus den verbleibenden Daten neu berechnet."
+                    "caption": "Kalibrierdaten bereinigen: Über den Button unten Datum sowie Von-/Bis-Zeit auswählen. Nach dem Löschen wird der saisonale PV-Auto-Faktor sofort aus den verbleibenden gültigen Archivdaten neu berechnet."
                 },
                 {
                     "type": "List",

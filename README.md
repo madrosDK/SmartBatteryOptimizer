@@ -445,7 +445,7 @@ Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss geme
 ### PV-Kalibrierung bei Einspeisefaktor 0 % – 1.9.77
 Sobald die konfigurierte **Variable Einspeisefaktor (%)** auf `0 %` steht, wird die PV-Autokalibrierung pausiert. Das gilt sowohl fuer die automatische Preissperre durch **Mindestpreis Einspeisung** als auch fuer eine manuell auf 0 % gesetzte Einspeisefreigabe. Der Sperrzeitraum wird protokolliert; ab Sperrbeginn werden keine PV-Lernintervalle verwendet. Beim Wiederfreigeben beginnt die Integration mit einem neuen Messpunkt, damit kein Intervall ueber die Sperrgrenze hinweg entsteht.
 
-Ab **1.9.78** erfolgt die gezielte Bereinigung ueber **PV-Kalibrierdaten loeschen ...**. Beim Klick oeffnet sich ein Dialog mit Datum sowie Von-/Bis-Zeit. Erst der Button **Loeschen** im Dialog entfernt die ueberlappenden PV-Kalibrierintervalle. Anschliessend werden Gesamt- und Stundenfaktoren sofort aus den verbleibenden Daten neu berechnet. Die bisherigen festen Bereinigungsfelder in der Konfiguration entfallen.
+Ab **1.9.78** erfolgt die gezielte Bereinigung ueber **PV-Kalibrierdaten loeschen ...**. Beim Klick oeffnet sich ein Dialog mit Datum sowie Von-/Bis-Zeit. Erst der Button **Loeschen** im Dialog entfernt die ueberlappenden PV-Kalibrierintervalle. Anschliessend werden saisonale PV-Auto-Faktoren sofort aus den verbleibenden Daten neu berechnet. Die bisherigen festen Bereinigungsfelder in der Konfiguration entfallen.
 
 
 ### PV-Kalibrierbereinigung per Dialog – 1.9.78
@@ -470,3 +470,6 @@ Für HTMLBoxen und Highcharts wird nun `Tahoma, Arial, -apple-system, BlinkMacSy
 
 ### 1.9.81 – Verbindliche Einspeiseplanung und SoC-Abgleich
 Ein einmal veröffentlichter zukünftiger Einspeiseplan bleibt jetzt bis zur Ausführung verbindlich und wird durch normale Prognose-/Plan-Neuberechnungen nicht mehr entfernt oder verschoben. Beim Planen wird für jedes Einspeisefenster der erwartete Batterie-SoC am Start gespeichert. Liegt der reale SoC beim Start höchstens 5 Prozentpunkte darunter, wird die geplante Energiemenge unverändert ausgeführt. Erst bei einer Abweichung von mehr als 5 Prozentpunkten nach unten wird die Einspeisemenge entsprechend der fehlenden Batterieenergie reduziert. Ein höherer SoC vergrößert die geplante Einspeisemenge nicht. Mindest-SoC, Mindestpreis-Sperre und technische Schutzfunktionen bleiben vorrangig.
+
+## Änderung v1.9.83
+Die PV-Kalibrierung vergleicht stündliche Prognoseenergie (kWh) mit der für dasselbe Stundenfenster aus den archivierten, der PV-Fläche zugeordneten PV-String-Variablen integrierten Ist-Energie. Separate Kalibrier-Istvariablen werden nicht mehr benötigt. Der PV-Auto-Faktor ist ein rollierender saisonaler Faktor; Stundenfaktoren werden nicht mehr angewendet.
