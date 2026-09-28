@@ -1055,13 +1055,8 @@ class SmartBatteryOptimizer extends IPSModule
             $expectedW = isset($surfaceCalibration[$name]['expectedBaseW'])
                 ? (float)$surfaceCalibration[$name]['expectedBaseW'] : 0.0;
 
-            // Archiv ist ab 1.9.79 die primaere Zeitreihenquelle. Bei gesperrter
-            // Kalibrierung bzw. zu kleiner Prognose werden 0 W geschrieben; dadurch
-            // beeinflusst dieser Zeitraum weder Prognose- noch Ist-Energie.
-            if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1) {
-                $archiveValid = !$gate['blocked'] && $actualW !== null && $expectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW');
-                $this->StorePVCalibrationArchivePoint($key, $expectedW, $actualW, $archiveValid);
-            }
+            // Prognose-kWh werden ausschließlich beim Erzeugen der Stundenprognose
+            // archiviert. Der Kalibrier-Timer schreibt bewusst keine Prognosewerte mehr.
 
             if ($gate['blocked']) {
                 if (isset($calibration[$key])) {
@@ -1893,6 +1888,9 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         $sourceHours = ['openmeteo' => [], 'forecastsolar' => [], 'pvnode' => []];
+        // Rohprognose je PV-Fläche und Stunde. Diese kWh-Werte sind die verbindliche
+        // Kalibrierbasis; nicht momentane Wattwerte des Kalibrier-Timers.
+        $surfaceSourceHours = ['openmeteo' => [], 'forecastsolar' => []];
         $surfaceTotalsBySource = ['openmeteo' => [], 'forecastsolar' => []];
         $surfaceCalibration = [];
         $calibrationFeedInGate = $this->GetPVCalibrationFeedInGate();
@@ -1960,6 +1958,8 @@ class SmartBatteryOptimizer extends IPSModule
                     $powerKW = $basePowerKW;
                     if (!isset($sourceHours['openmeteo'][$ts])) $sourceHours['openmeteo'][$ts] = 0.0;
                     $sourceHours['openmeteo'][$ts] += $powerKW;
+                    if (!isset($surfaceSourceHours['openmeteo'][$name])) $surfaceSourceHours['openmeteo'][$name] = [];
+                    $surfaceSourceHours['openmeteo'][$name][$ts] = $powerKW;
                     if ($ts === $nowHour) $currentExpectedBaseW = $basePowerKW * 1000.0;
                     if (date('Y-m-d', $ts) === date('Y-m-d', strtotime('tomorrow'))) $sum += $powerKW;
                 }
@@ -2025,6 +2025,8 @@ class SmartBatteryOptimizer extends IPSModule
                         $correctedKW = max(0.0, (float)$powerKW) * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
                         if (!isset($forecastSolarTempHours[$ts])) $forecastSolarTempHours[$ts] = 0.0;
                         $forecastSolarTempHours[$ts] += $correctedKW;
+                        if (!isset($surfaceSourceHours['forecastsolar'][$name])) $surfaceSourceHours['forecastsolar'][$name] = [];
+                        $surfaceSourceHours['forecastsolar'][$name][(int)$ts] = $correctedKW;
                         if (date('Y-m-d', (int)$ts) === date('Y-m-d', strtotime('tomorrow'))) $sum += $correctedKW;
                     }
                     $surfaceTotalsBySource['forecastsolar'][$name] = $sum;
@@ -2169,6 +2171,34 @@ class SmartBatteryOptimizer extends IPSModule
             if ($day === date('Y-m-d')) $todayBeforeAuto += $rawCombinedKW;
             if ($day === date('Y-m-d', strtotime('tomorrow'))) $tomorrowBeforeAuto += $rawCombinedKW;
         }
+
+        // Kombinierte Stundenprognose auf die konfigurierten PV-Flächen verteilen.
+        // Open-Meteo/Forecast.Solar liefern die Form je Fläche; pvnode liefert nur den
+        // Gesamtstandort und wird deshalb proportional zu diesen Flächenanteilen verteilt.
+        // Summe aller Flächen entspricht dadurch in jeder Stunde exakt der kombinierten
+        // Anlagenprognose VOR Auto-Korrektur.
+        $surfaceForecastHours = [];
+        foreach ($surfaces as $idx => $surface) {
+            if (empty($surface['Active'])) continue;
+            $n = trim((string)($surface['Name'] ?? 'PV')); if ($n === '') $n = 'PV ' . ($idx + 1);
+            $surfaceForecastHours[$n] = [];
+        }
+        foreach ($hours as $ts => $h) {
+            $shape = []; $shapeSum = 0.0;
+            foreach ($surfaceForecastHours as $n => $_) {
+                $v = 0.0; $ws = 0.0;
+                foreach (['openmeteo','forecastsolar'] as $src) {
+                    if (!isset($surfaceSourceHours[$src][$n][$ts])) continue;
+                    $w = max(0.0, (float)($weights[$src] ?? 0.0));
+                    $v += max(0.0, (float)$surfaceSourceHours[$src][$n][$ts]) * $w; $ws += $w;
+                }
+                $shape[$n] = $ws > 0.0 ? $v / $ws : 0.0; $shapeSum += $shape[$n];
+            }
+            if ($shapeSum <= 0.0) continue;
+            $plantKWh = max(0.0, (float)($h['totalKWBeforeAuto'] ?? 0.0));
+            foreach ($shape as $n => $v) $surfaceForecastHours[$n][(int)$ts] = $plantKWh * $v / $shapeSum;
+        }
+        $this->StorePVCalibrationHourlyForecast($surfaceForecastHours, $surfaces);
 
         $today = 0.0; $tomorrow = 0.0;
         $todayDate = date('Y-m-d'); $tomorrowDate = date('Y-m-d', strtotime('tomorrow'));
@@ -4938,6 +4968,18 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         $migrationVersion = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion');
+        // v1.9.84: fehlerhafte Prognosearchive aus 1.9.83 (W/1000 statt echte
+        // Stunden-kWh, unregelmäßige Zeitpunkte) einmalig vollständig verwerfen.
+        if ($migrationVersion < 3) {
+            foreach ($surfaces as $idxClean => $_surfaceClean) {
+                $idClean = (int)@$this->GetIDForIdent('PVCalExpected_' . $idxClean);
+                if ($idClean > 0) @AC_DeleteVariableData($archiveID, $idClean, 0, time() + 10 * 365 * 86400);
+            }
+            $this->WriteAttributeString('PVCalibrationJSON', '{}');
+            $this->WriteAttributeInteger('ArchiveStorageMigrationVersion', 3);
+            $migrationVersion = 3;
+            $this->DebugLog('ArchiveStorage', 'v1.9.84: fehlerhafte Prognose-Kalibrierdaten verworfen; Neuaufbau aus echten Stunden-kWh.');
+        }
         if ($migrationVersion < 1) {
             try {
                 // Ab 1.9.80 wird Open-Meteo korrekt dem vorhergehenden Stundenintervall
@@ -5130,26 +5172,37 @@ class SmartBatteryOptimizer extends IPSModule
         return $count;
     }
 
-    private function StorePVCalibrationArchivePoint(string $key, float $expectedW, ?float $actualW, bool $valid): void
+    private function StorePVCalibrationHourlyForecast(array $surfaceForecastHours, array $surfaces): void
     {
+        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return;
         $archiveID = $this->FindArchive(); if ($archiveID <= 0) return;
-        [$expectedID, $unusedActualID] = $this->GetPVArchiveVariableIDs($key);
-        if ($expectedID <= 0) return;
-        // Der Prognosewert ist eine Stundenenergie: die für diese Stunde vorliegende
-        // Basisprognose in kWh. Gesperrte Stunden werden mit 0 markiert und später verworfen.
-        if (!$valid) return;
-        $kWh = max(0.0, $expectedW) / 1000.0;
-        $hourTs = strtotime(date('Y-m-d H:00:00'));
-        try {
-            // Pro Stunde genau den zuerst vorliegenden Prognosewert festschreiben.
-            // Spätere Forecast-Updates dürfen eine bereits begonnene Stunde nicht rückwirkend ändern.
-            $existing = @AC_GetLoggedValues($archiveID, $expectedID, $hourTs, $hourTs, 1);
-            if (!is_array($existing) || count($existing) === 0) {
-                AC_AddLoggedValues($archiveID, $expectedID, [['TimeStamp'=>$hourTs,'Value'=>$kWh]]);
-                if (function_exists('AC_ReAggregateVariable')) @AC_ReAggregateVariable($archiveID, $expectedID);
-            }
-            SetValue($expectedID, $kWh);
-        } catch (Throwable $ex) { $this->DebugLog('PVArchive', $ex->getMessage(), 0); }
+        $currentHour = strtotime(date('Y-m-d H:00:00'));
+        $maxTs = $currentHour;
+        foreach ($surfaceForecastHours as $m) if (is_array($m)) foreach ($m as $ts => $_) $maxTs = max($maxTs, (int)$ts);
+        foreach ($surfaces as $idx => $surface) {
+            if (empty($surface['Active'])) continue;
+            $name = trim((string)($surface['Name'] ?? 'PV')); if ($name === '') $name = 'PV ' . ($idx + 1);
+            $id = (int)@$this->GetIDForIdent('PVCalExpected_' . $idx); if ($id <= 0) continue;
+            $map = is_array($surfaceForecastHours[$name] ?? null) ? $surfaceForecastHours[$name] : [];
+            try {
+                // Laufende Stunde: den zuerst vorhandenen Wert einfrieren. Nur zukünftige
+                // Stunden werden bei einem neuen Forecast ersetzt. Vergangenheit bleibt unverändert.
+                $existingCurrent = @AC_GetLoggedValues($archiveID, $id, $currentHour, $currentHour, 1);
+                $rows = [];
+                foreach ($map as $ts => $kWh) {
+                    $ts = (int)$ts; $kWh = max(0.0, (float)$kWh);
+                    if ($ts < $currentHour) continue;
+                    if ($ts === $currentHour && is_array($existingCurrent) && count($existingCurrent) > 0) continue;
+                    $rows[$ts] = $kWh;
+                }
+                // Ab der nächsten vollen Stunde ist die jüngste Prognose maßgeblich.
+                $futureStart = $currentHour + 3600;
+                if ($maxTs >= $futureStart) @AC_DeleteVariableData($archiveID, $id, $futureStart, $maxTs + 3599);
+                $this->AddArchiveLoggedValues($archiveID, $id, $rows);
+                if (isset($map[$currentHour])) SetValue($id, (float)$map[$currentHour]);
+                $this->DebugLog('PV-Kalibrierarchiv', $name . ' | ' . count($rows) . ' Stunden-kWh gespeichert | ab ' . date('d.m.Y H:i', $currentHour));
+            } catch (Throwable $ex) { $this->DebugLog('PV-Kalibrierarchiv', $name . ': ' . $ex->getMessage(), 0); }
+        }
     }
 
     private function GetArchiveFirstTime(int $archiveID, int $variableID): int

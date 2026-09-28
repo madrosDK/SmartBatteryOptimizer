@@ -473,3 +473,8 @@ Ein einmal veröffentlichter zukünftiger Einspeiseplan bleibt jetzt bis zur Aus
 
 ## Änderung v1.9.83
 Die PV-Kalibrierung vergleicht stündliche Prognoseenergie (kWh) mit der für dasselbe Stundenfenster aus den archivierten, der PV-Fläche zugeordneten PV-String-Variablen integrierten Ist-Energie. Separate Kalibrier-Istvariablen werden nicht mehr benötigt. Der PV-Auto-Faktor ist ein rollierender saisonaler Faktor; Stundenfaktoren werden nicht mehr angewendet.
+
+
+## Änderung v1.9.84
+
+Die PV-Kalibrierung archiviert je PV-Fläche die tatsächlich verwendete kombinierte Stundenprognose als kWh. Nur Stunden mit vorhandenem Prognosewert werden gegen das exakt gleiche Ist-Zeitfenster der zugeordneten PV-Strings verglichen. Fehlerhafte v1.9.83-Prognosearchive werden beim Update einmalig bereinigt.
