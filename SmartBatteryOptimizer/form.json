@@ -192,6 +192,10 @@
                     "caption": "Vorzeichen invertieren (aktivieren, wenn Einspeisung als negativer Netzbezug geliefert wird)"
                 },
                 {
+                    "type": "Label",
+                    "caption": "Kalibrierdaten bereinigen: Über den Button unten Datum sowie Von-/Bis-Zeit auswählen. Nach dem Löschen werden Gesamt- und Stundenfaktoren sofort aus den verbleibenden Daten neu berechnet."
+                },
+                {
                     "type": "List",
                     "name": "PVSurfaces",
                     "caption": "PV-Flächen",
@@ -663,15 +667,6 @@
                 },
                 {
                     "type": "NumberSpinner",
-                    "name": "MinimumFeedInPriceCt",
-                    "caption": "Mindest-Einspeisepreis",
-                    "digits": 2,
-                    "minimum": -100,
-                    "maximum": 500,
-                    "suffix": " ct/kWh"
-                },
-                {
-                    "type": "NumberSpinner",
                     "name": "MinimumTomorrowPVKWh",
                     "caption": "Min. PV-Prognose morgen für normale Freigabe",
                     "digits": 1,
@@ -759,11 +754,20 @@
                 {
                     "type": "NumberSpinner",
                     "name": "PVSpaceMinimumPriceCt",
-                    "caption": "Preisuntergrenze für notwendige Speicherfreihaltung (Startwert)",
+                    "caption": "Mindestpreis Einspeisung (Startwert)",
                     "digits": 2,
                     "minimum": -100,
-                    "maximum": 100,
+                    "maximum": 500,
                     "suffix": " ct/kWh"
+                },
+                {
+                    "type": "SelectVariable",
+                    "name": "FeedInFactorVariable",
+                    "caption": "Variable Einspeisefaktor (%)"
+                },
+                {
+                    "type": "Label",
+                    "caption": "Wird der Mindestpreis Einspeisung unterschritten, wird diese Variable auf 0 % gesetzt. Der zuvor eingestellte Wert (z. B. 43 %) wird gespeichert und nach Ende der Preissperre automatisch wiederhergestellt. Die Preisgrenze gilt für jede Netzeinspeisung – auch für PV-Abregelungsschutz/Speicherfreihaltung."
                 }
             ]
         },
@@ -836,6 +840,49 @@
             "type": "Button",
             "caption": "PV-Kalibrierung / Auto-Faktoren zurücksetzen",
             "onClick": "SBO_ResetPVCalibration($id);"
+        },
+        {
+            "type": "PopupButton",
+            "name": "PVCalibrationCleanupPopup",
+            "caption": "PV-Kalibrierdaten löschen ...",
+            "popup": {
+                "caption": "PV-Kalibrierdaten Zeitraum löschen",
+                "closeCaption": "Abbrechen",
+                "items": [
+                    {
+                        "type": "Label",
+                        "caption": "Datum und Zeitraum auswählen. Es werden nur PV-Kalibrierintervalle entfernt, die diesen Zeitraum überlappen."
+                    },
+                    {
+                        "type": "SelectDate",
+                        "name": "CleanupDialogDate",
+                        "caption": "Datum"
+                    },
+                    {
+                        "type": "RowLayout",
+                        "items": [
+                            {
+                                "type": "SelectTime",
+                                "name": "CleanupDialogFrom",
+                                "caption": "Von",
+                                "width": "50%"
+                            },
+                            {
+                                "type": "SelectTime",
+                                "name": "CleanupDialogTo",
+                                "caption": "Bis",
+                                "width": "50%"
+                            }
+                        ]
+                    }
+                ],
+                "buttons": [
+                    {
+                        "caption": "Löschen",
+                        "onClick": "$msg = SBO_CleanupPVCalibrationPeriodSelection($id, json_encode($CleanupDialogDate), json_encode($CleanupDialogFrom), json_encode($CleanupDialogTo)); if (strpos($msg, 'FEHLER:') === 0) { echo substr($msg, 7); } else { echo 'MESSAGE:' . $msg; }"
+                    }
+                ]
+            }
         },
         {
             "type": "Button",

@@ -11,7 +11,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.2.4**
+**1.9.81 / Build 152**
 
 ## Neu in 1.2.3
 
@@ -25,7 +25,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 - HTML-Ausgabe in drei eigene IP-Symcon-HTMLBox-Variablen aufgeteilt: `Übersicht`, `Börsenpreis Diagramm` und `Einspeiseplan`.
 - Das Highcharts-Diagramm liegt damit vollständig in der eigenen Variable `Börsenpreis Diagramm`.
-- Sämtliche Highcharts-Beschriftungen werden in weißer Schrift und Tahoma dargestellt.
+- Sämtliche Highcharts-Beschriftungen werden in weißer Schrift dargestellt. Bevorzugt wird Tahoma; auf Geräten ohne Tahoma greift ein plattformgerechter Font-Fallback.
 - Über jedem Preisbalken wird der effektive Einspeisepreis direkt in ct angezeigt.
 - Fallback-Balkengrafik ohne Highcharts: Wenn `highcharts.js` fehlt oder nicht lesbar ist, bleibt die Anzeige funktionsfähig und zeigt die Einspeisevergütung als reine HTML/CSS-Balkengrafik.
 - Einspeisevergütung als Highcharts-Balkendiagramm in einer eigenen HTMLBox.
@@ -87,7 +87,7 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 - Pro Stunde wird der Mittelwert aus den verfügbaren echten 15-Minuten-EPEX-Werten berechnet.
 - Der Stundenpreis steht wieder direkt über jedem Balken.
 - Keine überlagerte Liniengrafik.
-- Tahoma und weiße Beschriftungen bleiben bestehen.
+- Weiße Beschriftungen und der plattformübergreifende Font-Fallback bleiben bestehen.
 - Planung und AlphaESS-Dispatch arbeiten weiterhin mit den echten 15-Minuten-Werten.
 
 
@@ -278,7 +278,7 @@ Die Instanzkonfiguration liefert beim ersten Anlegen der Variablen nur die Start
 Die editierbaren Laufzeitvariablen verwenden nun eigene, typkorrekte IP-Symcon-Profile. Leistungswerte sind Integer mit Einheit W, Prozentwerte und Preise sind Float-Profile. Dadurch wird die WebFront-/Tile-Fehlermeldung `Invalid profile type` vermieden.
 
 ### Preislogik für notwendige Speicherfreihaltung 1.7.3
-Die normale Einspeisung nutzt weiterhin den normalen Mindest-Einspeisepreis. Reicht die dadurch geschaffene Speicherkapazität für den PV-/Netzlimit-Schutz nicht aus, wählt der Optimierer zusätzlich die bestbezahlten noch freien Zeitfenster vor dem kritischen PV-Zeitpunkt. Die separate Preisuntergrenze für notwendige Speicherfreihaltung ist dabei eine harte Untergrenze. Standard ist nun 0 ct/kWh; negative Preise werden damit nicht verwendet, sofern der Benutzer die Grenze nicht bewusst negativ einstellt.
+Ab Version 1.9.76 gibt es nur noch eine zentrale Laufzeit-Preisgrenze **Mindestpreis Einspeisung**. Sie gilt für jede Netzeinspeisung: Preis-Einspeiseautomatik, PV-Speicherfreihaltung und PV-Abregelungsschutz. Preisperioden unterhalb dieser Grenze werden bereits bei der Planung ausgeschlossen. Während einer solchen Periode werden Batterie-Einspeisebefehle gesperrt. Ist eine **Variable Einspeisefaktor (%)** konfiguriert, speichert das Modul den aktuellen Wert (z. B. 43 %), setzt ihn während der Preissperre auf 0 % und stellt ihn anschließend automatisch wieder her.
 
 ### Entladetest und Steuerdiagnose 1.7.4
 Für die Diagnose der Batterieansteuerung gibt es zwei neue bedienbare Frontend-Variablen: `Test Entladeleistung` und `Test Entladung / Einspeisung`. Der Test umgeht bewusst Einspeiseplan, Preisprüfung und Lernfreigabe, respektiert aber Mindest-SoC und maximale Entladeleistung. Er läuft maximal 120 Sekunden und wird anschließend automatisch beendet.
@@ -437,3 +437,32 @@ Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig sc
 Bei der Preis-Einspeisung wird die theoretische Batterie-/Wechselrichterleistung nicht mehr 1:1 als mögliche Netzeinspeisung angesetzt. Für den jeweiligen Zeitpunkt wird das gelernte stündliche Lastprofil abgezogen. Zusätzlich werden die konfigurierte maximale Entladeleistung und die effektive Netzeinspeisegrenze berücksichtigt.
 
 Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und dem Lastprofil eine neue Restlaufzeit berechnet. Die AlphaESS Dispatch Time wird auf diese Restlaufzeit zuzüglich 30 % Sicherheitsreserve gesetzt.
+
+### PV-Kalibrierung bei Einspeisefaktor 0 % – 1.9.77
+Sobald die konfigurierte **Variable Einspeisefaktor (%)** auf `0 %` steht, wird die PV-Autokalibrierung pausiert. Das gilt sowohl fuer die automatische Preissperre durch **Mindestpreis Einspeisung** als auch fuer eine manuell auf 0 % gesetzte Einspeisefreigabe. Der Sperrzeitraum wird protokolliert; ab Sperrbeginn werden keine PV-Lernintervalle verwendet. Beim Wiederfreigeben beginnt die Integration mit einem neuen Messpunkt, damit kein Intervall ueber die Sperrgrenze hinweg entsteht.
+
+Ab **1.9.78** erfolgt die gezielte Bereinigung ueber **PV-Kalibrierdaten loeschen ...**. Beim Klick oeffnet sich ein Dialog mit Datum sowie Von-/Bis-Zeit. Erst der Button **Loeschen** im Dialog entfernt die ueberlappenden PV-Kalibrierintervalle. Anschliessend werden Gesamt- und Stundenfaktoren sofort aus den verbleibenden Daten neu berechnet. Die bisherigen festen Bereinigungsfelder in der Konfiguration entfallen.
+
+
+### PV-Kalibrierbereinigung per Dialog – 1.9.78
+Der Wartungsbutton **PV-Kalibrierdaten loeschen ...** oeffnet jetzt einen Auswahl-Dialog. Datum sowie Von- und Bis-Zeit werden direkt beim Loeschvorgang gewaehlt; Datum ist beim Oeffnen auf heute, Von auf 00:00 und Bis auf die aktuelle Uhrzeit vorbelegt. Feste Konfigurationsfelder fuer den Loeschzeitraum sind nicht mehr sichtbar.
+
+
+### 1.9.79 – Zeitreihen im IP-Symcon Archiv
+PV-Kalibrierung und Einspeise-Statistik verwenden ab 1.9.79 das **IP-Symcon Archive Control** als primären Langzeitspeicher. Für jede PV-Fläche legt das Modul versteckte archivierte Variablen für **Prognoseleistung** und **Istleistung** an. Gesperrte Kalibrierzeiten (Abregelung oder Einspeisefaktor 0 %) werden mit 0 W geführt und beeinflussen dadurch den Energievergleich nicht. Stunden-, Tages- und Saisonwerte können aus dem Archiv neu aufgebaut werden.
+
+Beim ersten Start von 1.9.79 werden die vorhandenen Kalibrierdaten automatisch übernommen. Aktuelle Energieintervalle werden zeitlich übertragen; bereits saisonal verdichtete Altwerte werden unter Erhalt von Gesamtenergie, Ist/Prognose-Verhältnis, Stundenbezug und Lerntagen in die Archivstruktur migriert. Die alten JSON-Werte bleiben als Sicherheitskopie bestehen.
+
+Auch die Preis-Einspeiseautomatik schreibt abgeschlossene Einspeisefenster in eigene archivierte Variablen (kWh, Erlös, Planmenge und Fensterzähler). Das Monats-Highcharts liest diese Historie anschließend aus dem Archiv. Die Statusvariable **Archiv-Datenspeicher** zeigt den Migrations-/Archivstatus.
+
+Die Funktion **PV-Kalibrierdaten löschen ...** löscht den ausgewählten Zeitraum jetzt direkt aus den archivierten PV-Zeitreihen und reaggregiert die betroffenen Variablen. **PV-Kalibrierung zurücksetzen** leert die PV-Lernarchive vollständig; die Einspeise-Statistik wird dabei nicht gelöscht.
+
+
+### 1.9.80 – Open-Meteo Zeitbasis und Apple-Schriftfallback
+Open-Meteo liefert `global_tilted_irradiance` als Mittelwert der **vorhergehenden Stunde**. SmartBatteryOptimizer ordnet den Wert deshalb ab 1.9.80 bereits beim Einlesen dem Stundenintervall zu, das eine Stunde vor dem API-Zeitstempel beginnt. Diese Zeitbasis gilt einheitlich für Anbieterlinie, kombinierte Prognose, Quellengewichtung und PV-Kalibrierung. Bestehende Archiv-Kalibrierdaten werden automatisch übernommen und die Prognose-Zeitreihe einmalig auf die korrigierte Stundenlage gebracht; Istwerte bleiben unverändert.
+
+Für HTMLBoxen und Highcharts wird nun `Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif` verwendet. Auf Windows bleibt Tahoma die erste Wahl; iPhone und iPad verwenden automatisch eine verfügbare Apple-Systemschrift.
+
+
+### 1.9.81 – Verbindliche Einspeiseplanung und SoC-Abgleich
+Ein einmal veröffentlichter zukünftiger Einspeiseplan bleibt jetzt bis zur Ausführung verbindlich und wird durch normale Prognose-/Plan-Neuberechnungen nicht mehr entfernt oder verschoben. Beim Planen wird für jedes Einspeisefenster der erwartete Batterie-SoC am Start gespeichert. Liegt der reale SoC beim Start höchstens 5 Prozentpunkte darunter, wird die geplante Energiemenge unverändert ausgeführt. Erst bei einer Abweichung von mehr als 5 Prozentpunkten nach unten wird die Einspeisemenge entsprechend der fehlenden Batterieenergie reduziert. Ein höherer SoC vergrößert die geplante Einspeisemenge nicht. Mindest-SoC, Mindestpreis-Sperre und technische Schutzfunktionen bleiben vorrangig.
