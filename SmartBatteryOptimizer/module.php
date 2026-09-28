@@ -1089,12 +1089,14 @@ class SmartBatteryOptimizer extends IPSModule
             $surfaceCalibration[$name]['sumActualKWh'] = (float)($diag['sumActualKWh'] ?? 0.0);
             $surfaceCalibration[$name]['learnedRatio'] = $diag['ratio'] ?? null;
             $surfaceCalibration[$name]['sampleCount'] = (int)($diag['sampleCount'] ?? 0);
+            $surfaceCalibration[$name]['factorReady'] = !empty($diag['factorReady']);
+            $surfaceCalibration[$name]['learningDayCount'] = (int)($diag['learningDayCount'] ?? 0);
             $surfaceCalibration[$name]['firstSampleTs'] = (int)($diag['firstSampleTs'] ?? 0);
             $surfaceCalibration[$name]['lastSampleTs'] = (int)($diag['lastSampleTs'] ?? 0);
             $surfaceCalibration[$name]['calibrationBlocked'] = (bool)$gate['blocked'];
             $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
-            $surfaceCalibration[$name]['seasonalFactor'] = $this->GetSeasonalPVFactor($calibration, $key, time(), (int)date('G'));
-            $surfaceCalibration[$name]['seasonStats'] = $this->GetPVSeasonStats($calibration, $key, time());
+            $surfaceCalibration[$name]['seasonalFactor'] = !empty($diag['factorReady']) ? (float)($calibration[$key]['factor'] ?? 1.0) : 1.0;
+            $surfaceCalibration[$name]['seasonStats'] = ['season'=>$this->PVSeasonForTimestamp(time()), 'label'=>$this->GetPVSeasonLabel($this->PVSeasonForTimestamp(time())), 'factor'=>(!empty($diag['factorReady']) ? (float)($calibration[$key]['factor'] ?? 1.0) : 1.0), 'expectedKWh'=>(float)($diag['sumExpectedKWh'] ?? 0.0), 'actualKWh'=>(float)($diag['sumActualKWh'] ?? 0.0), 'days'=>(int)($diag['learningDayCount'] ?? 0)];
             $surfaceCalibration[$name]['compactionAudit'] = isset($calibration[$key]['lastCompactionAudit']) && is_array($calibration[$key]['lastCompactionAudit']) ? $calibration[$key]['lastCompactionAudit'] : [];
             $surfaceCalibration[$name]['storageMode'] = (string)($calibration[$key]['storageMode'] ?? 'raw');
         }
@@ -2151,33 +2153,11 @@ class SmartBatteryOptimizer extends IPSModule
             ? ($plantCorrectedKWh / $plantExpectedKWh)
             : 1.0;
 
-        // Die Tagesprognose wird nicht mehr mit einem einzigen Faktor korrigiert.
-        // Für jede Stunde wird je PV-Fläche der gelernte Stundenfaktor bestimmt.
-        // Die Flächen werden mit ihrer für diese Stunde historisch verglichenen
-        // Prognoseenergie gewichtet. Dadurch wirken unterschiedliche Dachausrichtungen
-        // morgens/mittags/abends unterschiedlich auf die Anlagenkorrektur.
+        // v1.9.82: Die PV-Autokorrektur arbeitet wieder ausschließlich mit einem
+        // generellen Faktor je PV-Fläche. Stundenfaktoren werden nicht mehr verwendet.
+        // Der Anlagenfaktor ist das energiegewichtete Mittel der freigegebenen Flächen.
         $plantHourlyFactors = [];
         $surfaceHourlyFactors = [];
-        for ($hour = 0; $hour < 24; $hour++) {
-            $weightedFactor = 0.0; $weight = 0.0; $fallbackFactors = [];
-            foreach ($surfaces as $idx => $surface) {
-                if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
-                $nameH = trim((string)($surface['Name'] ?? 'PV'));
-                if ($nameH === '') $nameH = 'PV ' . ($idx + 1);
-                $keyH = $this->SurfaceKey($nameH, $idx);
-                $diagH = $this->GetPVCalibrationDiagnostics($calibration, $keyH);
-                if (empty($diagH['factorReady'])) continue;
-                $overallH = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), (float)($diagH['ratio'] ?? 1.0)));
-                $factorH = $this->GetPVForecastHourFactor($calibration, $keyH, $hour, $overallH, true);
-                $hourWeight = $this->GetPVForecastHourWeight($calibration, $keyH, $hour);
-                $surfaceHourlyFactors[$nameH][(string)$hour] = $factorH;
-                $fallbackFactors[] = $factorH;
-                if ($hourWeight > 0.0) { $weightedFactor += $factorH * $hourWeight; $weight += $hourWeight; }
-            }
-            if ($weight > 0.0) $plantHourlyFactors[(string)$hour] = $weightedFactor / $weight;
-            elseif (count($fallbackFactors) > 0) $plantHourlyFactors[(string)$hour] = array_sum($fallbackFactors) / count($fallbackFactors);
-            else $plantHourlyFactors[(string)$hour] = 1.0;
-        }
 
         $allTs = [];
         foreach ($availableSources as $source) foreach ($sourceHours[$source] as $ts => $_) $allTs[(int)$ts] = true;
@@ -2194,8 +2174,8 @@ class SmartBatteryOptimizer extends IPSModule
             }
             if ($weightSum <= 0.0) continue;
             $rawCombinedKW = $weighted / $weightSum;
-            $hourAutoFactor = (float)($plantHourlyFactors[(string)((int)date('G', (int)$ts))] ?? $plantAutoFactor);
-            $hours[$ts] = ['totalKW' => max(0.0, $rawCombinedKW * $hourAutoFactor), 'totalKWBeforeAuto' => $rawCombinedKW, 'autoFactor' => $hourAutoFactor, 'surfaces' => [], 'sources' => $sourceValues];
+            $hourAutoFactor = $plantAutoFactor;
+            $hours[$ts] = ['totalKW' => max(0.0, $rawCombinedKW * $plantAutoFactor), 'totalKWBeforeAuto' => $rawCombinedKW, 'autoFactor' => $plantAutoFactor, 'surfaces' => [], 'sources' => $sourceValues];
             $day = date('Y-m-d', (int)$ts);
             if ($day === date('Y-m-d')) $todayBeforeAuto += $rawCombinedKW;
             if ($day === date('Y-m-d', strtotime('tomorrow'))) $tomorrowBeforeAuto += $rawCombinedKW;
@@ -2948,62 +2928,51 @@ class SmartBatteryOptimizer extends IPSModule
     {
         if (!isset($calibration[$key]) || !is_array($calibration[$key])) return $calibration;
         $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
-        $now = time();
-        $factorCutoff = $now - max(1, $this->ReadPropertyInteger('PVCalibrationDays')) * 86400;
-        $sumExpected = 0.0; $sumActual = 0.0; $count = 0;
-        foreach ($samples as $sample) {
-            if ((int)($sample['ts'] ?? 0) < $factorCutoff) continue;
-            $exp=(float)($sample['expectedKWh'] ?? 0); $act=(float)($sample['actualKWh'] ?? 0);
-            if ($exp <= 0 || $act < 0) continue;
-            $sumExpected += $exp; $sumActual += $act; $count++;
-        }
-        $min=$this->ReadPropertyFloat('PVCalibrationMinFactor'); $max=$this->ReadPropertyFloat('PVCalibrationMaxFactor');
-        $learningDays = [];
+        $requiredDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
+
+        // Rollierendes Fenster: die neuesten N gültigen Lerntage verwenden.
+        // Vor dem erstmaligen Erreichen von N Tagen bleibt der Faktor exakt 1,000.
+        $byDay = [];
         foreach ($samples as $sample) {
             $ts = (int)($sample['ts'] ?? 0);
             $exp = (float)($sample['expectedKWh'] ?? 0.0);
-            if ($ts < $factorCutoff || $exp <= 0.0) continue;
-            $learningDays[date('Y-m-d', $ts)] = true;
+            $act = (float)($sample['actualKWh'] ?? 0.0);
+            if ($ts <= 0 || $exp <= 0.0 || $act < 0.0) continue;
+            $day = date('Y-m-d', $ts);
+            if (!isset($byDay[$day])) $byDay[$day] = ['expected'=>0.0,'actual'=>0.0,'samples'=>0,'firstTs'=>$ts,'lastTs'=>(int)($sample['endTs'] ?? $ts)];
+            $byDay[$day]['expected'] += $exp;
+            $byDay[$day]['actual'] += $act;
+            $byDay[$day]['samples']++;
+            $byDay[$day]['firstTs'] = min($byDay[$day]['firstTs'], $ts);
+            $byDay[$day]['lastTs'] = max($byDay[$day]['lastTs'], (int)($sample['endTs'] ?? $ts));
         }
-        $minimumLearningDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
-        $factorReady = count($learningDays) >= $minimumLearningDays && $sumExpected > 0.0;
-        // Bis genügend Lerntage vorliegen, darf kein Min-/Max-begrenzter Zwischenfaktor
-        // (z.B. 0,750 oder 1,250) in die Prognose eingehen.
-        $calibration[$key]['factor'] = $factorReady ? max($min,min($max,$sumActual/$sumExpected)) : 1.0;
+        ksort($byDay);
+        $days = array_keys($byDay);
+        $ready = count($days) >= $requiredDays;
+        $selectedDays = $ready ? array_slice($days, -$requiredDays) : $days;
+        $sumExpected = 0.0; $sumActual = 0.0; $count = 0; $firstTs = 0; $lastTs = 0;
+        foreach ($selectedDays as $day) {
+            $d = $byDay[$day];
+            $sumExpected += $d['expected']; $sumActual += $d['actual']; $count += $d['samples'];
+            if ($firstTs === 0 || $d['firstTs'] < $firstTs) $firstTs = $d['firstTs'];
+            if ($d['lastTs'] > $lastTs) $lastTs = $d['lastTs'];
+        }
+        $min = $this->ReadPropertyFloat('PVCalibrationMinFactor');
+        $max = $this->ReadPropertyFloat('PVCalibrationMaxFactor');
+        $factorReady = $ready && $sumExpected > 0.0;
+        $raw = $factorReady ? ($sumActual / $sumExpected) : 1.0;
+        $calibration[$key]['factor'] = $factorReady ? max($min, min($max, $raw)) : 1.0;
         $calibration[$key]['factorReady'] = $factorReady;
-        $calibration[$key]['learningDayCount'] = count($learningDays);
-        $calibration[$key]['factorSampleCount']=$count;
-        $hourly=[];
-        for($hour=0;$hour<24;$hour++) {
-            $he=0.0;$ha=0.0;$hc=0;$hourLearningDays=[];
-            foreach($samples as $sample) {
-                $sampleTs=(int)($sample['ts'] ?? 0);
-                if ($sampleTs < $factorCutoff) continue;
-                $sh=isset($sample['hour'])?(int)$sample['hour']:(int)date('G',$sampleTs);
-                if($sh!==$hour) continue;
-                $exp=(float)($sample['expectedKWh'] ?? 0.0);
-                $act=(float)($sample['actualKWh'] ?? 0.0);
-                if ($exp <= 0.0 || $act < 0.0) continue;
-                $he+=$exp; $ha+=$act; $hc++;
-                $hourLearningDays[date('Y-m-d',$sampleTs)]=true;
-            }
-            // Ein Stundenfaktor gilt erst dann als bekannt, wenn fuer GENAU diese
-            // Stunde der konfigurierte Lernzeitraum erreicht ist. Vorher existiert
-            // absichtlich kein hourlyFactors-Eintrag; GetPVForecastHourFactor()
-            // liefert dann 1,000, ohne Min-/Max-Clamping.
-            $hourReady=(count($hourLearningDays) >= $minimumLearningDays && $he > 0.0);
-            if($hourReady) {
-                $hourly[(string)$hour]=[
-                    'factor'=>max($min,min($max,$ha/$he)),
-                    'samples'=>$hc,
-                    'learningDays'=>count($hourLearningDays),
-                    'expectedKWh'=>$he,
-                    'actualKWh'=>$ha
-                ];
-            }
-        }
-        $calibration[$key]['hourlyFactors']=$hourly;
-        $calibration[$key]['updated']=$now;
+        $calibration[$key]['learningDayCount'] = count($days);
+        $calibration[$key]['selectedLearningDays'] = $selectedDays;
+        $calibration[$key]['factorSampleCount'] = $count;
+        $calibration[$key]['factorExpectedKWh'] = $sumExpected;
+        $calibration[$key]['factorActualKWh'] = $sumActual;
+        $calibration[$key]['factorRawRatio'] = $factorReady ? $raw : null;
+        $calibration[$key]['factorFirstTs'] = $firstTs;
+        $calibration[$key]['factorLastTs'] = $lastTs;
+        $calibration[$key]['hourlyFactors'] = [];
+        $calibration[$key]['updated'] = time();
         return $calibration;
     }
 
@@ -3153,82 +3122,18 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function GetPVCalibrationDiagnostics(array $calibration, string $key): array
     {
-        $calibration = $this->CompactPVCalibrationData($calibration, $key);
-        $samples = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? $calibration[$key]['energySamples'] : [];
-        $factorDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
-        $cutoff = time() - $factorDays * 86400;
-        $sumExpected = 0.0;
-        $sumActual = 0.0;
-        $count = 0;
-        $firstTs = 0;
-        $lastTs = 0;
-        foreach ($samples as $sample) {
-            $ts = (int)($sample['ts'] ?? 0);
-            $exp = (float)($sample['expectedKWh'] ?? 0.0);
-            $act = (float)($sample['actualKWh'] ?? 0.0);
-            if ($ts < $cutoff || $exp <= 0.0 || $act < 0.0) continue;
-            $sumExpected += $exp;
-            $sumActual += $act;
-            $count++;
-            if ($firstTs === 0 || $ts < $firstTs) $firstTs = $ts;
-            $endTs = (int)($sample['endTs'] ?? $ts);
-            if ($endTs > $lastTs) $lastTs = $endTs;
-        }
-        $validDays = [];
-        foreach ($samples as $sample) {
-            $ts = (int)($sample['ts'] ?? 0);
-            $exp = (float)($sample['expectedKWh'] ?? 0.0);
-            $act = (float)($sample['actualKWh'] ?? 0.0);
-            if ($ts < $cutoff || $exp <= 0.0 || $act < 0.0) continue;
-            $validDays[date('Y-m-d', $ts)] = true;
-        }
-        $archive = isset($calibration[$key]['seasonalArchive']) && is_array($calibration[$key]['seasonalArchive']) ? $calibration[$key]['seasonalArchive'] : [];
-        foreach ($archive as $seasonEntries) {
-            if (!is_array($seasonEntries)) continue;
-            foreach ($seasonEntries as $entry) {
-                if (!is_array($entry) || !isset($entry['days']) || !is_array($entry['days'])) continue;
-                foreach ($entry['days'] as $day => $_) $validDays[(string)$day] = true;
-            }
-        }
-        $requiredDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
-
-        // Verdichtete ältere Daten dürfen bei der Faktorberechnung nicht verloren gehen.
-        // energySamples enthält nur den kompakten aktuellen Zeitraum; ältere Stundenblöcke
-        // liegen im saisonalen Archiv. Für den Auto-Faktor werden beide Energiemengen
-        // energiegewichtet zusammengeführt. Dadurch ändert eine Verdichtung das Verhältnis
-        // Ist/Prognose nicht künstlich nur deshalb, weil Rohpunkte ins Archiv gewandert sind.
-        $currentSeason = $this->PVSeasonForTimestamp(time());
-        $archiveExpected = 0.0;
-        $archiveActual = 0.0;
-        $archiveIntervals = 0;
-        if (isset($archive[$currentSeason]) && is_array($archive[$currentSeason])) {
-            foreach ($archive[$currentSeason] as $entry) {
-                if (!is_array($entry)) continue;
-                $exp = (float)($entry['expectedKWh'] ?? 0.0);
-                $act = (float)($entry['actualKWh'] ?? 0.0);
-                if ($exp <= 0.0 || $act < 0.0) continue;
-                $archiveExpected += $exp;
-                $archiveActual += $act;
-                $archiveIntervals += max(1, (int)($entry['intervals'] ?? 1));
-            }
-        }
-        $factorExpected = $sumExpected + $archiveExpected;
-        $factorActual = $sumActual + $archiveActual;
-        $factorReady = count($validDays) >= $requiredDays && $factorExpected > 0.0;
+        if (!isset($calibration[$key]) || !is_array($calibration[$key])) return ['factorReady'=>false,'learningDayCount'=>0,'sampleCount'=>0,'sumExpectedKWh'=>0.0,'sumActualKWh'=>0.0,'ratio'=>null,'firstSampleTs'=>0,'lastSampleTs'=>0];
+        $entry = $calibration[$key];
         return [
-            'sampleCount' => $count,
-            'sumExpectedKWh' => $factorExpected,
-            'sumActualKWh' => $factorActual,
-            'recentExpectedKWh' => $sumExpected,
-            'recentActualKWh' => $sumActual,
-            'archiveExpectedKWh' => $archiveExpected,
-            'archiveActualKWh' => $archiveActual,
-            'archiveIntervalCount' => $archiveIntervals,
-            'ratio' => $factorReady ? $factorActual / $factorExpected : null,
-            'factorReady' => $factorReady,
-            'learningDayCount' => count($validDays),
-            'firstSampleTs' => $firstTs,
-            'lastSampleTs' => $lastTs
+            'sampleCount' => (int)($entry['factorSampleCount'] ?? 0),
+            'sumExpectedKWh' => (float)($entry['factorExpectedKWh'] ?? 0.0),
+            'sumActualKWh' => (float)($entry['factorActualKWh'] ?? 0.0),
+            'ratio' => $entry['factorRawRatio'] ?? null,
+            'learnedRatio' => $entry['factorRawRatio'] ?? null,
+            'factorReady' => !empty($entry['factorReady']),
+            'learningDayCount' => (int)($entry['learningDayCount'] ?? 0),
+            'firstSampleTs' => (int)($entry['factorFirstTs'] ?? 0),
+            'lastSampleTs' => (int)($entry['factorLastTs'] ?? 0)
         ];
     }
 
@@ -5311,7 +5216,6 @@ class SmartBatteryOptimizer extends IPSModule
                 if ($expKWh <= 0.0) continue;
                 $sample = ['ts'=>(int)$ts,'endTs'=>(int)$ts+$duration,'expectedKWh'=>$expKWh,'actualKWh'=>$actKWh,'hour'=>(int)date('G',(int)$ts),'intervals'=>1];
                 if ((int)$ts >= $recentCutoff) $entry['energySamples'][] = $sample;
-                else $entry['seasonalArchive'] = $this->MergePVSeasonArchive($entry['seasonalArchive'], $sample);
             }
             // Integrationspunkt nur fuer die laufende Abtastung im JSON-Cache behalten.
             if (isset($legacyCalibration[$key]['lastPointTs'])) {
@@ -6172,7 +6076,7 @@ class SmartBatteryOptimizer extends IPSModule
         $cal = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
         $days = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
         $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;color:#fff">';
-        $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = tatsächlich erzeugte Energie / prognostizierte Energie vor Auto-Faktor. Beide Werte werden über identische Zeitintervalle in kWh integriert und über die letzten ' . $days . ' Tage summiert.</span><br>';
+        $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = tatsächlich erzeugte Energie / prognostizierte Energie vor Auto-Faktor. Bis ' . $days . ' gültige Lerntage erreicht sind, bleibt der Faktor 1,000. Danach werden immer die neuesten ' . $days . ' gültigen Tage rollierend verwendet.</span><br>';
         $gate = $this->GetPVCalibrationFeedInGate();
         if ($this->ReadPropertyBoolean('DebugMode')) {
             $html .= '<div style="margin:8px 0;padding:6px;border:1px solid #666"><b>PV-Abregelung / Kalibriersperre</b><br>';
@@ -6202,9 +6106,6 @@ class SmartBatteryOptimizer extends IPSModule
             . ' | Prognose nach Auto: <b>' . number_format($afterAuto, 2, ',', '.') . ' kWh</b></div>';
         $html .= '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#fff">';
         $html .= '<tr><th style="text-align:left;border-bottom:1px solid #888;padding:4px">PV-Fläche</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Prognose<br>vor Auto</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist-Erzeugung</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Ist / Prognose</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Auto-Faktor</th><th style="text-align:right;border-bottom:1px solid #888;padding:4px">Intervalle</th><th style="text-align:left;border-bottom:1px solid #888;padding:4px">Lernzeitraum</th></tr>';
-        $surfaceHourFactors = is_array($forecast['surfaceHourlyFactors'] ?? null) ? $forecast['surfaceHourlyFactors'] : [];
-        $currentHour = (int)date('G');
-        $nextHour = ($currentHour + 1) % 24;
         foreach ($cal as $name => $c) {
             $sumE = (float)($c['sumExpectedKWh'] ?? 0.0);
             $sumA = (float)($c['sumActualKWh'] ?? 0.0);
@@ -6217,19 +6118,7 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . htmlspecialchars((string)$name) . '</b>' . $status . '</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumE, 2, ',', '.') . ' kWh</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumA, 2, ',', '.') . ' kWh</td>';
-            // Ohne gültige Kalibrierungsdaten ist der Stundenfaktor definitionsgemäß 1,000.
-            // Damit können alte Forecast-Cache-Werte nach einem Reset niemals 0,750 o.ä. anzeigen.
-            $hasCalibrationData = !empty($c['factorReady']) && (int)($c['sampleCount'] ?? 0) > 0;
-            if ($hasCalibrationData) {
-                $currentFactor = isset($surfaceHourFactors[(string)$name][(string)$currentHour]) ? (float)$surfaceHourFactors[(string)$name][(string)$currentHour] : 1.0;
-                $nextFactor = isset($surfaceHourFactors[(string)$name][(string)$nextHour]) ? (float)$surfaceHourFactors[(string)$name][(string)$nextHour] : 1.0;
-            } else {
-                $currentFactor = 1.0;
-                $nextFactor = 1.0;
-            }
-            $hourInfo = '<br><span style="opacity:.75;white-space:nowrap">Aktuell ' . sprintf('%02d:00', $currentHour) . ': ' . ($currentFactor === null ? '-' : number_format($currentFactor, 3, ',', '.'))
-                . ' | Nächste ' . sprintf('%02d:00', $nextHour) . ': ' . ($nextFactor === null ? '-' : number_format($nextFactor, 3, ',', '.')) . '</span>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '-' : number_format((float)$ratio, 3, ',', '.')) . $hourInfo . '</td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '1,000 (Lernphase)' : number_format((float)$ratio, 3, ',', '.')) . '</td>';
             $seasonInfo = '';
             if (isset($c['seasonStats']) && is_array($c['seasonStats'])) {
                 $ss = $c['seasonStats'];
