@@ -451,7 +451,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.9.80';
+        $currentModuleVersion = '1.9.81';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -512,7 +512,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.9.80',
+            'moduleVersion' => '1.9.81',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1179,7 +1179,12 @@ class SmartBatteryOptimizer extends IPSModule
             $this->DebugLog('Preise', 'Geladene interne Preis-Slots: ' . count($prices));
             $nightForPlan = (float)($forecast['nightConsumptionTomorrowKWh'] ?? $night);
             $this->ForecastDiagnosticStep('11 Einspeiseplan START');
+            $previousPlan = json_decode($this->ReadAttributeString('PlanJSON'), true);
+            if (!is_array($previousPlan)) $previousPlan = [];
             $plan = $this->BuildPlan($forecast, $prices, $nightForPlan, $consumptionProfile);
+            // Bereits veröffentlichte zukünftige Einspeisefenster sind verbindlich.
+            // Eine normale Neuberechnung darf sie nicht mehr entfernen oder verschieben.
+            $plan = $this->PreserveCommittedFeedInPlan($plan, $previousPlan);
             $this->ForecastDiagnosticStep('12 Einspeiseplan ENDE');
             $this->DebugLog('Einspeiseplan', ['SoC'=>$plan['soc'] ?? null,'gespeichertKWh'=>$plan['storedKWh'] ?? null,'ReserveKWh'=>$plan['reserveKWh'] ?? null,'verfuegbarKWh'=>$plan['availableKWh'] ?? null,'PVSpeicherKWh'=>$plan['pvSpaceRequiredKWh'] ?? null,'Slots'=>count($plan['slots'] ?? []),'ErloesEUR'=>$plan['expectedRevenueEUR'] ?? null,'Status'=>$plan['status'] ?? '']);
 
@@ -1604,7 +1609,8 @@ class SmartBatteryOptimizer extends IPSModule
                 if ($plannedSlot !== null) {
                     $key = (string)$plannedSlot['planKey'];
                     if ($activeKey !== $key) {
-                        $this->StartMeasuredFeedInRun($key, (float)$plannedSlot['energyKWh']);
+                        $expectedSOC = isset($plannedSlot['expectedSOCPct']) ? (float)$plannedSlot['expectedSOCPct'] : null;
+                        $this->StartMeasuredFeedInRun($key, (float)$plannedSlot['energyKWh'], $expectedSOC);
                         $activeKey = $key;
                     }
                 }
@@ -1714,8 +1720,35 @@ class SmartBatteryOptimizer extends IPSModule
         }
     }
 
-    private function StartMeasuredFeedInRun(string $key, float $targetKWh): void
+    private function StartMeasuredFeedInRun(string $key, float $targetKWh, ?float $expectedSOCPct = null): void
     {
+        $originalTargetKWh = max(0.0, $targetKWh);
+        $targetKWh = $originalTargetKWh;
+        $socID = $this->ReadPropertyInteger('SOCVariable');
+        $actualSOC = ($socID > 0 && @IPS_VariableExists($socID)) ? max(0.0, min(100.0, (float)GetValue($socID))) : null;
+
+        // Ein geplanter Slot wird grundsätzlich ausgeführt. Nur wenn der reale SoC
+        // beim Start mehr als 5 Prozentpunkte unter dem bei der Planung erwarteten
+        // SoC liegt, wird die Energiemenge reduziert. Die komplette Abweichung wird
+        // berücksichtigt, damit die ursprünglich eingeplante Reserve erhalten bleibt.
+        if ($expectedSOCPct !== null && $actualSOC !== null && $actualSOC < $expectedSOCPct - 5.0) {
+            $capacity = max(0.1, $this->ReadPropertyFloat('BatteryCapacityKWh'));
+            $socDeficitPct = max(0.0, $expectedSOCPct - $actualSOC);
+            $reductionKWh = $capacity * $socDeficitPct / 100.0;
+            $targetKWh = max(0.0, $originalTargetKWh - $reductionKWh);
+            $this->DebugLog('Einspeiseplan',
+                'Startmenge angepasst | erwartet SoC=' . round($expectedSOCPct,1) . ' %'
+                . ' | Ist=' . round($actualSOC,1) . ' %'
+                . ' | Abweichung=-' . round($socDeficitPct,1) . ' %-Punkte'
+                . ' | geplant=' . round($originalTargetKWh,3) . ' kWh'
+                . ' | neu=' . round($targetKWh,3) . ' kWh');
+        } elseif ($expectedSOCPct !== null && $actualSOC !== null) {
+            $this->DebugLog('Einspeiseplan',
+                'Plan wie geplant gestartet | erwartet SoC=' . round($expectedSOCPct,1) . ' %'
+                . ' | Ist=' . round($actualSOC,1) . ' %'
+                . ' | Ziel=' . round($targetKWh,3) . ' kWh');
+        }
+
         $this->WriteAttributeString('ActiveFeedInPlanKey', $key);
         $this->WriteAttributeFloat('ActiveFeedInTargetKWh', max(0.0, $targetKWh));
         $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
@@ -3828,6 +3861,28 @@ class SmartBatteryOptimizer extends IPSModule
         $selected = $packedSelected;
         usort($selected, fn($a, $b) => $a['start'] <=> $b['start']);
 
+        // Erwarteten SoC am Beginn jedes geplanten Fensters festschreiben. Dieser
+        // Referenzwert bleibt mit dem verbindlichen Plan erhalten und wird beim
+        // tatsächlichen Start mit dem realen SoC verglichen.
+        $plannedExportBeforeKWh = 0.0;
+        foreach ($selected as $i => $slot) {
+            $slotStartTs = (int)($slot['start'] ?? $now);
+            if ($slotStartTs >= $nightStartToday) {
+                $expectedEnergyAtStart = $projectedStoredAtNightStart;
+                $fromTs = $nightStartToday;
+            } else {
+                $expectedEnergyAtStart = $stored;
+                $fromTs = $now;
+            }
+            if ($slotStartTs > $fromTs) {
+                $expectedEnergyAtStart -= $this->EstimateConsumptionEnergyBetween($consumptionProfile, $fromTs, $slotStartTs);
+            }
+            $expectedEnergyAtStart -= $plannedExportBeforeKWh;
+            $expectedEnergyAtStart = max($minEnergy, min($capacity, $expectedEnergyAtStart));
+            $selected[$i]['expectedSOCPct'] = max(0.0, min(100.0, ($expectedEnergyAtStart / $capacity) * 100.0));
+            $plannedExportBeforeKWh += max(0.0, (float)($slot['energyKWh'] ?? 0.0));
+        }
+
         $next = '-';
         $nowForNext = time();
         foreach ($selected as $idx => $slot) {
@@ -3935,6 +3990,53 @@ class SmartBatteryOptimizer extends IPSModule
             'status' => $status,
             'slots' => $selected
         ];
+    }
+
+    private function PreserveCommittedFeedInPlan(array $newPlan, array $previousPlan): array
+    {
+        $now = time();
+        $oldSlots = isset($previousPlan['slots']) && is_array($previousPlan['slots']) ? $previousPlan['slots'] : [];
+        if (empty($oldSlots)) return $newPlan;
+
+        $completed = json_decode($this->ReadAttributeString('CompletedFeedInPlanKeysJSON'), true);
+        if (!is_array($completed)) $completed = [];
+        $committed = [];
+        foreach ($oldSlots as $slot) {
+            $key = (string)($slot['planKey'] ?? ((int)($slot['start'] ?? 0) . ':' . (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0))));
+            $intervalEnd = (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0));
+            if ($intervalEnd <= $now || isset($completed[$key])) continue;
+            $slot['planKey'] = $key;
+            $committed[] = $slot;
+        }
+        if (empty($committed)) return $newPlan;
+
+        usort($committed, fn($a, $b) => ((int)$a['start']) <=> ((int)$b['start']));
+        $newPlan['slots'] = $committed;
+        $newPlan['nextWindow'] = date('d.m. H:i', (int)$committed[0]['start']) . '–' . date('H:i', (int)$committed[0]['end']);
+        $newPlan['highestPriceCt'] = max(array_map(static fn($x) => (float)($x['priceCt'] ?? 0.0), $committed));
+        $newPlan['expectedRevenueEUR'] = array_sum(array_map(static fn($x) => (float)($x['energyKWh'] ?? 0.0) * (float)($x['priceCt'] ?? 0.0) / 100.0, $committed));
+        $newPlan['status'] = 'Verbindlicher Einspeiseplan aktiv – geplante Fenster bleiben bis zur Ausführung erhalten';
+        $this->DebugLog('Einspeiseplan', 'Verbindlichen bestehenden Plan beibehalten | offene Slots=' . count($committed));
+        return $newPlan;
+    }
+
+    private function EstimateConsumptionEnergyBetween(array $consumptionProfile, int $fromTs, int $toTs): float
+    {
+        if ($toTs <= $fromTs) return 0.0;
+        $hourly = isset($consumptionProfile['hourlyKWh']) && is_array($consumptionProfile['hourlyKWh'])
+            ? $consumptionProfile['hourlyKWh'] : array_fill(0, 24, 0.0);
+        $energy = 0.0;
+        $cursor = $fromTs;
+        while ($cursor < $toTs) {
+            $hourStart = strtotime(date('Y-m-d H:00:00', $cursor));
+            $hourEnd = $hourStart + 3600;
+            $segmentEnd = min($toTs, $hourEnd);
+            $fraction = max(0, $segmentEnd - $cursor) / 3600.0;
+            $hour = max(0, min(23, (int)date('G', $cursor)));
+            $energy += max(0.0, (float)($hourly[$hour] ?? 0.0)) * $fraction;
+            $cursor = $segmentEnd;
+        }
+        return $energy;
     }
 
     private function GetExpectedLoadPowerW(array $consumptionProfile, int $timestamp): float

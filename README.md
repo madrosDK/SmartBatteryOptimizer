@@ -11,7 +11,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.9.80 / Build 151**
+**1.9.81 / Build 152**
 
 ## Neu in 1.2.3
 
@@ -462,3 +462,7 @@ Die Funktion **PV-Kalibrierdaten löschen ...** löscht den ausgewählten Zeitra
 Open-Meteo liefert `global_tilted_irradiance` als Mittelwert der **vorhergehenden Stunde**. SmartBatteryOptimizer ordnet den Wert deshalb ab 1.9.80 bereits beim Einlesen dem Stundenintervall zu, das eine Stunde vor dem API-Zeitstempel beginnt. Diese Zeitbasis gilt einheitlich für Anbieterlinie, kombinierte Prognose, Quellengewichtung und PV-Kalibrierung. Bestehende Archiv-Kalibrierdaten werden automatisch übernommen und die Prognose-Zeitreihe einmalig auf die korrigierte Stundenlage gebracht; Istwerte bleiben unverändert.
 
 Für HTMLBoxen und Highcharts wird nun `Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif` verwendet. Auf Windows bleibt Tahoma die erste Wahl; iPhone und iPad verwenden automatisch eine verfügbare Apple-Systemschrift.
+
+
+### 1.9.81 – Verbindliche Einspeiseplanung und SoC-Abgleich
+Ein einmal veröffentlichter zukünftiger Einspeiseplan bleibt jetzt bis zur Ausführung verbindlich und wird durch normale Prognose-/Plan-Neuberechnungen nicht mehr entfernt oder verschoben. Beim Planen wird für jedes Einspeisefenster der erwartete Batterie-SoC am Start gespeichert. Liegt der reale SoC beim Start höchstens 5 Prozentpunkte darunter, wird die geplante Energiemenge unverändert ausgeführt. Erst bei einer Abweichung von mehr als 5 Prozentpunkten nach unten wird die Einspeisemenge entsprechend der fehlenden Batterieenergie reduziert. Ein höherer SoC vergrößert die geplante Einspeisemenge nicht. Mindest-SoC, Mindestpreis-Sperre und technische Schutzfunktionen bleiben vorrangig.
