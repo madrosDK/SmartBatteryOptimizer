@@ -1083,6 +1083,7 @@ class SmartBatteryOptimizer extends IPSModule
             $surfaceCalibration[$name]['sumExpectedKWh'] = (float)($diag['sumExpectedKWh'] ?? 0.0);
             $surfaceCalibration[$name]['sumActualKWh'] = (float)($diag['sumActualKWh'] ?? 0.0);
             $surfaceCalibration[$name]['learnedRatio'] = $diag['ratio'] ?? null;
+            $surfaceCalibration[$name]['calculatedFactor'] = $diag['ratio'] ?? null;
             $surfaceCalibration[$name]['sampleCount'] = (int)($diag['sampleCount'] ?? 0);
             $surfaceCalibration[$name]['factorReady'] = !empty($diag['factorReady']);
             $surfaceCalibration[$name]['learningDayCount'] = (int)($diag['learningDayCount'] ?? 0);
@@ -1091,7 +1092,7 @@ class SmartBatteryOptimizer extends IPSModule
             $surfaceCalibration[$name]['calibrationBlocked'] = (bool)$gate['blocked'];
             $surfaceCalibration[$name]['calibrationBlockReason'] = (string)($gate['text'] ?? '');
             $surfaceCalibration[$name]['seasonalFactor'] = !empty($diag['factorReady']) ? (float)($calibration[$key]['factor'] ?? 1.0) : 1.0;
-            $surfaceCalibration[$name]['seasonStats'] = ['season'=>$this->PVSeasonForTimestamp(time()), 'label'=>$this->GetPVSeasonLabel($this->PVSeasonForTimestamp(time())), 'factor'=>(!empty($diag['factorReady']) ? (float)($calibration[$key]['factor'] ?? 1.0) : 1.0), 'expectedKWh'=>(float)($diag['sumExpectedKWh'] ?? 0.0), 'actualKWh'=>(float)($diag['sumActualKWh'] ?? 0.0), 'days'=>(int)($diag['learningDayCount'] ?? 0)];
+            $surfaceCalibration[$name]['seasonStats'] = ['season'=>$this->PVSeasonForTimestamp(time()), 'label'=>$this->GetPVSeasonLabel($this->PVSeasonForTimestamp(time())), 'factor'=>($diag['ratio'] !== null ? (float)$diag['ratio'] : 1.0), 'expectedKWh'=>(float)($diag['sumExpectedKWh'] ?? 0.0), 'actualKWh'=>(float)($diag['sumActualKWh'] ?? 0.0), 'days'=>(int)($diag['learningDayCount'] ?? 0)];
             $surfaceCalibration[$name]['compactionAudit'] = isset($calibration[$key]['lastCompactionAudit']) && is_array($calibration[$key]['lastCompactionAudit']) ? $calibration[$key]['lastCompactionAudit'] : [];
             $surfaceCalibration[$name]['storageMode'] = (string)($calibration[$key]['storageMode'] ?? 'raw');
         }
@@ -3042,15 +3043,15 @@ class SmartBatteryOptimizer extends IPSModule
         $min = $this->ReadPropertyFloat('PVCalibrationMinFactor');
         $max = $this->ReadPropertyFloat('PVCalibrationMaxFactor');
         $factorReady = $ready && $sumExpected > 0.0;
-        $raw = $factorReady ? ($sumActual / $sumExpected) : 1.0;
-        $calibration[$key]['factor'] = $factorReady ? max($min, min($max, $raw)) : 1.0;
+        $raw = $sumExpected > 0.0 ? ($sumActual / $sumExpected) : null;
+        $calibration[$key]['factor'] = ($factorReady && $raw !== null) ? max($min, min($max, $raw)) : 1.0;
         $calibration[$key]['factorReady'] = $factorReady;
         $calibration[$key]['learningDayCount'] = count($days);
         $calibration[$key]['selectedLearningDays'] = $selectedDays;
         $calibration[$key]['factorSampleCount'] = $count;
         $calibration[$key]['factorExpectedKWh'] = $sumExpected;
         $calibration[$key]['factorActualKWh'] = $sumActual;
-        $calibration[$key]['factorRawRatio'] = $factorReady ? $raw : null;
+        $calibration[$key]['factorRawRatio'] = $raw;
         $calibration[$key]['factorFirstTs'] = $firstTs;
         $calibration[$key]['factorLastTs'] = $lastTs;
         $calibration[$key]['hourlyFactors'] = [];
@@ -5262,7 +5263,6 @@ class SmartBatteryOptimizer extends IPSModule
                 $futureStart = $currentHour + 3600;
                 if ($maxTs >= $futureStart) @AC_DeleteVariableData($archiveID, $id, $futureStart, $maxTs + 3599);
                 $this->AddArchiveLoggedValues($archiveID, $id, $rows);
-                if (isset($map[$currentHour])) SetValue($id, (float)$map[$currentHour]);
                 $this->DebugLog('PV-Kalibrierarchiv', $name . ' | ' . count($rows) . ' Stunden-kWh gespeichert | ab ' . date('d.m.Y H:i', $currentHour));
             } catch (Throwable $ex) { $this->DebugLog('PV-Kalibrierarchiv', $name . ': ' . $ex->getMessage(), 0); }
         }
@@ -6179,7 +6179,7 @@ class SmartBatteryOptimizer extends IPSModule
         $cal = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
         $days = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
         $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;color:#fff">';
-        $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = tatsächlich erzeugte Energie / prognostizierte Energie vor Auto-Faktor. Bis ' . $days . ' gültige Lerntage erreicht sind, bleibt der Faktor 1,000. Danach werden immer die neuesten ' . $days . ' gültigen Tage rollierend verwendet.</span><br>';
+        $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = tatsächlich erzeugte Energie / prognostizierte Energie vor Auto-Faktor. Der berechnete Faktor wird ab dem ersten gültigen abgeschlossenen Stundenpaar angezeigt. Bis ' . $days . ' gültige Lerntage erreicht sind, bleibt der angewendete Auto-Faktor 1,000. Danach werden immer die neuesten ' . $days . ' gültigen Tage rollierend verwendet.</span><br>';
         $gate = $this->GetPVCalibrationFeedInGate();
         if ($this->ReadPropertyBoolean('DebugMode')) {
             $html .= '<div style="margin:8px 0;padding:6px;border:1px solid #666"><b>PV-Abregelung / Kalibriersperre</b><br>';
@@ -6221,7 +6221,7 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= '<td style="padding:4px;border-bottom:1px solid rgba(128,128,128,.25)"><b>' . htmlspecialchars((string)$name) . '</b>' . $status . '</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumE, 2, ',', '.') . ' kWh</td>';
             $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . number_format($sumA, 2, ',', '.') . ' kWh</td>';
-            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '1,000 (Lernphase)' : number_format((float)$ratio, 3, ',', '.')) . '</td>';
+            $html .= '<td style="text-align:right;padding:4px;border-bottom:1px solid rgba(128,128,128,.25)">' . ($ratio === null ? '– (noch kein Vergleich)' : number_format((float)$ratio, 3, ',', '.') . (empty($c['factorReady']) ? ' (berechnet, Lernphase)' : '')) . '</td>';
             $seasonInfo = '';
             if (isset($c['seasonStats']) && is_array($c['seasonStats'])) {
                 $ss = $c['seasonStats'];

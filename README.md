@@ -481,3 +481,9 @@ Die PV-Kalibrierung archiviert je PV-Fläche die tatsächlich verwendete kombini
 
 ## Änderung v1.9.85
 pvnode V2 wird mit `include=strings` abgefragt. Liefert die Site getrennte Solarflächen, werden deren 15-Minuten-Leistungswerte je `string_index` zu Stundenwerten verdichtet und bei eindeutiger 1:1-Anzahl positionsstabil den aktiven SmartBatteryOptimizer-PV-Flächen zugeordnet. Damit fließen Haus und Nebengebäude getrennt in Anbieterübersicht, Provider-Mix und Kalibrierprognose ein. Eine künstliche Verteilung des pvnode-Standortgesamtwerts anhand kWp oder anderer Anbieter findet nicht statt. Der pvnode-Cache speichert Gesamt- und Flächenzeitreihen gemeinsam.
+
+
+## Änderung v1.9.86
+- Berechneter PV-Kalibrierfaktor wird bereits während der Lernphase aus vorhandenen gültigen Stundenpaaren angezeigt.
+- Der angewendete Auto-Faktor bleibt bis zum vollständigen Lernzeitraum 1,000.
+- Kalibrier-Prognosevariablen werden nicht mehr per SetValue beschrieben; dadurch entstehen keine zusätzlichen Archivpunkte mit aktuellem Zeitstempel.
