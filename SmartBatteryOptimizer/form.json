@@ -895,6 +895,11 @@
         },
         {
             "type": "Button",
+            "caption": "Alle Prognoseanbieter jetzt abfragen (Force-Refresh)",
+            "onClick": "echo SBO_ForceRefreshForecastProviders($id);"
+        },
+        {
+            "type": "Button",
             "caption": "pvnode API testen – Rohdaten anzeigen",
             "onClick": "$msg = SBO_TestPVNodeAPI($id); echo $msg;"
         },
