@@ -900,6 +900,11 @@
         },
         {
             "type": "Button",
+            "caption": "PV-Kalibrierung aus vorhandenen Daten nachtragen",
+            "onClick": "echo SBO_BackfillPVCalibrationPairs($id);"
+        },
+        {
+            "type": "Button",
             "caption": "pvnode API testen – Rohdaten anzeigen",
             "onClick": "$msg = SBO_TestPVNodeAPI($id); echo $msg;"
         },
