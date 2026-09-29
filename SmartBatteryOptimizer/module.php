@@ -2510,6 +2510,93 @@ class SmartBatteryOptimizer extends IPSModule
         }
     }
 
+    public function TestPVNodeAPI(): string
+    {
+        $apiKey = trim($this->ReadPropertyString('PVNodeAPIKey'));
+        $siteID = trim($this->ReadPropertyString('PVNodeSiteID'));
+        if ($apiKey === '' || $siteID === '') {
+            return "FEHLER: pvnode API-Key und Site-ID müssen in der Instanzkonfiguration eingetragen und übernommen sein.";
+        }
+
+        $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc&include=strings';
+        $headers = [
+            'User-Agent: IP-Symcon-SmartBatteryOptimizer/1.9.88',
+            'Authorization: Bearer ' . $apiKey,
+            'Accept: application/json'
+        ];
+        $opts = [
+            'http' => [
+                'method' => 'GET',
+                'timeout' => 15,
+                'ignore_errors' => true,
+                'header' => implode("\r\n", $headers) . "\r\n"
+            ]
+        ];
+        $ctx = stream_context_create($opts);
+        $started = microtime(true);
+        $raw = @file_get_contents($url, false, $ctx);
+        $elapsedMs = (microtime(true) - $started) * 1000.0;
+
+        $status = 0;
+        $responseHeaders = [];
+        if (isset($http_response_header) && is_array($http_response_header)) {
+            $responseHeaders = $http_response_header;
+            foreach ($http_response_header as $line) {
+                if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $line, $m)) $status = (int)$m[1];
+            }
+        }
+
+        $out = [];
+        $out[] = 'pvnode API-Rohdatentest';
+        $out[] = 'Zeit: ' . date('d.m.Y H:i:s');
+        $out[] = 'URL: ' . $url;
+        $out[] = 'Site-ID: ' . $siteID;
+        $out[] = 'HTTP-Status: ' . ($status > 0 ? (string)$status : 'nicht ermittelbar');
+        $out[] = 'Dauer: ' . number_format($elapsedMs, 0, ',', '.') . ' ms';
+        $out[] = 'API-Key: [ausgeblendet]';
+        if (count($responseHeaders) > 0) {
+            $out[] = '';
+            $out[] = '--- RESPONSE-HEADER ---';
+            foreach ($responseHeaders as $line) $out[] = (string)$line;
+        }
+        $out[] = '';
+        $out[] = '--- RESPONSE-BODY (RAW) ---';
+        if ($raw === false) {
+            $err = error_get_last();
+            $out[] = 'HTTP-Abruf fehlgeschlagen.';
+            if (is_array($err) && isset($err['message'])) $out[] = 'PHP: ' . (string)$err['message'];
+        } else {
+            $out[] = $raw;
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $out[] = '';
+                $out[] = '--- KURZAUSWERTUNG ---';
+                $out[] = 'Top-Level-Felder: ' . implode(', ', array_keys($decoded));
+                $out[] = 'values: ' . (is_array($decoded['values'] ?? null) ? count($decoded['values']) . ' Einträge' : 'nicht vorhanden');
+                $out[] = 'strings: ' . (is_array($decoded['strings'] ?? null) ? count($decoded['strings']) . ' Einträge' : 'nicht vorhanden');
+                if (isset($decoded['available'])) $out[] = 'available: ' . json_encode($decoded['available'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                if (isset($decoded['included'])) $out[] = 'included: ' . json_encode($decoded['included'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                if (is_array($decoded['strings'] ?? null) && count($decoded['strings']) > 0) {
+                    $ids=[];
+                    foreach ($decoded['strings'] as $row) {
+                        if (!is_array($row)) continue;
+                        $idx = array_key_exists('string_index',$row) ? (string)$row['string_index'] : '?';
+                        $sid = array_key_exists('string_id',$row) ? (string)$row['string_id'] : '-';
+                        $ids[$idx.'|'.$sid]=true;
+                    }
+                    $out[] = 'erkannte Strings (index|id): ' . implode(', ', array_keys($ids));
+                }
+            } else {
+                $out[] = '';
+                $out[] = 'JSON-Auswertung: Response ist kein gültiges JSON (' . json_last_error_msg() . ').';
+            }
+        }
+
+        $result = implode("\n", $out);
+        $this->DebugLog('pvnode API-Test', 'HTTP=' . $status . ' | Site-ID=' . $siteID . ' | Body=' . ($raw === false ? 'FEHLER' : strlen($raw) . ' Bytes'));
+        return $result;
+    }
+
     private function FetchPVNodeForecastLive(string $apiKey, string $siteID): array
     {
         $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc&include=strings';

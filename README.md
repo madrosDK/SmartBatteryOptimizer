@@ -489,6 +489,11 @@ pvnode V2 wird mit `include=strings` abgefragt. Liefert die Site getrennte Solar
 - Kalibrier-Prognosevariablen werden nicht mehr per SetValue beschrieben; dadurch entstehen keine zusätzlichen Archivpunkte mit aktuellem Zeitstempel.
 
 
-## Änderung v1.9.87
+## Änderung v1.9.88
 
 Die Einspeiseausführung wird anhand der tatsächlich am Netz gemessenen Zielenergie beendet. Eine höhere reale Einspeiseleistung verkürzt die erforderliche Laufzeit. Jeder gestartete Preis-Einspeisevorgang wird vor einem Stop finalisiert, damit kWh und Erlös nicht verloren gehen. Ein eigenes 24-h-Einspeise-Debugfenster zeigt Start, Fortschritt, Restmenge, Restzeit und Abschluss. Die Einspeise-Statistik trennt Einspeiseautomatik und sonstige Netzeinspeisung einschließlich Erlös.
+
+
+## pvnode Rohdatentest
+
+Über **pvnode API testen – Rohdaten anzeigen** kann die unveränderte API-Antwort einschließlich `strings` diagnostiziert werden. Der Test ist vom normalen Prognosecache und Abrufzähler getrennt.
