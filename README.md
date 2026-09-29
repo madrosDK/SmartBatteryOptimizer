@@ -487,3 +487,8 @@ pvnode V2 wird mit `include=strings` abgefragt. Liefert die Site getrennte Solar
 - Berechneter PV-Kalibrierfaktor wird bereits während der Lernphase aus vorhandenen gültigen Stundenpaaren angezeigt.
 - Der angewendete Auto-Faktor bleibt bis zum vollständigen Lernzeitraum 1,000.
 - Kalibrier-Prognosevariablen werden nicht mehr per SetValue beschrieben; dadurch entstehen keine zusätzlichen Archivpunkte mit aktuellem Zeitstempel.
+
+
+## Änderung v1.9.87
+
+Die Einspeiseausführung wird anhand der tatsächlich am Netz gemessenen Zielenergie beendet. Eine höhere reale Einspeiseleistung verkürzt die erforderliche Laufzeit. Jeder gestartete Preis-Einspeisevorgang wird vor einem Stop finalisiert, damit kWh und Erlös nicht verloren gehen. Ein eigenes 24-h-Einspeise-Debugfenster zeigt Start, Fortschritt, Restmenge, Restzeit und Abschluss. Die Einspeise-Statistik trennt Einspeiseautomatik und sonstige Netzeinspeisung einschließlich Erlös.

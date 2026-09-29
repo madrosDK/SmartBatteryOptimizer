@@ -157,6 +157,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 150);
         $this->RegisterVariableString('ConsumptionProfileChartHTML', 'Verbrauch Lastprofil Diagramm', '~HTMLBox', 151);
         $this->RegisterVariableString('FeedInStatisticsHTML', 'Einspeise-Statistik', '~HTMLBox', 152);
+        $this->RegisterVariableString('FeedInDebugHTML', 'Einspeise-Debug 24 h', '~HTMLBox', 153);
         $this->RegisterVariableString('PVCalibrationDiagnosisHTML', 'PV-Kalibrierung Diagnose', '~HTMLBox', 190);
         $this->RegisterVariableString('ActionFeedback', 'Letzte Aktionen', '~HTMLBox', 118);
         $this->RegisterVariableString('ForecastSolarStatus', 'PV-Prognose Anbieter', '~HTMLBox', 119);
@@ -222,6 +223,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('ActiveFeedInPlannedEndTs', 0);
         $this->RegisterAttributeString('CompletedFeedInPlanKeysJSON', '{}');
         $this->RegisterAttributeString('FeedInStatisticsJSON', '[]');
+        $this->RegisterAttributeString('FeedInDebugLogJSON', '[]');
+        $this->RegisterAttributeString('GridExportDailyJSON', '{}');
+        $this->RegisterAttributeInteger('GridExportTrackLastTs', 0);
+        $this->RegisterAttributeFloat('GridExportTrackLastW', 0.0);
         $this->RegisterAttributeInteger('ActiveFeedInStartedTs', 0);
         $this->RegisterAttributeFloat('ActiveFeedInPriceCt', 0.0);
         $this->RegisterAttributeString('ActiveFeedInReason', '');
@@ -1002,6 +1007,7 @@ class SmartBatteryOptimizer extends IPSModule
             if (is_array($profile) && !empty($profile)) {
                 SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($profile));
                 SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
+                SetValue($this->GetIDForIdent('FeedInDebugHTML'), $this->RenderFeedInDebugHTML());
             }
         } catch (Throwable $e) {
             $this->DebugLog('PVActual', 'Diagramm-Istwerte konnten nicht aktualisiert werden: ' . $e->getMessage(), 0);
@@ -1213,6 +1219,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('ForecastSolarStatus'), $this->RenderProviderForecastStatusHTML($forecast));
             SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($consumptionProfile));
             SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
+            SetValue($this->GetIDForIdent('FeedInDebugHTML'), $this->RenderFeedInDebugHTML());
             SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
             SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
             SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
@@ -1508,13 +1515,12 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $this->SetActionFeedback('Einspeisung wird gestoppt ...');
         try {
-            $this->WriteAttributeString('ActiveFeedInPlanKey', '');
-            $this->WriteAttributeFloat('ActiveFeedInTargetKWh', 0.0);
-            $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
-            $this->WriteAttributeInteger('ActiveFeedInLastTs', 0);
-            $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
-            $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
-            $this->StopFeedIn();
+            if ($this->ReadAttributeString('ActiveFeedInPlanKey') !== '') {
+                $this->UpdateMeasuredFeedInEnergy();
+                $this->FinishMeasuredFeedInRun(false, 'manuell gestoppt');
+            } else {
+                $this->StopFeedIn();
+            }
             $text = 'Einspeisung sofort gestoppt.';
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
@@ -1534,6 +1540,7 @@ class SmartBatteryOptimizer extends IPSModule
         if (!IPS_SemaphoreEnter($lock, 1)) return;
         try {
             $now = time();
+            $this->TrackTotalGridExport();
             $priceLock = $this->UpdateFeedInPriceLock();
             if (!empty($priceLock['blocked'])) {
                 if ($this->ReadAttributeString('ActiveFeedInPlanKey') !== '') {
@@ -1662,6 +1669,7 @@ class SmartBatteryOptimizer extends IPSModule
                         . ' | erwartete Netzeinspeisung=' . round($expectedExportW) . ' W'
                         . ' | neues Ende=' . date('H:i:s',$plannedEnd)
                     );
+                    $this->AddFeedInDebug('LAUFEND', 'Netz ' . number_format($deliveredKWh,3,',','.') . ' / ' . number_format($targetKWh,3,',','.') . ' kWh | Rest ' . number_format($remainingKWh,3,',','.') . ' kWh | aktuell ' . number_format($this->ReadCurrentGridExportW()/1000.0,2,',','.') . ' kW | Restzeit ca. ' . max(0,(int)ceil(($plannedEnd-$now)/60)) . ' min | Ende ' . date('H:i:s',$plannedEnd));
                 }
 
                 // AlphaESS nur beim Start bzw. bei der 5-Minuten-Korrektur neu programmieren.
@@ -1768,6 +1776,7 @@ class SmartBatteryOptimizer extends IPSModule
         SetValue($this->GetIDForIdent('FeedInTargetEnergy'), max(0.0, $targetKWh));
         SetValue($this->GetIDForIdent('FeedInDeliveredEnergy'), 0.0);
         $this->DebugLog('Einspeisemenge', 'Start ' . $key . ' | Ziel=' . round($targetKWh,3) . ' kWh');
+        $this->AddFeedInDebug('START', 'Plan ' . $key . ' | Ziel ' . number_format($targetKWh,3,',','.') . ' kWh | Tarif ' . number_format($priceCt,2,',','.') . ' ct/kWh' . ($actualSOC !== null ? ' | SoC ' . number_format($actualSOC,1,',','.') . ' %' : ''));
     }
 
     private function UpdateMeasuredFeedInEnergy(): float
@@ -1785,6 +1794,55 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeInteger('ActiveFeedInLastTs', $now);
         $this->WriteAttributeFloat('ActiveFeedInLastExportW', $currentW);
         return $delivered;
+    }
+
+    private function AddFeedInDebug(string $event, string $message): void
+    {
+        $now = time();
+        $rows = json_decode($this->ReadAttributeString('FeedInDebugLogJSON'), true);
+        if (!is_array($rows)) $rows = [];
+        $rows[] = ['ts'=>$now, 'event'=>$event, 'message'=>$message];
+        $cut = $now - 86400;
+        $rows = array_values(array_filter($rows, static function($r) use ($cut) { return (int)($r['ts'] ?? 0) >= $cut; }));
+        if (count($rows) > 500) $rows = array_slice($rows, -500);
+        $this->WriteAttributeString('FeedInDebugLogJSON', json_encode($rows, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+        $id = (int)@$this->GetIDForIdent('FeedInDebugHTML');
+        if ($id > 0) SetValue($id, $this->RenderFeedInDebugHTML());
+    }
+
+    private function RenderFeedInDebugHTML(): string
+    {
+        $rows = json_decode($this->ReadAttributeString('FeedInDebugLogJSON'), true);
+        if (!is_array($rows)) $rows = [];
+        $cut = time() - 86400;
+        $rows = array_values(array_filter($rows, static function($r) use ($cut) { return (int)($r['ts'] ?? 0) >= $cut; }));
+        usort($rows, static function($a,$b){ return ((int)($b['ts']??0)) <=> ((int)($a['ts']??0)); });
+        $html='<div style="font-family:Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#fff;width:100%"><details open><summary style="cursor:pointer;font-weight:bold">Einspeise-Debug – letzte 24 Stunden</summary><div style="max-height:360px;overflow-y:auto;margin-top:8px;border-top:1px solid rgba(255,255,255,.18)">';
+        if (!$rows) $html.='<div style="padding:8px 2px;color:#bbb">Noch keine Einspeise-Ereignisse in den letzten 24 Stunden.</div>';
+        foreach($rows as $r){
+            $event=htmlspecialchars((string)($r['event']??''),ENT_QUOTES,'UTF-8');
+            $msg=htmlspecialchars((string)($r['message']??''),ENT_QUOTES,'UTF-8');
+            $html.='<div style="padding:6px 2px;border-bottom:1px solid rgba(255,255,255,.10);font-size:11px"><b>'.date('d.m.Y H:i:s',(int)$r['ts']).' · '.$event.'</b><br>'.$msg.'</div>';
+        }
+        return $html.'</div></details></div>';
+    }
+
+    private function TrackTotalGridExport(): void
+    {
+        try { $currentW = $this->ReadCurrentGridExportW(); } catch(Throwable $e) { return; }
+        $now=time(); $lastTs=$this->ReadAttributeInteger('GridExportTrackLastTs'); $lastW=max(0.0,$this->ReadAttributeFloat('GridExportTrackLastW'));
+        if($lastTs>0 && $now>$lastTs){
+            $seconds=min(180,$now-$lastTs); $kWh=(($lastW+$currentW)/2.0)*($seconds/3600.0)/1000.0;
+            if($kWh>0){
+                $priceID=(int)@$this->GetIDForIdent('CurrentPrice'); $priceCt=$priceID>0?(float)GetValue($priceID):0.0;
+                $day=date('Y-m-d',$now); $days=json_decode($this->ReadAttributeString('GridExportDailyJSON'),true); if(!is_array($days))$days=[];
+                if(!isset($days[$day])||!is_array($days[$day]))$days[$day]=['kWh'=>0.0,'eur'=>0.0];
+                $days[$day]['kWh']=(float)$days[$day]['kWh']+$kWh; $days[$day]['eur']=(float)$days[$day]['eur']+$kWh*$priceCt/100.0;
+                $cut=strtotime('-400 days 00:00:00'); foreach(array_keys($days) as $d){$t=strtotime($d.' 00:00:00');if($t!==false&&$t<$cut)unset($days[$d]);}
+                $this->WriteAttributeString('GridExportDailyJSON',json_encode($days));
+            }
+        }
+        $this->WriteAttributeInteger('GridExportTrackLastTs',$now); $this->WriteAttributeFloat('GridExportTrackLastW',$currentW);
     }
 
     private function ReadCurrentGridExportW(): float
@@ -1843,6 +1901,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeString('ActiveFeedInReason', '');
         SetValue($this->GetIDForIdent('StatusText'), 'Einspeisung beendet: ' . $reason . ' | Netz ' . number_format($delivered,2,',','.') . ' / ' . number_format($target,2,',','.') . ' kWh');
         $this->DebugLog('Einspeisemenge', 'Ende | ' . $reason . ' | ' . round($delivered,3) . '/' . round($target,3) . ' kWh');
+        $revenue = $delivered * $priceCt / 100.0;
+        $this->AddFeedInDebug('ENDE', $reason . ' | ' . number_format($delivered,3,',','.') . ' / ' . number_format($target,3,',','.') . ' kWh | Erlös ' . number_format($revenue,2,',','.') . ' € | Dauer ' . ($startedTs > 0 ? max(0,(int)round((time()-$startedTs)/60)) : 0) . ' min');
     }
 
     public function StopFeedIn()
@@ -5796,137 +5856,18 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderFeedInStatisticsHTML(): string
     {
-        $allStats = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1 ? $this->ReadFeedInStatisticsFromArchive() : [];
-        if (!is_array($allStats) || count($allStats) === 0) {
-            $allStats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
-            if (!is_array($allStats)) $allStats = [];
-        }
-
-        // Ausschließlich Preis-Einspeisefenster der Einspeiseautomatik auswerten.
-        // PV-Speicherfreihaltung / Abregelungsschutz bleibt vollständig außen vor.
-        $stats = [];
-        foreach ($allStats as $r) {
-            $reason = (string)($r['reason'] ?? 'price');
-            if ($reason === '' || $reason === 'price') $stats[] = $r;
-        }
-
-        $currentMonthStart = strtotime(date('Y-m-01 00:00:00'));
-        $firstMonthStart = $currentMonthStart;
-        foreach ($stats as $r) {
-            $ts = (int)($r['start'] ?? ($r['end'] ?? 0));
-            if ($ts <= 0) continue;
-            $monthStart = strtotime(date('Y-m-01 00:00:00', $ts));
-            if ($monthStart < $firstMonthStart) $firstMonthStart = $monthStart;
-        }
-
-        $monthNames = [1=>'Januar',2=>'Februar',3=>'März',4=>'April',5=>'Mai',6=>'Juni',7=>'Juli',8=>'August',9=>'September',10=>'Oktober',11=>'November',12=>'Dezember'];
-        $months = [];
-        for ($monthStart = $firstMonthStart; $monthStart <= $currentMonthStart; $monthStart = strtotime('+1 month', $monthStart)) {
-            $nextMonthStart = strtotime('+1 month', $monthStart);
-            $year = (int)date('Y', $monthStart);
-            $month = (int)date('n', $monthStart);
-            $daysInMonth = (int)date('t', $monthStart);
-            $dayRows = [];
-            for ($d = 1; $d <= $daysInMonth; $d++) {
-                $dayRows[$d] = [
-                    'label'=>str_pad((string)$d, 2, '0', STR_PAD_LEFT),
-                    'date'=>sprintf('%02d.%02d.%04d', $d, $month, $year),
-                    'kWh'=>0.0,
-                    'eur'=>0.0,
-                    'targetKWh'=>0.0,
-                    'windows'=>0
-                ];
-            }
-
-            $monthKWh = 0.0; $monthEUR = 0.0; $monthWindows = 0;
-            $yearKWh = 0.0; $yearEUR = 0.0; $yearWindows = 0;
-            $allKWh = 0.0; $allEUR = 0.0; $allWindows = 0;
-
-            foreach ($stats as $r) {
-                $startTs = (int)($r['start'] ?? 0);
-                $endTs = (int)($r['end'] ?? $startTs);
-                $ts = $startTs > 0 ? $startTs : $endTs;
-                if ($ts <= 0) continue;
-                $kWh = max(0.0, (float)($r['deliveredKWh'] ?? 0));
-                $eur = (float)($r['revenueEUR'] ?? 0);
-                $targetKWh = max(0.0, (float)($r['targetKWh'] ?? 0));
-
-                $allKWh += $kWh; $allEUR += $eur; $allWindows++;
-                if ((int)date('Y', $ts) === $year) {
-                    $yearKWh += $kWh; $yearEUR += $eur; $yearWindows++;
-                }
-                if ($ts >= $monthStart && $ts < $nextMonthStart) {
-                    $day = (int)date('j', $ts);
-                    if (isset($dayRows[$day])) {
-                        $dayRows[$day]['kWh'] += $kWh;
-                        $dayRows[$day]['eur'] += $eur;
-                        $dayRows[$day]['targetKWh'] += $targetKWh;
-                        $dayRows[$day]['windows']++;
-                    }
-                    $monthKWh += $kWh; $monthEUR += $eur; $monthWindows++;
-                }
-            }
-
-            $rows = [];
-            foreach ($dayRows as $row) {
-                $kWh = (float)$row['kWh'];
-                $eur = (float)$row['eur'];
-                $row['kWh'] = round($kWh, 3);
-                $row['eur'] = round($eur, 3);
-                $row['targetKWh'] = round((float)$row['targetKWh'], 3);
-                $row['avgPriceCt'] = $kWh > 0.00001 ? round(($eur / $kWh) * 100.0, 2) : 0.0;
-                $rows[] = $row;
-            }
-
-            $months[] = [
-                'key'=>date('Y-m', $monthStart),
-                'label'=>$monthNames[$month] . ' ' . $year,
-                'isCurrent'=>($monthStart === $currentMonthStart),
-                'rows'=>$rows,
-                'month'=>['kWh'=>round($monthKWh,3),'eur'=>round($monthEUR,3),'windows'=>$monthWindows],
-                'year'=>['kWh'=>round($yearKWh,3),'eur'=>round($yearEUR,3),'windows'=>$yearWindows],
-                'all'=>['kWh'=>round($allKWh,3),'eur'=>round($allEUR,3),'windows'=>$allWindows]
-            ];
-        }
-
-        if (count($months) === 0) {
-            $months[] = [
-                'key'=>date('Y-m'),
-                'label'=>$monthNames[(int)date('n')] . ' ' . date('Y'),
-                'isCurrent'=>true,
-                'rows'=>[],
-                'month'=>['kWh'=>0.0,'eur'=>0.0,'windows'=>0],
-                'year'=>['kWh'=>0.0,'eur'=>0.0,'windows'=>0],
-                'all'=>['kWh'=>0.0,'eur'=>0.0,'windows'=>0]
-            ];
-        }
-
-        $highchartsJS = $this->GetHighchartsJavaScript();
-        $chartId = 'sbo_feed_stats_' . $this->InstanceID;
-        $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff;width:100%"><b>Einspeise-Statistik – Einspeiseautomatik</b><br>';
-        $html .= '<span style="font-size:11px">Tageswerte der tatsächlich gemessenen Netzeinspeisung aus Preis-Einspeisefenstern der Einspeiseautomatik.</span><br>';
-        if ($highchartsJS === '') {
-            return $html . '<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
-        }
-
-        $html .= '<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div>';
-        $html .= '<div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px">';
-        $html .= '<button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px">&#8592;</button>';
-        $html .= '<span id="'.$chartId.'_date" style="min-width:190px;text-align:center;font-weight:bold"></span>';
-        $html .= '<button id="'.$chartId.'_next" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px">&#8594;</button>';
-        $html .= '<button id="'.$chartId.'_today" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button>';
-        $html .= '</div>';
-        $html .= '<div id="'.$chartId.'_summary" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#fff;text-align:center"></div>';
-        $html .= '<script>'.$highchartsJS.'</script><script>(function(){';
-        $html .= 'var months='.json_encode($months, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',id='.json_encode($chartId).',key='.json_encode('sbo_feed_stats_selected_month_' . $this->InstanceID).',idx=Math.max(0,months.length-1),chart=null;';
-        $html .= 'try{var sm=localStorage.getItem(key);if(sm){for(var si=0;si<months.length;si++){if(months[si].key===sm){idx=si;break;}}}}catch(ex){}';
-        $html .= 'function e(s){return document.getElementById(id+s)}';
-        $html .= 'function fmt(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}';
-        $html .= 'function draw(){var el=e("");if(!el||typeof Highcharts==="undefined"||!months.length)return false;var m=months[idx],cats=[],kwh=[],eur=[];for(var i=0;i<m.rows.length;i++){var r=m.rows[i];cats.push(r.label);kwh.push({y:Number(r.kWh)||0,custom:r});eur.push({y:Number(r.eur)||0,custom:r});}try{localStorage.setItem(key,m.key)}catch(ex){}try{chart=Highcharts.chart(el,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:cats,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff"}}},yAxis:[{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#fff"}},labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#fff",fontSize:"11px"},formatter:function(){var p=this.points&&this.points.length?this.points[0].point:null,c=p&&p.custom?p.custom:{};return "<b>"+(c.date||"")+"</b><br>Einspeisung: <b>"+fmt(c.kWh,2)+" kWh</b><br><span style=\"color:#ffe082\">Erlös: <b>"+fmt(c.eur,2)+" €</b></span><br>Ø Tarif: "+fmt(c.avgPriceCt,2)+" ct/kWh<br>Einspeisefenster: "+(Number(c.windows)||0)+(Number(c.targetKWh)>0?"<br>Geplant: "+fmt(c.targetKWh,2)+" kWh":"");}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Einspeisung",yAxis:0,data:kwh,zIndex:2,events:{mouseOver:function(){var me=this;this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:s===me?1:.22});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:s===me?1:.22})})},mouseOut:function(){this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:1});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:1})})}},dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,1)+" kWh":""},style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Erlös",yAxis:1,data:eur,color:"rgba(255,213,79,.42)",pointPadding:.20,zIndex:3,events:{mouseOver:function(){var me=this;this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:s===me?1:.22});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:s===me?1:.22})})},mouseOut:function(){this.chart.series.forEach(function(s){if(s.group)s.group.attr({opacity:1});if(s.dataLabelsGroup)s.dataLabelsGroup.attr({opacity:1})})}},dataLabels:{enabled:true,formatter:function(){return this.y>=.01?fmt(this.y,2)+" €":""},style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"9px",fontWeight:"normal",color:"#ffe082",textOutline:"none"}}}]});var de=e("_date");if(de)de.innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=e("_summary");if(s)s.innerHTML="Monat: <b>"+fmt(m.month.kWh,2)+" kWh / "+fmt(m.month.eur,2)+" €</b> &middot; Jahr: <b>"+fmt(m.year.kWh,2)+" kWh / "+fmt(m.year.eur,2)+" €</b> &middot; Gesamt: <b>"+fmt(m.all.kWh,2)+" kWh / "+fmt(m.all.eur,2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=months.length-1;return true;}catch(ex){el.innerHTML="<div style=\"font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#ffb3b3;padding:8px\">Highcharts-Fehler: "+String(ex&&ex.message?ex.message:ex)+"</div>";return true;}}';
-        $html .= 'function init(n){var p=e("_prev"),nx=e("_next"),t=e("_today");if(p)p.onclick=function(){if(idx>0){idx--;draw()}};if(nx)nx.onclick=function(){if(idx<months.length-1){idx++;draw()}};if(t)t.onclick=function(){idx=Math.max(0,months.length-1);draw()};if(draw())return;if(n>0)setTimeout(function(){init(n-1)},150)}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",function(){init(8)})}else{setTimeout(function(){init(8)},0)}})();</script></div>';
-        return $html;
+        $stats = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1 ? $this->ReadFeedInStatisticsFromArchive() : [];
+        if (!is_array($stats) || count($stats) === 0) { $stats=json_decode($this->ReadAttributeString('FeedInStatisticsJSON'),true); if(!is_array($stats))$stats=[]; }
+        $totalDaily=json_decode($this->ReadAttributeString('GridExportDailyJSON'),true); if(!is_array($totalDaily))$totalDaily=[];
+        $autoByDay=[];
+        foreach($stats as $r){$ts=(int)($r['start']??$r['end']??0);if($ts<=0)continue;$d=date('Y-m-d',$ts);if(!isset($autoByDay[$d]))$autoByDay[$d]=['kWh'=>0.0,'eur'=>0.0,'target'=>0.0,'windows'=>0];$autoByDay[$d]['kWh']+=max(0.0,(float)($r['deliveredKWh']??0));$autoByDay[$d]['eur']+=(float)($r['revenueEUR']??0);$autoByDay[$d]['target']+=max(0.0,(float)($r['targetKWh']??0));$autoByDay[$d]['windows']++;}
+        $dates=array_unique(array_merge(array_keys($autoByDay),array_keys($totalDaily),[date('Y-m-d')])); sort($dates); $first=strtotime($dates[0].' 00:00:00'); $last=strtotime(end($dates).' 00:00:00');
+        $startMonth=strtotime(date('Y-m-01 00:00:00',$first)); $endMonth=strtotime(date('Y-m-01 00:00:00',$last)); $monthNames=[1=>'Januar',2=>'Februar',3=>'März',4=>'April',5=>'Mai',6=>'Juni',7=>'Juli',8=>'August',9=>'September',10=>'Oktober',11=>'November',12=>'Dezember']; $months=[];
+        for($m=$startMonth;$m<=$endMonth;$m=strtotime('+1 month',$m)){$year=(int)date('Y',$m);$mon=(int)date('n',$m);$n=(int)date('t',$m);$rows=[];$sum=['autoKWh'=>0.0,'autoEUR'=>0.0,'otherKWh'=>0.0,'otherEUR'=>0.0];for($d=1;$d<=$n;$d++){$key=sprintf('%04d-%02d-%02d',$year,$mon,$d);$a=$autoByDay[$key]??['kWh'=>0,'eur'=>0,'target'=>0,'windows'=>0];$t=$totalDaily[$key]??['kWh'=>0,'eur'=>0];$otherK=max(0.0,(float)$t['kWh']-(float)$a['kWh']);$otherE=max(0.0,(float)$t['eur']-(float)$a['eur']);$row=['label'=>str_pad((string)$d,2,'0',STR_PAD_LEFT),'date'=>sprintf('%02d.%02d.%04d',$d,$mon,$year),'autoKWh'=>round((float)$a['kWh'],3),'autoEUR'=>round((float)$a['eur'],3),'otherKWh'=>round($otherK,3),'otherEUR'=>round($otherE,3),'targetKWh'=>round((float)$a['target'],3),'windows'=>(int)$a['windows']];$rows[]=$row;foreach($sum as $k=>$_)$sum[$k]+=$row[$k];}$months[]=['key'=>date('Y-m',$m),'label'=>$monthNames[$mon].' '.$year,'isCurrent'=>date('Y-m',$m)===date('Y-m'),'rows'=>$rows,'sum'=>$sum];}
+        $highchartsJS=$this->GetHighchartsJavaScript();$id='sbo_feed_stats_'.$this->InstanceID;$html='<div style="font-family:Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#fff;width:100%"><b>Einspeise-Statistik</b><br><span style="font-size:11px">Blau: Einspeiseautomatik · Grün: übrige gemessene Netzeinspeisung. Transparente Balken zeigen den jeweiligen Erlös.</span><br>';if($highchartsJS==='')return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
+        $html.='<div id="'.$id.'" style="width:100%;height:430px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$id.'_prev" type="button">&#8592;</button><span id="'.$id.'_date" style="min-width:190px;text-align:center;font-weight:bold"></span><button id="'.$id.'_next" type="button">&#8594;</button><button id="'.$id.'_today" type="button">Heute</button></div><div id="'.$id.'_summary" style="font-size:11px;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
+        $html.='var months='.json_encode($months,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',id='.json_encode($id).',idx=Math.max(0,months.length-1);function e(s){return document.getElementById(id+s)}function f(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}function draw(){var m=months[idx],a=[],o=[],ae=[],oe=[],c=[];m.rows.forEach(function(r){c.push(r.label);a.push({y:r.autoKWh,custom:r});o.push({y:r.otherKWh,custom:r});ae.push({y:r.autoEUR,custom:r});oe.push({y:r.otherEUR,custom:r})});Highcharts.chart(e(""),{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{color:"#fff",fontWeight:"normal",fontSize:"10px"}},xAxis:{categories:c,labels:{style:{color:"#fff",fontSize:"10px"}}},yAxis:[{min:0,title:{text:"kWh",style:{color:"#fff"}},labels:{style:{color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,formatter:function(){var r=this.points&&this.points[0]?this.points[0].point.custom:{};return "<b>"+(r.date||"")+"</b><br>Automatik: <b>"+f(r.autoKWh,2)+" kWh</b> / "+f(r.autoEUR,2)+" €<br><span style=\"color:#7bdc8a\">Sonstige: <b>"+f(r.otherKWh,2)+" kWh</b> / "+f(r.otherEUR,2)+" €</span><br>Gesamt: <b>"+f(Number(r.autoKWh)+Number(r.otherKWh),2)+" kWh / "+f(Number(r.autoEUR)+Number(r.otherEUR),2)+" €</b>"+(r.targetKWh>0?"<br>Automatik geplant: "+f(r.targetKWh,2)+" kWh":"")}},plotOptions:{column:{borderWidth:0,grouping:false}},series:[{name:"Automatik kWh",data:a,color:"#4d9de0",pointPlacement:-0.18,pointWidth:12,yAxis:0},{name:"Sonstige kWh",data:o,color:"#45b96b",pointPlacement:0.18,pointWidth:12,yAxis:0},{name:"Automatik Erlös",data:ae,color:"rgba(255,213,79,.42)",pointPlacement:-0.18,pointWidth:7,yAxis:1},{name:"Sonstiger Erlös",data:oe,color:"rgba(69,185,107,.38)",pointPlacement:0.18,pointWidth:7,yAxis:1}]});e("_date").innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=m.sum;e("_summary").innerHTML="Monat · Automatik: <b>"+f(s.autoKWh,2)+" kWh / "+f(s.autoEUR,2)+" €</b> &middot; Sonstige: <b>"+f(s.otherKWh,2)+" kWh / "+f(s.otherEUR,2)+" €</b> &middot; Gesamt: <b>"+f(Number(s.autoKWh)+Number(s.otherKWh),2)+" kWh / "+f(Number(s.autoEUR)+Number(s.otherEUR),2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=months.length-1}e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<months.length-1){idx++;draw()}};e("_today").onclick=function(){idx=months.length-1;draw()};draw()})();</script></div>';return $html;
     }
-
 
     private function RenderConsumptionProfileChartHTML(array $profile): string
     {
