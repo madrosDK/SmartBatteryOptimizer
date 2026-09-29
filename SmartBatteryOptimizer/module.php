@@ -2145,7 +2145,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->DebugLog('pvnode', 'Aktiviert, aber API-Key oder Site-ID fehlt. Es wurde keine API-Anfrage gesendet.', 0);
             } else {
                 try {
-                    $sourceHours['pvnode'] = $this->GetPVNodeForecastLimited($pvnodeKey, $pvnodeSiteID);
+                    $sourceHours['pvnode'] = $forceProviders ? $this->GetPVNodeForecastForced($pvnodeKey, $pvnodeSiteID) : $this->GetPVNodeForecastLimited($pvnodeKey, $pvnodeSiteID);
 
                     // pvnode V2 kann mit include=strings die einzelnen, in der Site
                     // konfigurierten Solarflächen liefern. Diese werden positionsstabil den
@@ -5356,7 +5356,15 @@ class SmartBatteryOptimizer extends IPSModule
         if ($archiveID <= 0 || $variableID <= 0 || count($values) === 0 || !function_exists('AC_AddLoggedValues')) return;
         ksort($values);
         $rows = [];
-        foreach ($values as $ts => $value) $rows[] = ['TimeStamp'=>(int)$ts, 'Value'=>(float)$value];
+        $now = time();
+        foreach ($values as $ts => $value) {
+            $ts = (int)$ts;
+            if ($ts > $now) {
+                $this->DebugLog('Archiv', 'Zukunftswert verworfen | Variable=' . $variableID . ' | Zeit=' . date('d.m.Y H:i:s', $ts), 0);
+                continue;
+            }
+            $rows[] = ['TimeStamp'=>$ts, 'Value'=>(float)$value];
+        }
         foreach (array_chunk($rows, 2000) as $chunk) AC_AddLoggedValues($archiveID, $variableID, $chunk);
         if (function_exists('AC_ReAggregateVariable')) @AC_ReAggregateVariable($archiveID, $variableID);
     }
@@ -5505,15 +5513,16 @@ class SmartBatteryOptimizer extends IPSModule
                 $rows = [];
                 foreach ($map as $ts => $kWh) {
                     $ts = (int)$ts; $kWh = max(0.0, (float)$kWh);
-                    if ($ts < $currentHour) continue;
-                    if ($ts === $currentHour && is_array($existingCurrent) && count($existingCurrent) > 0) continue;
+                    // Das IP-Symcon-Archiv akzeptiert keine zukünftigen Zeitstempel.
+                    // Für die Kalibrierung wird deshalb nur die laufende Stunde einmalig
+                    // eingefroren. Zukunftswerte bleiben in der Prognosehistorie und werden
+                    // erst archiviert, sobald die jeweilige Stunde erreicht ist.
+                    if ($ts !== $currentHour) continue;
+                    if (is_array($existingCurrent) && count($existingCurrent) > 0) continue;
                     $rows[$ts] = $kWh;
                 }
-                // Ab der nächsten vollen Stunde ist die jüngste Prognose maßgeblich.
-                $futureStart = $currentHour + 3600;
-                if ($maxTs >= $futureStart) @AC_DeleteVariableData($archiveID, $id, $futureStart, $maxTs + 3599);
                 $this->AddArchiveLoggedValues($archiveID, $id, $rows);
-                $this->DebugLog('PV-Kalibrierarchiv', $name . ' | ' . count($rows) . ' Stunden-kWh gespeichert | ab ' . date('d.m.Y H:i', $currentHour));
+                $this->DebugLog('PV-Kalibrierarchiv', $name . ' | ' . count($rows) . ' laufende Stunden-kWh gespeichert | Stunde ' . date('d.m.Y H:i', $currentHour));
             } catch (Throwable $ex) { $this->DebugLog('PV-Kalibrierarchiv', $name . ': ' . $ex->getMessage(), 0); }
         }
     }
