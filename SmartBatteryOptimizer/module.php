@@ -2165,29 +2165,33 @@ class SmartBatteryOptimizer extends IPSModule
                         if ($pvName === '') $pvName = 'PV ' . ($pvIdx + 1);
                         $activeSurfaces[] = [
                             'name' => $pvName,
-                            'stringID' => trim((string)($pvSurface['PVNodeStringID'] ?? ''))
+                            // Historischer Property-Name bleibt aus Kompatibilitätsgründen bestehen.
+                            // Der konfigurierte Wert ist ab v1.9.97 ausdrücklich pvnode string_index.
+                            'stringIndex' => trim((string)($pvSurface['PVNodeStringID'] ?? ''))
                         ];
                     }
 
                     foreach ($activeSurfaces as $pvPos => $pvSurfaceInfo) {
                         $pvName = $pvSurfaceInfo['name'];
-                        $configuredID = $pvSurfaceInfo['stringID'];
+                        $configuredIndexRaw = $pvSurfaceInfo['stringIndex'];
                         $selectedHours = [];
                         $selectedLabel = '';
 
-                        // Bevorzugt wird immer die stabile pvnode string_id. Nur wenn noch
-                        // keine ID konfiguriert ist, bleibt die bisherige Positionszuordnung
-                        // als abwärtskompatibler Fallback erhalten.
-                        if ($configuredID !== '' && isset($pvnodeStringHoursByID[$configuredID]) && is_array($pvnodeStringHoursByID[$configuredID])) {
-                            $selectedHours = $pvnodeStringHoursByID[$configuredID];
-                            $selectedLabel = $configuredID;
-                        } elseif ($configuredID !== '') {
-                            $this->DebugLog('pvnode', 'PV-Fläche ' . $pvName . ': konfigurierte string_id ' . $configuredID . ' wurde in der Antwort nicht gefunden.', 0);
+                        // Die Konfiguration verwendet direkt den von pvnode gelieferten
+                        // numerischen string_index (z. B. 0=Haus, 1=Nebengebäude).
+                        // Ist kein Index eingetragen, wird weiterhin die Position der
+                        // aktiven SBO-Fläche als abwärtskompatibler Fallback verwendet.
+                        $selectedIndex = $configuredIndexRaw !== '' && preg_match('/^\\d+$/', $configuredIndexRaw)
+                            ? (int)$configuredIndexRaw
+                            : $pvPos;
+
+                        if (isset($pvnodeStringHoursByIndex[$selectedIndex]) && is_array($pvnodeStringHoursByIndex[$selectedIndex])) {
+                            $selectedHours = $pvnodeStringHoursByIndex[$selectedIndex];
+                            $stringID = (string)($pvnodeStringIDsByIndex[$selectedIndex] ?? '');
+                            $selectedLabel = 'Index ' . $selectedIndex . ($stringID !== '' ? ' · ' . $stringID : '');
+                        } else {
+                            $this->DebugLog('pvnode', 'PV-Fläche ' . $pvName . ': string_index ' . $selectedIndex . ' wurde in der API-Antwort nicht gefunden.', 0);
                             continue;
-                        } elseif (isset($pvnodeStringHoursByIndex[$pvPos]) && is_array($pvnodeStringHoursByIndex[$pvPos])) {
-                            $selectedHours = $pvnodeStringHoursByIndex[$pvPos];
-                            $selectedLabel = (string)($pvnodeStringIDsByIndex[$pvPos] ?? ('Index ' . $pvPos));
-                            $this->DebugLog('pvnode', 'PV-Fläche ' . $pvName . ': keine string_id konfiguriert, Fallback auf ' . $selectedLabel . '.');
                         }
 
                         if (count($selectedHours) === 0) continue;

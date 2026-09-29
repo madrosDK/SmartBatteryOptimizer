@@ -322,7 +322,7 @@
                             "add": 0
                         },
                         {
-                            "caption": "pvnode string_id",
+                            "caption": "pvnode String-Index",
                             "name": "PVNodeStringID",
                             "width": "160px",
                             "edit": {
