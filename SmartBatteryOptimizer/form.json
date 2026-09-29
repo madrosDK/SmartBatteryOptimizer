@@ -320,6 +320,15 @@
                                 "type": "SelectVariable"
                             },
                             "add": 0
+                        },
+                        {
+                            "caption": "pvnode string_id",
+                            "name": "PVNodeStringID",
+                            "width": "160px",
+                            "edit": {
+                                "type": "ValidationTextBox"
+                            },
+                            "add": ""
                         }
                     ],
                     "values": []

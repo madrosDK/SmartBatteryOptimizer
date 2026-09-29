@@ -497,3 +497,12 @@ Die Einspeiseausführung wird anhand der tatsächlich am Netz gemessenen Zielene
 ## pvnode Rohdatentest
 
 Über **pvnode API testen – Rohdaten anzeigen** kann die unveränderte API-Antwort einschließlich `strings` diagnostiziert werden. Der Test ist vom normalen Prognosecache und Abrufzähler getrennt.
+
+
+## Änderung v1.9.89
+
+- pvnode-`strings[]` werden anhand der stabilen `string_id` verarbeitet und können je PV-Fläche im Feld **pvnode string_id** fest zugeordnet werden.
+- Die 15-Minuten-Werte `pv_power` werden korrekt als Energie integriert (`W / 1000 × 0,25 h`).
+- Fehlt bei `include=strings` in `values[]` das Feld `pv_power`, wird die Standort-Gesamtprognose aus der Summe der gelieferten Strings gebildet.
+- Ohne konfigurierte `string_id` bleibt die bisherige Zuordnung nach `string_index` als Fallback erhalten.
+- Diagnose vergleicht die aus Strings integrierte Tagesenergie mit `daily[].pv_energy_kwh`.

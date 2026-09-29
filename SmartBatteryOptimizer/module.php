@@ -36,7 +36,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyString('PVCalibrationCleanupFrom', '10:00');
         $this->RegisterPropertyString('PVCalibrationCleanupTo', '23:59');
         $this->RegisterPropertyString('PVSurfaces', json_encode([
-            ['Active' => true, 'Name' => 'Süd', 'KWp' => 10.0, 'OrientationKnown' => true, 'Azimuth' => 0, 'Tilt' => 25, 'Factor' => 1.0, 'AutoCalibrate' => true, 'PVVariable1' => 0, 'PVVariable2' => 0, 'PVVariable3' => 0]
+            ['Active' => true, 'Name' => 'Süd', 'KWp' => 10.0, 'OrientationKnown' => true, 'Azimuth' => 0, 'Tilt' => 25, 'Factor' => 1.0, 'AutoCalibrate' => true, 'PVVariable1' => 0, 'PVVariable2' => 0, 'PVVariable3' => 0, 'PVNodeStringID' => '']
         ]));
 
         $this->RegisterPropertyInteger('SOCVariable', 0);
@@ -2153,33 +2153,53 @@ class SmartBatteryOptimizer extends IPSModule
                     // die Flächenprognose verwendet; eine künstliche kWp-Verteilung findet
                     // ausdrücklich nicht statt.
                     $pvnodeCache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
-                    $pvnodeStringHours = is_array($pvnodeCache['stringHours'] ?? null) ? $pvnodeCache['stringHours'] : [];
-                    $activeSurfaceNames = [];
+                    $pvnodeStringHoursByID = is_array($pvnodeCache['stringHoursByID'] ?? null) ? $pvnodeCache['stringHoursByID'] : [];
+                    $pvnodeStringHoursByIndex = is_array($pvnodeCache['stringHours'] ?? null) ? $pvnodeCache['stringHours'] : [];
+                    $pvnodeStringIDsByIndex = is_array($pvnodeCache['stringIDsByIndex'] ?? null) ? $pvnodeCache['stringIDsByIndex'] : [];
+                    ksort($pvnodeStringHoursByIndex, SORT_NUMERIC);
+
+                    $activeSurfaces = [];
                     foreach ($surfaces as $pvIdx => $pvSurface) {
                         if (empty($pvSurface['Active'])) continue;
                         $pvName = trim((string)($pvSurface['Name'] ?? 'PV'));
                         if ($pvName === '') $pvName = 'PV ' . ($pvIdx + 1);
-                        $activeSurfaceNames[] = $pvName;
+                        $activeSurfaces[] = [
+                            'name' => $pvName,
+                            'stringID' => trim((string)($pvSurface['PVNodeStringID'] ?? ''))
+                        ];
                     }
-                    ksort($pvnodeStringHours, SORT_NUMERIC);
-                    if (count($pvnodeStringHours) === count($activeSurfaceNames) && count($activeSurfaceNames) > 0) {
-                        $stringSets = array_values($pvnodeStringHours);
-                        foreach ($activeSurfaceNames as $pvPos => $pvName) {
-                            $surfaceSourceHours['pvnode'][$pvName] = [];
-                            $tomorrowSurface = 0.0;
-                            foreach (($stringSets[$pvPos] ?? []) as $pvTs => $pvKW) {
-                                $surfaceSourceHours['pvnode'][$pvName][(int)$pvTs] = max(0.0, (float)$pvKW);
-                                if (date('Y-m-d', (int)$pvTs) === date('Y-m-d', strtotime('tomorrow'))) {
-                                    $tomorrowSurface += max(0.0, (float)$pvKW);
-                                }
-                            }
-                            $surfaceTotalsBySource['pvnode'][$pvName] = $tomorrowSurface;
+
+                    foreach ($activeSurfaces as $pvPos => $pvSurfaceInfo) {
+                        $pvName = $pvSurfaceInfo['name'];
+                        $configuredID = $pvSurfaceInfo['stringID'];
+                        $selectedHours = [];
+                        $selectedLabel = '';
+
+                        // Bevorzugt wird immer die stabile pvnode string_id. Nur wenn noch
+                        // keine ID konfiguriert ist, bleibt die bisherige Positionszuordnung
+                        // als abwärtskompatibler Fallback erhalten.
+                        if ($configuredID !== '' && isset($pvnodeStringHoursByID[$configuredID]) && is_array($pvnodeStringHoursByID[$configuredID])) {
+                            $selectedHours = $pvnodeStringHoursByID[$configuredID];
+                            $selectedLabel = $configuredID;
+                        } elseif ($configuredID !== '') {
+                            $this->DebugLog('pvnode', 'PV-Fläche ' . $pvName . ': konfigurierte string_id ' . $configuredID . ' wurde in der Antwort nicht gefunden.', 0);
+                            continue;
+                        } elseif (isset($pvnodeStringHoursByIndex[$pvPos]) && is_array($pvnodeStringHoursByIndex[$pvPos])) {
+                            $selectedHours = $pvnodeStringHoursByIndex[$pvPos];
+                            $selectedLabel = (string)($pvnodeStringIDsByIndex[$pvPos] ?? ('Index ' . $pvPos));
+                            $this->DebugLog('pvnode', 'PV-Fläche ' . $pvName . ': keine string_id konfiguriert, Fallback auf ' . $selectedLabel . '.');
                         }
-                        $this->DebugLog('pvnode', 'Flächen zerlegt | Strings=' . count($pvnodeStringHours) . ' | SBO-Flächen=' . implode(', ', $activeSurfaceNames));
-                    } elseif (count($pvnodeStringHours) > 0) {
-                        $this->DebugLog('pvnode', 'Strings vorhanden, aber keine eindeutige 1:1-Zuordnung | pvnode=' . count($pvnodeStringHours) . ' | SBO=' . count($activeSurfaceNames) . '. Keine künstliche Verteilung.', 0);
-                    } else {
-                        $this->DebugLog('pvnode', 'Antwort/Cache enthält keine nutzbaren String-Daten. Standortgesamt bleibt verfügbar.', 0);
+
+                        if (count($selectedHours) === 0) continue;
+                        $surfaceSourceHours['pvnode'][$pvName] = [];
+                        $tomorrowSurface = 0.0;
+                        foreach ($selectedHours as $pvTs => $pvKWh) {
+                            $value = max(0.0, (float)$pvKWh);
+                            $surfaceSourceHours['pvnode'][$pvName][(int)$pvTs] = $value;
+                            if (date('Y-m-d', (int)$pvTs) === date('Y-m-d', strtotime('tomorrow'))) $tomorrowSurface += $value;
+                        }
+                        $surfaceTotalsBySource['pvnode'][$pvName] = $tomorrowSurface;
+                        $this->DebugLog('pvnode', 'Fläche ' . $pvName . ' -> ' . $selectedLabel . ' | morgen=' . number_format($tomorrowSurface, 2, ',', '.') . ' kWh');
                     }
                     $this->DebugLog('pvnode', 'Prognose bereit | Site-ID=' . $pvnodeSiteID . ' | Stunden=' . count($sourceHours['pvnode']));
                 } catch (Throwable $e) {
@@ -2490,12 +2510,16 @@ class SmartBatteryOptimizer extends IPSModule
             $result = $this->FetchPVNodeForecastLive($apiKey, $siteID);
             $hours = $result['hours'];
             $stringHours = is_array($result['stringHours'] ?? null) ? $result['stringHours'] : [];
+            $stringHoursByID = is_array($result['stringHoursByID'] ?? null) ? $result['stringHoursByID'] : [];
+            $stringIDsByIndex = is_array($result['stringIDsByIndex'] ?? null) ? $result['stringIDsByIndex'] : [];
             $next = (int)$result['nextPollTs'];
             $this->WriteAttributeString('PVNodeForecastCacheJSON', json_encode([
                 'siteID' => $siteID,
                 'fetchedAt' => $now,
                 'hours' => $hours,
-                'stringHours' => $stringHours
+                'stringHours' => $stringHours,
+                'stringHoursByID' => $stringHoursByID,
+                'stringIDsByIndex' => $stringIDsByIndex
             ]));
             $this->WriteAttributeInteger('PVNodeNextPollTs', $next);
             $this->WriteAttributeInteger('PVNodeConsecutiveRejects', 0);
@@ -2520,7 +2544,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc&include=strings';
         $headers = [
-            'User-Agent: IP-Symcon-SmartBatteryOptimizer/1.9.88',
+            'User-Agent: IP-Symcon-SmartBatteryOptimizer/1.9.89',
             'Authorization: Bearer ' . $apiKey,
             'Accept: application/json'
         ];
@@ -2617,6 +2641,52 @@ class SmartBatteryOptimizer extends IPSModule
             throw new Exception('pvnode: Antwort enthält keine Prognosewerte.');
         }
 
+        // pvnode kann bei include=strings die Gesamtserie in values[] ohne pv_power
+        // liefern. Deshalb werden die String-Zeitreihen unabhängig davon ausgewertet.
+        // Jeder 15-Minuten-pv_power-Wert ist Leistung in W; vier Viertelstunden
+        // ergeben pro voller Stunde Energie: Summe(W) / 1000 * 0,25 = kWh.
+        $stringQuarterValuesByID = [];
+        $stringIndexByID = [];
+        $stringIDsByIndex = [];
+        if (isset($data['strings']) && is_array($data['strings'])) {
+            foreach ($data['strings'] as $row) {
+                if (!is_array($row) || !isset($row['timestamp'], $row['pv_power'], $row['string_index'])) continue;
+                $ts = strtotime((string)$row['timestamp']);
+                if ($ts === false) continue;
+                $idx = (int)$row['string_index'];
+                $sid = trim((string)($row['string_id'] ?? ('index_' . $idx)));
+                if ($sid === '') $sid = 'index_' . $idx;
+                $hourTs = strtotime(date('Y-m-d H:00:00', $ts));
+                if (!isset($stringQuarterValuesByID[$sid])) $stringQuarterValuesByID[$sid] = [];
+                if (!isset($stringQuarterValuesByID[$sid][$hourTs])) $stringQuarterValuesByID[$sid][$hourTs] = [];
+                $stringQuarterValuesByID[$sid][$hourTs][] = max(0.0, (float)$row['pv_power']);
+                $stringIndexByID[$sid] = $idx;
+                $stringIDsByIndex[$idx] = $sid;
+            }
+        }
+
+        $stringHoursByID = [];
+        foreach ($stringQuarterValuesByID as $sid => $byHour) {
+            foreach ($byHour as $hourTs => $watts) {
+                if (count($watts) === 0) continue;
+                // Energie der tatsächlich gelieferten 15-Minuten-Intervalle in kWh.
+                $stringHoursByID[$sid][(int)$hourTs] = array_sum($watts) / 1000.0 * 0.25;
+            }
+            ksort($stringHoursByID[$sid]);
+        }
+        ksort($stringIDsByIndex, SORT_NUMERIC);
+
+        // Kompatibilitätsansicht nach string_index für vorhandene Caches/Installationen.
+        $stringHours = [];
+        foreach ($stringHoursByID as $sid => $byHour) {
+            $idx = (int)($stringIndexByID[$sid] ?? 0);
+            $stringHours[$idx] = $byHour;
+        }
+        ksort($stringHours, SORT_NUMERIC);
+
+        // Standortgesamt: wenn values[].pv_power vorhanden ist, direkt integrieren.
+        // Fehlt es (wie in der realen API-Antwort mit include=strings), werden die
+        // getrennten String-Energien je Stunde addiert.
         $quarterValues = [];
         foreach ($data['values'] as $row) {
             if (!is_array($row) || !isset($row['timestamp'], $row['pv_power'])) continue;
@@ -2624,41 +2694,35 @@ class SmartBatteryOptimizer extends IPSModule
             if ($ts === false) continue;
             $hourTs = strtotime(date('Y-m-d H:00:00', $ts));
             if (!isset($quarterValues[$hourTs])) $quarterValues[$hourTs] = [];
-            $quarterValues[$hourTs][] = max(0.0, (float)$row['pv_power']) / 1000.0;
+            $quarterValues[$hourTs][] = max(0.0, (float)$row['pv_power']);
         }
-
         $hours = [];
-        foreach ($quarterValues as $hourTs => $values) {
-            if (count($values) === 0) continue;
-            $hours[(int)$hourTs] = array_sum($values) / count($values);
+        foreach ($quarterValues as $hourTs => $watts) {
+            if (count($watts) === 0) continue;
+            $hours[(int)$hourTs] = array_sum($watts) / 1000.0 * 0.25;
+        }
+        if (count($hours) === 0 && count($stringHoursByID) > 0) {
+            foreach ($stringHoursByID as $byHour) {
+                foreach ($byHour as $hourTs => $kWh) {
+                    if (!isset($hours[(int)$hourTs])) $hours[(int)$hourTs] = 0.0;
+                    $hours[(int)$hourTs] += max(0.0, (float)$kWh);
+                }
+            }
         }
         ksort($hours);
         if (count($hours) === 0) throw new Exception('pvnode: Keine verwertbaren PV-Leistungswerte erhalten.');
 
-        // Optional angeforderte pvnode-Stringdaten: pro Solarfläche dieselbe
-        // 15-Minuten-Zeitreihe, zu Stundenmittelwerten in kW verdichtet.
-        $stringQuarterValues = [];
-        if (isset($data['strings']) && is_array($data['strings'])) {
-            foreach ($data['strings'] as $row) {
-                if (!is_array($row) || !isset($row['timestamp'], $row['pv_power'], $row['string_index'])) continue;
-                $ts = strtotime((string)$row['timestamp']);
-                if ($ts === false) continue;
-                $idx = (int)$row['string_index'];
-                $hourTs = strtotime(date('Y-m-d H:00:00', $ts));
-                if (!isset($stringQuarterValues[$idx])) $stringQuarterValues[$idx] = [];
-                if (!isset($stringQuarterValues[$idx][$hourTs])) $stringQuarterValues[$idx][$hourTs] = [];
-                $stringQuarterValues[$idx][$hourTs][] = max(0.0, (float)$row['pv_power']) / 1000.0;
+        // Plausibilitätsprüfung gegen pvnode daily[].pv_energy_kwh; nur Diagnose,
+        // die API-Tageswerte ersetzen die Zeitreihe nicht.
+        if (isset($data['daily']) && is_array($data['daily'])) {
+            foreach ($data['daily'] as $dayRow) {
+                if (!is_array($dayRow) || !isset($dayRow['date'], $dayRow['pv_energy_kwh'])) continue;
+                $sum = 0.0;
+                foreach ($hours as $hourTs => $kWh) if (date('Y-m-d', (int)$hourTs) === (string)$dayRow['date']) $sum += (float)$kWh;
+                $apiDaily = (float)$dayRow['pv_energy_kwh'];
+                $this->DebugLog('pvnode', 'Tagescheck ' . $dayRow['date'] . ': Strings=' . number_format($sum, 2, ',', '.') . ' kWh | API daily=' . number_format($apiDaily, 2, ',', '.') . ' kWh');
             }
         }
-        $stringHours = [];
-        foreach ($stringQuarterValues as $idx => $byHour) {
-            foreach ($byHour as $hourTs => $values) {
-                if (count($values) === 0) continue;
-                $stringHours[(int)$idx][(int)$hourTs] = array_sum($values) / count($values);
-            }
-            if (isset($stringHours[(int)$idx])) ksort($stringHours[(int)$idx]);
-        }
-        ksort($stringHours, SORT_NUMERIC);
 
         $nextPollRaw = $data['next_poll_at'] ?? ($data['meta']['next_poll_at'] ?? ($data['metadata']['next_poll_at'] ?? null));
         $nextPollTs = 0;
@@ -2670,7 +2734,7 @@ class SmartBatteryOptimizer extends IPSModule
             if ($parsed !== false) $nextPollTs = $parsed;
         }
 
-        return ['hours' => $hours, 'stringHours' => $stringHours, 'nextPollTs' => $nextPollTs];
+        return ['hours' => $hours, 'stringHours' => $stringHours, 'stringHoursByID' => $stringHoursByID, 'stringIDsByIndex' => $stringIDsByIndex, 'nextPollTs' => $nextPollTs];
     }
 
     private function RegisterPVNodeRejection(int $status, string $message): void
