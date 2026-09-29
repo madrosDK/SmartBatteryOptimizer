@@ -1,4 +1,4 @@
-# SmartBatteryOptimizer 1.9.90 / Build 161
+# SmartBatteryOptimizer 1.9.91 / Build 162
 
 - Einspeise-Statistik kann zwischen Wochen- und Monatsansicht umgeschaltet werden.
 - Wochenansicht zeigt Montag bis Sonntag mit Tageswerten und breiteren Balken.

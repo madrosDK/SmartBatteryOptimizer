@@ -508,5 +508,5 @@ Die Einspeiseausführung wird anhand der tatsächlich am Netz gemessenen Zielene
 - Diagnose vergleicht die aus Strings integrierte Tagesenergie mit `daily[].pv_energy_kwh`.
 
 
-### 1.9.90 – Wochen-/Monatsansicht Einspeise-Statistik
+### 1.9.91 – Wochen-/Monatsansicht Einspeise-Statistik
 Die Einspeise-Statistik kann zwischen Woche (Montag bis Sonntag) und Monat umgeschaltet werden. Navigation, Zeitraumüberschrift und Summen folgen der gewählten Ansicht; die Auswahl bleibt in der Visualisierung gespeichert.
