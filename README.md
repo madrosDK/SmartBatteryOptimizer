@@ -506,3 +506,7 @@ Die Einspeiseausführung wird anhand der tatsächlich am Netz gemessenen Zielene
 - Fehlt bei `include=strings` in `values[]` das Feld `pv_power`, wird die Standort-Gesamtprognose aus der Summe der gelieferten Strings gebildet.
 - Ohne konfigurierte `string_id` bleibt die bisherige Zuordnung nach `string_index` als Fallback erhalten.
 - Diagnose vergleicht die aus Strings integrierte Tagesenergie mit `daily[].pv_energy_kwh`.
+
+
+### 1.9.90 – Wochen-/Monatsansicht Einspeise-Statistik
+Die Einspeise-Statistik kann zwischen Woche (Montag bis Sonntag) und Monat umgeschaltet werden. Navigation, Zeitraumüberschrift und Summen folgen der gewählten Ansicht; die Auswahl bleibt in der Visualisierung gespeichert.
