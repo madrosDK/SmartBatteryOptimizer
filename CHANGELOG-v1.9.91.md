@@ -1,4 +1,4 @@
-# SmartBatteryOptimizer v1.9.91 / Build 162
+# SmartBatteryOptimizer v1.9.92 / Build 163
 
 - Einspeise-Statistik: Blau = Einspeisung außerhalb der Automatik.
 - Grün = Einspeisung während der Automatik.
