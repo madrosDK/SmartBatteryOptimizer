@@ -6419,25 +6419,12 @@ class SmartBatteryOptimizer extends IPSModule
             $history = [];
         }
 
-        // HEUTE und MORGEN im Diagramm immer aus dem AKTUELLEN Forecast aufbauen.
-        // Historische Tage bleiben unverändert gespeichert. Das ist wichtig, weil sich der
-        // PV-Auto-Faktor während des Tages ändern kann: Die blaue Highcharts-Serie muss dann
-        // sofort dieselben korrigierten totalKW-Werte zeigen wie die Diagnose.
-        $hours = is_array($forecast['hours'] ?? null) ? $forecast['hours'] : [];
-        foreach ([$todayDate, $tomorrowDate] as $date) {
-            $dayStart = strtotime($date . ' 00:00:00');
-            $hourly = [];
-            for ($h = 0; $h < 24; $h++) {
-                // totalKW enthält bereits: Provider -> Quellengewichtung -> Anlagen-Auto-Faktor.
-                $hourly[$h] = round(max(0.0, (float)($hours[$dayStart + $h * 3600]['totalKW'] ?? 0.0)), 4);
-            }
-            $history[$date] = [
-                'hourlyKWh' => $hourly,
-                'totalKWh' => array_sum($hourly),
-                'savedAt' => time(),
-                'dayAhead' => ($date === $tomorrowDate)
-            ];
-        }
+        // Die kombinierte Prognose wird bereits in StorePVForecastHistory() gespeichert.
+        // Dort werden vollständig vergangene Stunden eingefroren, während die aktuelle
+        // und zukünftige Stunden weiterhin mit neuen Forecast-Abrufen aktualisiert werden.
+        // Diese Historie darf hier NICHT noch einmal aus dem aktuellen Forecast überschrieben
+        // werden, sonst stammen Provider-Linien und blauer Kombinationsbalken für vergangene
+        // Stunden aus unterschiedlichen Prognoseständen.
         ksort($history);
 
         $days = [];

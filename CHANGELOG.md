@@ -1,5 +1,12 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.07 / Build 178
+
+- PV-Prognose-Diagramm korrigiert: vollständig vergangene Stunden verwenden für Anbieterlinien und den blauen kombinierten Prognosebalken nun denselben eingefrorenen Prognosestand.
+- Der blaue Balken für bereits vergangene Stunden wird beim Rendern nicht mehr nachträglich aus einem neueren Forecast überschrieben.
+- Aktuelle und zukünftige Stunden bleiben weiterhin dynamisch und werden bei neuen Prognoseabrufen aktualisiert.
+- Keine Änderung an PV-Gewichtung, Kalibrierungsberechnung, Einspeiseplanung oder Dispatch.
+
 ## v1.10.06 / Build 177
 
 - Navigationsbuttons der Einspeise-Statistik vollständig an den Stil der übrigen Diagramme angeglichen: Tahoma, identische Schriftgrößen, Mindestbreiten, Innenabstände und Fettschrift für Heute/Woche/Monat.
