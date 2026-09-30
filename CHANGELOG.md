@@ -1,5 +1,14 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.02 / Build 173
+- Freie Batterieenergie und geplante Netzeinspeisung werden getrennt berechnet.
+- Der erwartete Eigenverbrauch wird während der Entladung aus der Netzleistung herausgerechnet.
+- Die freie Batterieenergie ist die harte Obergrenze; die geplante Netzenergie liegt entsprechend darunter.
+- Zusammenhängende Preisstunden bleiben ein durchgehender Einspeisevorgang.
+- Preisdiagramm und Plantabelle zeigen je Stunde nur ihren eigenen Energieanteil statt die Gesamtenergie des kombinierten Plans in jedem Balken.
+- `Geplante Einspeisemenge aktuell` zeigt vor Start den nächsten tatsächlichen Gesamtplan; alte Ist-Mengen werden für den neuen Plan auf 0 gesetzt.
+- Zukunftspläne aus v1.10.01 werden einmalig neu berechnet. Archivdaten werden nicht gelöscht.
+
 ## v1.10.01 / Build 172
 - Zusammenhängende ausgewählte Preisstunden werden zu einem einzigen verbindlichen Einspeisevorgang mit gemeinsamer Ziel-kWh-Menge zusammengeführt.
 - Kein planmäßiger STOP/START mehr am Stundenwechsel innerhalb eines zusammenhängenden grünen Preisfensters.
