@@ -192,7 +192,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('ArchiveStorageMigrationVersion', 0);
         $this->RegisterAttributeString('ArchiveStorageStatus', '');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
-        $this->RegisterAttributeInteger('PVCalibrationPairFormatVersion', 0);
+        $this->RegisterAttributeString('PVSurfaceStableIDsJSON', '{}');
         $this->RegisterAttributeBoolean('PVCalibrationCurtailmentLatched', false);
         $this->RegisterAttributeInteger('PVCalibrationBelowThresholdSince', 0);
         $this->RegisterAttributeInteger('PVCalibrationAboveThresholdSince', 0);
@@ -332,6 +332,33 @@ class SmartBatteryOptimizer extends IPSModule
         return json_encode($form, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 
+    private function PVSurfaceFingerprint(array $surface): string
+    {
+        $vars=[(int)($surface['PVVariable1']??0),(int)($surface['PVVariable2']??0),(int)($surface['PVVariable3']??0)]; sort($vars);
+        return implode(',', $vars).'|pn:'.trim((string)($surface['PVNodeStringID']??'')).'|kwp:'.number_format((float)($surface['KWp']??0),3,'.','');
+    }
+
+    private function EnsurePVSurfaceStableIDs(): void
+    {
+        $surfaces=json_decode($this->ReadPropertyString('PVSurfaces'),true); if(!is_array($surfaces))$surfaces=[];
+        $old=json_decode($this->ReadAttributeString('PVSurfaceStableIDsJSON'),true); if(!is_array($old))$old=[];
+        $used=[];$new=[];$maxID=-1; foreach($old as $entry)$maxID=max($maxID,(int)($entry['id']??-1));
+        foreach($surfaces as $idx=>$surface){
+            $fp=$this->PVSurfaceFingerprint($surface);$name=trim((string)($surface['Name']??''));$match=null;
+            foreach($old as $entry){$id=(int)($entry['id']??-1);if($id<0||isset($used[$id]))continue;if(($entry['fingerprint']??'')===$fp){$match=$entry;break;}}
+            if($match===null)foreach($old as $entry){$id=(int)($entry['id']??-1);if($id<0||isset($used[$id]))continue;if($name!==''&&($entry['name']??'')===$name){$match=$entry;break;}}
+            if($match===null&&isset($old[$idx])){$id=(int)($old[$idx]['id']??-1);if($id>=0&&!isset($used[$id]))$match=$old[$idx];}
+            if($match===null)$match=['id'=>++$maxID];$id=(int)$match['id'];$used[$id]=true;$new[]=['id'=>$id,'name'=>$name,'fingerprint'=>$fp];
+        }
+        foreach($old as $entry){$id=(int)($entry['id']??-1);if($id<0||isset($used[$id]))continue;foreach(['Expected','Actual'] as $kind){$vid=(int)@$this->GetIDForIdent('PVCal'.$kind.'_'.$id);if($vid>0&&@IPS_VariableExists($vid))@IPS_DeleteVariable($vid);}}
+        $this->WriteAttributeString('PVSurfaceStableIDsJSON',json_encode($new));
+    }
+
+    private function PVCalibrationIdent(string $kind,int $idx): string
+    {
+        $map=json_decode($this->ReadAttributeString('PVSurfaceStableIDsJSON'),true);$id=$idx;if(is_array($map)&&isset($map[$idx]['id']))$id=(int)$map[$idx]['id'];return 'PVCal'.$kind.'_'.$id;
+    }
+
     public function ApplyChanges()
     {
         parent::ApplyChanges();
@@ -368,6 +395,7 @@ class SmartBatteryOptimizer extends IPSModule
         $minimumPriceVarID = @$this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt');
         if ($minimumPriceVarID > 0) @IPS_SetName($minimumPriceVarID, 'Mindestpreis Einspeisung');
         $this->InitializeFeedInFactorMemory();
+        $this->EnsurePVSurfaceStableIDs();
         // Zeitreihen ab 1.9.79 im IP-Symcon Archive Control verwalten.
         // Bestehende JSON-Lerndaten/Statistiken werden beim ersten Lauf einmalig uebernommen.
         $this->EnsureArchiveStorageAndMigration();
@@ -1379,7 +1407,7 @@ class SmartBatteryOptimizer extends IPSModule
             $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
             if ($archiveID > 0 && is_array($surfaces)) {
                 foreach ($surfaces as $idx => $surface) {
-                    foreach (['PVCalExpected_' . $idx, 'PVCalActual_' . $idx] as $ident) {
+                    foreach ([$this->PVCalibrationIdent('Expected', $idx), $this->PVCalibrationIdent('Actual', $idx)] as $ident) {
                         $varID = (int)@$this->GetIDForIdent($ident); if ($varID <= 0) continue;
                         @AC_DeleteVariableData($archiveID, $varID, $fromTs, $toTs);
                         @AC_AddLoggedValues($archiveID, $varID, [['TimeStamp'=>$fromTs,'Value'=>0.0]]);
@@ -1438,7 +1466,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $surfacesReset = json_decode($this->ReadPropertyString('PVSurfaces'), true);
                 if ($archiveID > 0 && is_array($surfacesReset)) {
                     foreach ($surfacesReset as $idxReset => $surfaceReset) {
-                        foreach (['PVCalExpected_' . $idxReset, 'PVCalActual_' . $idxReset] as $identReset) {
+                        foreach ([$this->PVCalibrationIdent('Expected', $idxReset), $this->PVCalibrationIdent('Actual', $idxReset)] as $identReset) {
                             $varIDReset = (int)@$this->GetIDForIdent($identReset); if ($varIDReset <= 0) continue;
                             @AC_DeleteVariableData($archiveID, $varIDReset, 0, 0);
                             @AC_SetLoggingStatus($archiveID, $varIDReset, true);
@@ -4086,6 +4114,24 @@ class SmartBatteryOptimizer extends IPSModule
         $selected = $packedSelected;
         usort($selected, fn($a, $b) => $a['start'] <=> $b['start']);
 
+        // Direkt aneinander anschließende ausgewählte Preisstunden bilden einen einzigen
+        // verbindlichen Einspeisevorgang. Stundenwechsel erzeugen keinen STOP/START mehr.
+        $continuous=[];
+        foreach($selected as $slot){
+            if(empty($continuous)){$continuous[]=$slot;continue;}
+            $li=count($continuous)-1;$prev=$continuous[$li];
+            $prevIntervalEnd=(int)($prev['priceIntervalEnd']??$prev['end']);
+            $slotIntervalStart=(int)($slot['priceIntervalStart']??$slot['start']);
+            if($slotIntervalStart<=$prevIntervalEnd+1 && (int)$slot['start']<=$prevIntervalEnd+1){
+                $e1=max(0.0,(float)($prev['energyKWh']??0.0));$e2=max(0.0,(float)($slot['energyKWh']??0.0));$te=$e1+$e2;
+                $prev['priceCt']=$te>0.0?(($e1*(float)($prev['priceCt']??0.0)+$e2*(float)($slot['priceCt']??0.0))/$te):0.0;
+                $prev['energyKWh']=$te;$prev['end']=max((int)$prev['end'],(int)$slot['end']);$prev['priceIntervalEnd']=max($prevIntervalEnd,(int)($slot['priceIntervalEnd']??$slot['end']));
+                $prev['powerW']=max((float)($prev['powerW']??0.0),(float)($slot['powerW']??0.0));$duration=max(1,(int)$prev['end']-(int)$prev['start']);$prev['expectedGridExportW']=($te/($duration/3600.0))*1000.0;
+                $prev['planKey']=(int)($prev['priceIntervalStart']??$prev['start']).':'.(int)$prev['priceIntervalEnd'];$continuous[$li]=$prev;
+            }else{$continuous[]=$slot;}
+        }
+        $selected=$continuous;
+
         // Erwarteten SoC am Beginn jedes geplanten Fensters festschreiben. Dieser
         // Referenzwert bleibt mit dem verbindlichen Plan erhalten und wird beim
         // tatsächlichen Start mit dem realen SoC verglichen.
@@ -5247,9 +5293,9 @@ class SmartBatteryOptimizer extends IPSModule
             if ($name === '') $name = 'PV ' . ($idx + 1);
             // Prognose wird als Stundenenergie (kWh) archiviert. Die Ist-Seite kommt
             // direkt aus den in der PV-Fläche zugewiesenen PV-String-Variablen.
-            $this->MaintainVariable('PVCalExpected_' . $idx, 'PV Kalibrierung Prognose ' . $name, VARIABLETYPE_FLOAT, '~Electricity', 300 + $idx * 2, true);
-            $this->MaintainVariable('PVCalActual_' . $idx, 'PV Kalibrierung Ist ' . $name, VARIABLETYPE_FLOAT, '~Electricity', 301 + $idx * 2, true);
-            $forecastVarID = (int)@$this->GetIDForIdent('PVCalExpected_' . $idx);
+            $this->MaintainVariable($this->PVCalibrationIdent('Expected', $idx), 'PV Kalibrierung Prognose ' . $name, VARIABLETYPE_FLOAT, '~Electricity', 300 + $idx * 2, true);
+            $this->MaintainVariable($this->PVCalibrationIdent('Actual', $idx), 'PV Kalibrierung Ist ' . $name, VARIABLETYPE_FLOAT, '~Electricity', 301 + $idx * 2, true);
+            $forecastVarID = (int)@$this->GetIDForIdent($this->PVCalibrationIdent('Expected', $idx));
             if ($forecastVarID > 0) {
                 @IPS_SetHidden($forecastVarID, true);
                 try {
@@ -5267,37 +5313,14 @@ class SmartBatteryOptimizer extends IPSModule
                 } catch (Throwable $e) { $this->DebugLog('ArchiveStorage', 'PV-String ' . $pvVarID . ': ' . $e->getMessage(), 0); }
             }
             // Prognose und Ist bilden ab v1.9.98 ein gemeinsames Stundenpaar.
-            $actualID = (int)@$this->GetIDForIdent('PVCalActual_' . $idx);
+            $actualID = (int)@$this->GetIDForIdent($this->PVCalibrationIdent('Actual', $idx));
             if ($actualID > 0) {
                 @IPS_SetHidden($actualID, true);
                 try { @AC_SetLoggingStatus($archiveID, $actualID, true); } catch (Throwable $e) {}
             }
         }
 
-        // v1.10.00: Die Paarvariablen enthalten Stundenenergie in kWh.
-        // Frühere Versionen verwendeten teils W/Watt-basierte Archivwerte. Diese dürfen
-        // nicht lediglich als kWh umetikettiert werden, da sie die Kalibrierung verfälschen.
-        // Beim ersten Start dieser Version werden deshalb die alten Paararchive einmalig
-        // geleert. Ab dann werden ausschließlich neue, abgeschlossene kWh-Stundenpaare
-        // (Prognose + Ist mit identischem Endzeitstempel) aufgebaut.
-        if ($this->ReadAttributeInteger('PVCalibrationPairFormatVersion') < 1) {
-            foreach ($surfaces as $idxPair => $_surfacePair) {
-                foreach (['PVCalExpected_' . $idxPair, 'PVCalActual_' . $idxPair] as $identPair) {
-                    $pairID = (int)@$this->GetIDForIdent($identPair);
-                    if ($pairID <= 0) continue;
-                    @AC_DeleteVariableData($archiveID, $pairID, 0, time());
-                    @IPS_SetHidden($pairID, true);
-                    try {
-                        @AC_SetLoggingStatus($archiveID, $pairID, true);
-                        @AC_SetAggregationType($archiveID, $pairID, 0);
-                        if (function_exists('AC_SetGraphStatus')) @AC_SetGraphStatus($archiveID, $pairID, false);
-                    } catch (Throwable $e) {}
-                }
-            }
-            $this->WriteAttributeString('PVCalibrationJSON', '{}');
-            $this->WriteAttributeInteger('PVCalibrationPairFormatVersion', 1);
-            $this->DebugLog('PV-Kalibrierarchiv', 'v1.10.00: alte Watt-/inkompatible Paararchive entfernt; Neuaufbau ausschließlich in kWh.');
-        }
+        // Ab v1.10.01 werden vorhandene Kalibrierarchive bei Updates niemals pauschal gelöscht.
 
         $feedVars = [
             'FeedInArchiveKWh' => ['Einspeiseautomatik Energie je Fenster', '~Electricity', 360],
@@ -5324,7 +5347,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Stunden-kWh, unregelmäßige Zeitpunkte) einmalig vollständig verwerfen.
         if ($migrationVersion < 3) {
             foreach ($surfaces as $idxClean => $_surfaceClean) {
-                $idClean = (int)@$this->GetIDForIdent('PVCalExpected_' . $idxClean);
+                $idClean = (int)@$this->GetIDForIdent($this->PVCalibrationIdent('Expected', $idxClean));
                 if ($idClean > 0) @AC_DeleteVariableData($archiveID, $idClean, 0, time() + 10 * 365 * 86400);
             }
             $this->WriteAttributeString('PVCalibrationJSON', '{}');
@@ -5384,7 +5407,7 @@ class SmartBatteryOptimizer extends IPSModule
             $name = trim((string)($surface['Name'] ?? 'PV'));
             if ($name === '') $name = 'PV ' . ($idx + 1);
             if ($this->SurfaceKey($name, $idx) !== $key) continue;
-            return [(int)@$this->GetIDForIdent('PVCalExpected_' . $idx), 0];
+            return [(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Expected', $idx)), 0];
         }
         return [0, 0];
     }
@@ -5417,8 +5440,8 @@ class SmartBatteryOptimizer extends IPSModule
             if ($name === '') $name = 'PV ' . ($idx + 1);
             $key = $this->SurfaceKey($name, $idx);
             if (!isset($legacy[$key]) || !is_array($legacy[$key])) continue;
-            $expectedID = (int)@$this->GetIDForIdent('PVCalExpected_' . $idx);
-            $actualID = (int)@$this->GetIDForIdent('PVCalActual_' . $idx);
+            $expectedID = (int)@$this->GetIDForIdent($this->PVCalibrationIdent('Expected', $idx));
+            $actualID = (int)@$this->GetIDForIdent($this->PVCalibrationIdent('Actual', $idx));
             if ($expectedID <= 0 || $actualID <= 0) continue;
             // Migration idempotent halten: bei einem abgebrochenen ersten Versuch
             // vorhandene Zielwerte dieser neuen Archivvariablen vor dem Neuimport entfernen.
@@ -5608,8 +5631,8 @@ class SmartBatteryOptimizer extends IPSModule
 
         foreach($surfaces as $idx=>$surface){
             if(empty($surface['Active']) || empty($surface['AutoCalibrate']))continue;
-            $expectedID=(int)@$this->GetIDForIdent('PVCalExpected_'.$idx);
-            $actualID=(int)@$this->GetIDForIdent('PVCalActual_'.$idx);
+            $expectedID=(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Expected', $idx));
+            $actualID=(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Actual', $idx));
             if($expectedID<=0 || $actualID<=0)continue;
             $hours=is_array($pending[(string)$idx]??null)?$pending[(string)$idx]:[];
             foreach($hours as $startRaw=>$expectedKWh){
@@ -5673,8 +5696,8 @@ class SmartBatteryOptimizer extends IPSModule
         $from=time()-($days+3)*86400; $added=0; $missingForecast=0; $blocked=0;
         foreach($surfaces as $idx=>$surface){
             if(empty($surface['Active']) || empty($surface['AutoCalibrate']))continue;
-            $expectedID=(int)@$this->GetIDForIdent('PVCalExpected_'.$idx);
-            $actualID=(int)@$this->GetIDForIdent('PVCalActual_'.$idx);
+            $expectedID=(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Expected', $idx));
+            $actualID=(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Actual', $idx));
             if($expectedID<=0 || $actualID<=0)continue;
             $eRows=@AC_GetLoggedValues($archiveID,$expectedID,$from,time(),0); if(!is_array($eRows))$eRows=[];
             $forecast=[];
@@ -5708,8 +5731,8 @@ class SmartBatteryOptimizer extends IPSModule
         foreach($surfaces as $idx=>$surface){
             $name=trim((string)($surface['Name']??'PV')); if($name==='')$name='PV '.($idx+1);
             $key=$this->SurfaceKey($name,$idx);
-            $expectedID=(int)@$this->GetIDForIdent('PVCalExpected_'.$idx);
-            $actualID=(int)@$this->GetIDForIdent('PVCalActual_'.$idx);
+            $expectedID=(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Expected', $idx));
+            $actualID=(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Actual', $idx));
             if($expectedID<=0 || $actualID<=0)continue;
             $eRows=@AC_GetLoggedValues($archiveID,$expectedID,$startWindow,time(),0); if(!is_array($eRows))$eRows=[];
             $aRows=@AC_GetLoggedValues($archiveID,$actualID,$startWindow,time(),0); if(!is_array($aRows))$aRows=[];
@@ -6048,7 +6071,9 @@ class SmartBatteryOptimizer extends IPSModule
 
             $slot = null;
             foreach ($plan['slots'] as $s) {
-                if (abs($s['start'] - $p['start']) < 120 || ($s['start'] >= $p['start'] && $s['start'] < $p['end'])) {
+                $planStart=(int)($s['priceIntervalStart']??$s['start']);
+                $planEnd=(int)($s['priceIntervalEnd']??$s['end']);
+                if ($planStart < (int)$p['end'] && $planEnd > (int)$p['start']) {
                     $slot = $s;
                     break;
                 }
@@ -6606,7 +6631,9 @@ class SmartBatteryOptimizer extends IPSModule
 
             foreach ($plan['slots'] as $slot) {
                 $slotStart = (int)($slot['start'] ?? 0);
-                if (abs($slotStart - $start) < 120 || ($slotStart >= $start && $slotStart < $end)) {
+                $slotPlanStart = (int)($slot['priceIntervalStart'] ?? $slotStart);
+                $slotPlanEnd = (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0));
+                if ($slotPlanStart < $end && $slotPlanEnd > $start) {
                     $hourBuckets[$hourTs]['selected'] = true;
                     if (($slot['reason'] ?? '') === 'pv_space') {
                         $hourBuckets[$hourTs]['reason'] = 'pv_space';

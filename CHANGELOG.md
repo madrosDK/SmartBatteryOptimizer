@@ -1,5 +1,14 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.01 / Build 172
+- Zusammenhängende ausgewählte Preisstunden werden zu einem einzigen verbindlichen Einspeisevorgang mit gemeinsamer Ziel-kWh-Menge zusammengeführt.
+- Kein planmäßiger STOP/START mehr am Stundenwechsel innerhalb eines zusammenhängenden grünen Preisfensters.
+- „Nächstes Einspeisefenster“ verwendet den zusammenhängenden Gesamtplan.
+- PV-Flächen erhalten intern eine stabile ID-Zuordnung; Umbenennen und Sortieren behalten die Kalibrierzuordnung bei.
+- Neue PV-Flächen erhalten automatisch eigene Prognose-/Ist-Kalibrierungsvariablen.
+- Beim Löschen einer PV-Fläche werden nur deren eindeutig zugeordnete interne Kalibrierungsvariablen entfernt.
+- Die pauschale Kalibrierarchiv-Löschmigration aus v1.10.00 wurde vollständig entfernt. Updates löschen keine bestehenden Kalibrierarchive mehr.
+
 ## v1.10.00 / Build 171
 - PV-Kalibrierung Prognose und Ist sind jetzt ausdrücklich Stundenenergie in kWh (`~Electricity`), nicht W.
 - `PV Kalibrierung Ist Haus/Nebengebäude` wird als kWh-Variable gepflegt.
