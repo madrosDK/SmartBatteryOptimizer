@@ -1,5 +1,9 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.05 / Build 176
+- Navigationsbuttons im Einspeise-Statistik-Chart (`←`, `→`, `Heute`, `Woche`, `Monat`) verwenden jetzt wie die übrigen Charts explizit Tahoma mit identischem Fallback-Fontstack.
+- Keine Änderung an Einspeiseplanung, Statistikberechnung oder gespeicherten Daten.
+
 ## v1.10.04 / Build 175
 - Nacht-Einspeiseplanung verwendet für die Batterie-/Dispatch-Leistung jetzt ausschließlich den Konfigurationswert **„Max. Einspeise-/Entladeleistung“**.
 - Bei 20.000 W Konfiguration werden an AlphaESS weiterhin 20.000 W Dispatch-Leistung geschrieben.
