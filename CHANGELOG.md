@@ -1,5 +1,10 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.06 / Build 177
+
+- Navigationsbuttons der Einspeise-Statistik vollständig an den Stil der übrigen Diagramme angeglichen: Tahoma, identische Schriftgrößen, Mindestbreiten, Innenabstände und Fettschrift für Heute/Woche/Monat.
+- Keine Änderung an Einspeiseplanung, Dispatch oder Statistikberechnung.
+
 ## v1.10.05 / Build 176
 - Navigationsbuttons im Einspeise-Statistik-Chart (`←`, `→`, `Heute`, `Woche`, `Monat`) verwenden jetzt wie die übrigen Charts explizit Tahoma mit identischem Fallback-Fontstack.
 - Keine Änderung an Einspeiseplanung, Statistikberechnung oder gespeicherten Daten.
