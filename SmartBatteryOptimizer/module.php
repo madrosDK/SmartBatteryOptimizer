@@ -1879,7 +1879,7 @@ class SmartBatteryOptimizer extends IPSModule
             $stats[] = ['start'=>$startedTs,'end'=>time(),'planKey'=>$key,'targetKWh'=>$target,'deliveredKWh'=>$delivered,'priceCt'=>$priceCt,'revenueEUR'=>$delivered*$priceCt/100.0,'completed'=>$completed,'reason'=>'price','finishReason'=>$reason];
             if (count($stats) > 1500) $stats = array_slice($stats, -1500);
             $this->WriteAttributeString('FeedInStatisticsJSON', json_encode($stats));
-            $this->StoreFeedInStatisticArchive($delivered, $delivered*$priceCt/100.0, $target, time());
+            $this->StoreFeedInStatisticArchive($delivered, $delivered*$priceCt/100.0, $target, $startedTs, time());
         }
         // Anzeige nach jedem Abschluss aktualisieren. Dadurch verschwindet ein eventuell
         // laufender Status sofort, auch wenn das Fenster nicht statistikrelevant war.
@@ -2168,7 +2168,7 @@ class SmartBatteryOptimizer extends IPSModule
                         $activeSurfaces[] = [
                             'name' => $pvName,
                             // Historischer Property-Name bleibt aus Kompatibilitätsgründen bestehen.
-                            // Der konfigurierte Wert ist ab v1.9.98 ausdrücklich pvnode string_index.
+                            // Der konfigurierte Wert ist ab v1.9.97 ausdrücklich pvnode string_index.
                             'stringIndex' => trim((string)($pvSurface['PVNodeStringID'] ?? ''))
                         ];
                     }
@@ -5276,7 +5276,9 @@ class SmartBatteryOptimizer extends IPSModule
             'FeedInArchiveKWh' => ['Einspeiseautomatik Energie je Fenster', '~Electricity', 360],
             'FeedInArchiveEUR' => ['Einspeiseautomatik Erlös je Fenster', '', 361],
             'FeedInArchiveTargetKWh' => ['Einspeiseautomatik Planmenge je Fenster', '~Electricity', 362],
-            'FeedInArchiveWindow' => ['Einspeiseautomatik Fenster', '', 363]
+            'FeedInArchiveWindow' => ['Einspeiseautomatik Fenster', '', 363],
+            'FeedInArchiveStartTs' => ['Einspeiseautomatik Startzeit', '', 364],
+            'FeedInArchiveEndTs' => ['Einspeiseautomatik Endzeit', '', 365]
         ];
         foreach ($feedVars as $ident => $cfg) {
             $this->MaintainVariable($ident, $cfg[0], VARIABLETYPE_FLOAT, $cfg[1], $cfg[2], true);
@@ -5702,10 +5704,10 @@ class SmartBatteryOptimizer extends IPSModule
         return $result;
     }
 
-    private function StoreFeedInStatisticArchive(float $delivered, float $revenue, float $target, int $ts): void
+    private function StoreFeedInStatisticArchive(float $delivered, float $revenue, float $target, int $startTs, int $endTs): void
     {
         $archiveID = $this->FindArchive(); if ($archiveID <= 0 || $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return;
-        $map = ['FeedInArchiveKWh'=>$delivered,'FeedInArchiveEUR'=>$revenue,'FeedInArchiveTargetKWh'=>$target,'FeedInArchiveWindow'=>1.0];
+        $ts=$endTs; $map = ['FeedInArchiveKWh'=>$delivered,'FeedInArchiveEUR'=>$revenue,'FeedInArchiveTargetKWh'=>$target,'FeedInArchiveWindow'=>1.0,'FeedInArchiveStartTs'=>(float)$startTs,'FeedInArchiveEndTs'=>(float)$endTs];
         foreach ($map as $ident=>$value) {
             $id=(int)@$this->GetIDForIdent($ident); if($id<=0) continue;
             try { AC_AddLoggedValues($archiveID,$id,[['TimeStamp'=>$ts,'Value'=>(float)$value]]); } catch(Throwable $e){ $this->DebugLog('FeedInArchive',$e->getMessage(),0); }
@@ -5716,11 +5718,11 @@ class SmartBatteryOptimizer extends IPSModule
     {
         if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return [];
         $archiveID=$this->FindArchive(); if($archiveID<=0) return [];
-        $ids=['kwh'=>(int)@$this->GetIDForIdent('FeedInArchiveKWh'),'eur'=>(int)@$this->GetIDForIdent('FeedInArchiveEUR'),'target'=>(int)@$this->GetIDForIdent('FeedInArchiveTargetKWh'),'window'=>(int)@$this->GetIDForIdent('FeedInArchiveWindow')];
-        if(min($ids)<=0) return [];
+        $ids=['kwh'=>(int)@$this->GetIDForIdent('FeedInArchiveKWh'),'eur'=>(int)@$this->GetIDForIdent('FeedInArchiveEUR'),'target'=>(int)@$this->GetIDForIdent('FeedInArchiveTargetKWh'),'window'=>(int)@$this->GetIDForIdent('FeedInArchiveWindow'),'start'=>(int)@$this->GetIDForIdent('FeedInArchiveStartTs'),'end'=>(int)@$this->GetIDForIdent('FeedInArchiveEndTs')];
+        if($ids['kwh']<=0||$ids['eur']<=0||$ids['target']<=0||$ids['window']<=0) return [];
         $maps=[];
-        foreach($ids as $k=>$id){ $rows=@AC_GetLoggedValues($archiveID,$id,0,time(),0); $maps[$k]=[]; if(is_array($rows)) foreach($rows as $r)$maps[$k][(int)$r['TimeStamp']]=(float)$r['Value']; }
-        $out=[]; foreach($maps['window'] as $ts=>$one){ $kwh=(float)($maps['kwh'][$ts]??0); $eur=(float)($maps['eur'][$ts]??0); $out[]=['start'=>$ts,'end'=>$ts,'targetKWh'=>(float)($maps['target'][$ts]??0),'deliveredKWh'=>$kwh,'priceCt'=>$kwh>0?$eur/$kwh*100.0:0.0,'revenueEUR'=>$eur,'completed'=>true,'reason'=>'price','finishReason'=>'Archiv']; }
+        foreach($ids as $k=>$id){ $maps[$k]=[]; if($id<=0) continue; $rows=@AC_GetLoggedValues($archiveID,$id,0,time(),0); if(is_array($rows)) foreach($rows as $r)$maps[$k][(int)$r['TimeStamp']]=(float)$r['Value']; }
+        $out=[]; foreach($maps['window'] as $ts=>$one){ $kwh=(float)($maps['kwh'][$ts]??0); $eur=(float)($maps['eur'][$ts]??0); $start=(int)round((float)($maps['start'][$ts]??$ts)); $end=(int)round((float)($maps['end'][$ts]??$ts)); $out[]=['start'=>$start,'end'=>$end,'targetKWh'=>(float)($maps['target'][$ts]??0),'deliveredKWh'=>$kwh,'priceCt'=>$kwh>0?$eur/$kwh*100.0:0.0,'revenueEUR'=>$eur,'completed'=>true,'reason'=>'price','finishReason'=>'Archiv']; }
         usort($out,function($a,$b){return ((int)$a['start'])<=>((int)$b['start']);}); return $out;
     }
 
@@ -6170,8 +6172,35 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderFeedInStatisticsHTML(): string
     {
-        $stats = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1 ? $this->ReadFeedInStatisticsFromArchive() : [];
-        if (!is_array($stats) || count($stats) === 0) { $stats=json_decode($this->ReadAttributeString('FeedInStatisticsJSON'),true); if(!is_array($stats))$stats=[]; }
+        // Archiv und detaillierte Laufhistorie zusammenführen. FeedInStatisticsJSON enthält
+        // Start/Ende/PlanKey der realen Automatikläufe und darf nicht ignoriert werden, nur
+        // weil bereits einzelne Archivpunkte existieren. Detaillierte JSON-Läufe haben
+        // Vorrang; Archivdaten ergänzen nur ältere, noch nicht enthaltene Fenster.
+        $archiveStats = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1 ? $this->ReadFeedInStatisticsFromArchive() : [];
+        if (!is_array($archiveStats)) $archiveStats = [];
+        $jsonStats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
+        if (!is_array($jsonStats)) $jsonStats = [];
+        $stats = []; $seenRuns = [];
+        foreach ($jsonStats as $r) {
+            if (!is_array($r)) continue;
+            $start=(int)($r['start']??0); $end=(int)($r['end']??0); $k=(float)($r['deliveredKWh']??0.0);
+            $sig = (string)($r['planKey']??'') . '|' . $start . '|' . $end . '|' . round($k,3);
+            $seenRuns[$sig]=true; $stats[]=$r;
+        }
+        foreach ($archiveStats as $r) {
+            if (!is_array($r)) continue;
+            $ts=(int)($r['start']??$r['end']??0); $k=(float)($r['deliveredKWh']??0.0);
+            // Ein Archivpunkt gilt als bereits vertreten, wenn ein detaillierter Lauf mit
+            // praktisch gleicher Menge innerhalb von +/- 6 Stunden endet. So werden alte
+            // Migrationen nicht doppelt gezählt, fehlende Archiv-only-Fenster aber erhalten.
+            $duplicate=false;
+            foreach ($jsonStats as $jr) {
+                if (!is_array($jr)) continue;
+                $je=(int)($jr['end']??$jr['start']??0); $jk=(float)($jr['deliveredKWh']??0.0);
+                if ($je>0 && abs($je-$ts)<=21600 && abs($jk-$k)<=0.02) { $duplicate=true; break; }
+            }
+            if (!$duplicate) $stats[]=$r;
+        }
         $totalDaily=json_decode($this->ReadAttributeString('GridExportDailyJSON'),true); if(!is_array($totalDaily))$totalDaily=[];
         $autoByDay=[];
         foreach($stats as $r){$ts=(int)($r['start']??$r['end']??0);if($ts<=0)continue;$d=date('Y-m-d',$ts);if(!isset($autoByDay[$d]))$autoByDay[$d]=['kWh'=>0.0,'eur'=>0.0,'target'=>0.0,'windows'=>0];$autoByDay[$d]['kWh']+=max(0.0,(float)($r['deliveredKWh']??0));$autoByDay[$d]['eur']+=(float)($r['revenueEUR']??0);$autoByDay[$d]['target']+=max(0.0,(float)($r['targetKWh']??0));$autoByDay[$d]['windows']++;}
