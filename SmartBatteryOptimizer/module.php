@@ -192,6 +192,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('ArchiveStorageMigrationVersion', 0);
         $this->RegisterAttributeString('ArchiveStorageStatus', '');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
+        $this->RegisterAttributeInteger('PVCalibrationPairFormatVersion', 0);
         $this->RegisterAttributeBoolean('PVCalibrationCurtailmentLatched', false);
         $this->RegisterAttributeInteger('PVCalibrationBelowThresholdSince', 0);
         $this->RegisterAttributeInteger('PVCalibrationAboveThresholdSince', 0);
@@ -5247,6 +5248,7 @@ class SmartBatteryOptimizer extends IPSModule
             // Prognose wird als Stundenenergie (kWh) archiviert. Die Ist-Seite kommt
             // direkt aus den in der PV-Fläche zugewiesenen PV-String-Variablen.
             $this->MaintainVariable('PVCalExpected_' . $idx, 'PV Kalibrierung Prognose ' . $name, VARIABLETYPE_FLOAT, '~Electricity', 300 + $idx * 2, true);
+            $this->MaintainVariable('PVCalActual_' . $idx, 'PV Kalibrierung Ist ' . $name, VARIABLETYPE_FLOAT, '~Electricity', 301 + $idx * 2, true);
             $forecastVarID = (int)@$this->GetIDForIdent('PVCalExpected_' . $idx);
             if ($forecastVarID > 0) {
                 @IPS_SetHidden($forecastVarID, true);
@@ -5267,9 +5269,34 @@ class SmartBatteryOptimizer extends IPSModule
             // Prognose und Ist bilden ab v1.9.98 ein gemeinsames Stundenpaar.
             $actualID = (int)@$this->GetIDForIdent('PVCalActual_' . $idx);
             if ($actualID > 0) {
-                @IPS_SetHidden($actualID, false);
+                @IPS_SetHidden($actualID, true);
                 try { @AC_SetLoggingStatus($archiveID, $actualID, true); } catch (Throwable $e) {}
             }
+        }
+
+        // v1.10.00: Die Paarvariablen enthalten Stundenenergie in kWh.
+        // Frühere Versionen verwendeten teils W/Watt-basierte Archivwerte. Diese dürfen
+        // nicht lediglich als kWh umetikettiert werden, da sie die Kalibrierung verfälschen.
+        // Beim ersten Start dieser Version werden deshalb die alten Paararchive einmalig
+        // geleert. Ab dann werden ausschließlich neue, abgeschlossene kWh-Stundenpaare
+        // (Prognose + Ist mit identischem Endzeitstempel) aufgebaut.
+        if ($this->ReadAttributeInteger('PVCalibrationPairFormatVersion') < 1) {
+            foreach ($surfaces as $idxPair => $_surfacePair) {
+                foreach (['PVCalExpected_' . $idxPair, 'PVCalActual_' . $idxPair] as $identPair) {
+                    $pairID = (int)@$this->GetIDForIdent($identPair);
+                    if ($pairID <= 0) continue;
+                    @AC_DeleteVariableData($archiveID, $pairID, 0, time());
+                    @IPS_SetHidden($pairID, true);
+                    try {
+                        @AC_SetLoggingStatus($archiveID, $pairID, true);
+                        @AC_SetAggregationType($archiveID, $pairID, 0);
+                        if (function_exists('AC_SetGraphStatus')) @AC_SetGraphStatus($archiveID, $pairID, false);
+                    } catch (Throwable $e) {}
+                }
+            }
+            $this->WriteAttributeString('PVCalibrationJSON', '{}');
+            $this->WriteAttributeInteger('PVCalibrationPairFormatVersion', 1);
+            $this->DebugLog('PV-Kalibrierarchiv', 'v1.10.00: alte Watt-/inkompatible Paararchive entfernt; Neuaufbau ausschließlich in kWh.');
         }
 
         $feedVars = [

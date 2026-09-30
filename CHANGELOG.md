@@ -1,3 +1,13 @@
+# SmartBatteryOptimizer Changelog
+
+## v1.10.00 / Build 171
+- PV-Kalibrierung Prognose und Ist sind jetzt ausdrücklich Stundenenergie in kWh (`~Electricity`), nicht W.
+- `PV Kalibrierung Ist Haus/Nebengebäude` wird als kWh-Variable gepflegt.
+- Alle vier internen Kalibrierungsvariablen bleiben versteckt.
+- Einmalige Migration entfernt alte Watt-/inkompatible Prognose-/Ist-Archivwerte, damit sie nicht als kWh fehlinterpretiert werden.
+- Danach werden ausschließlich neue gültige Prognose/Ist-kWh-Paare abgeschlossener Stunden aufgebaut.
+- Changelog bleibt eine einzige fortgeschriebene `CHANGELOG.md`.
+
 # SmartBatteryOptimizer – Changelog
 
 Alle Versionsänderungen werden ab v1.9.99 ausschließlich in dieser Datei fortgeführt.
