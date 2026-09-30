@@ -1,5 +1,14 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.03 / Build 174
+- `davon für Einspeisung frei` ist wieder die Soll-Netzeinspeisemenge; bei 20,09 kWh frei werden 20,09 kWh geplant.
+- Der erwartete Eigenverbrauch verkleinert nicht die Soll-kWh, sondern reduziert die erwartete Netzleistung und verlängert dadurch die Laufzeit.
+- Das zusammenhängende Zeitfenster wird aus Soll-kWh und erwarteter Netzleistung berechnet.
+- Fehler im Börsenpreisdiagramm behoben: ein kombinierter Plan wird nicht mehr für jeden internen 15-Minuten-Preisslot erneut addiert.
+- Dadurch erscheinen keine vervielfachten Werte wie 61,15 kWh mehr.
+- Der Tooltip zeigt die je Stunde tatsächlich geplante Energie und die erwartete Netzeinspeiseleistung.
+- Zukunftspläne aus v1.10.02 werden einmalig neu berechnet; Archivdaten bleiben unangetastet.
+
 ## v1.10.02 / Build 173
 - Freie Batterieenergie und geplante Netzeinspeisung werden getrennt berechnet.
 - Der erwartete Eigenverbrauch wird während der Entladung aus der Netzleistung herausgerechnet.

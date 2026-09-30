@@ -401,7 +401,7 @@ class SmartBatteryOptimizer extends IPSModule
         // v1.10.02: ältere zukünftige Pläne wurden mit einer fehlerhaften Energie-/Fensterlogik erzeugt.
         // Nur den zwischengespeicherten Plan verwerfen, niemals Archivdaten. Einen bereits laufenden
         // Einspeisevorgang lassen wir unangetastet.
-        if ($this->ReadAttributeInteger('FeedInPlannerVersion') < 2) {
+        if ($this->ReadAttributeInteger('FeedInPlannerVersion') < 3) {
             if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
                 $this->WriteAttributeString('PlanJSON', '[]');
                 $targetVar = (int)@$this->GetIDForIdent('FeedInTargetEnergy');
@@ -410,9 +410,9 @@ class SmartBatteryOptimizer extends IPSModule
                 if ($targetVar > 0) SetValue($targetVar, 0.0);
                 if ($deliveredVar > 0) SetValue($deliveredVar, 0.0);
                 if ($windowVar > 0) SetValue($windowVar, '-');
-                $this->DebugLog('Einspeiseplan', 'v1.10.02: alten Zukunftsplan verworfen; Neuplanung mit Batterieenergie-/Eigenverbrauchsmodell.');
+                $this->DebugLog('Einspeiseplan', 'v1.10.03: alten Zukunftsplan verworfen; Neuplanung mit 20,09-kWh-Zielmodell und verbrauchsabhängiger Laufzeit.');
             }
-            $this->WriteAttributeInteger('FeedInPlannerVersion', 2);
+            $this->WriteAttributeInteger('FeedInPlannerVersion', 3);
         }
         // Zeitreihen ab 1.9.79 im IP-Symcon Archive Control verwalten.
         // Bestehende JSON-Lerndaten/Statistiken werden beim ersten Lauf einmalig uebernommen.
@@ -504,7 +504,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.10.02';
+        $currentModuleVersion = '1.10.03';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -565,7 +565,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.02',
+            'moduleVersion' => '1.10.03',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -3991,15 +3991,15 @@ class SmartBatteryOptimizer extends IPSModule
         $economic = array_values(array_filter($allSlots, fn($p) => $p['priceCt'] >= $minimumFeedInPrice));
         usort($economic, fn($a, $b) => $b['priceCt'] <=> $a['priceCt']);
 
-        // $available ist freie BATTERIEENERGIE. Sie darf nicht 1:1 als Netzeinspeisung
-        // behandelt werden, weil die Batterie während des Einspeisens gleichzeitig den
-        // Eigenverbrauch versorgt. Batterie-kWh und Netz-kWh werden getrennt geführt.
+        // $available ist die für die NETZEINSPEISUNG freigegebene Energiemenge.
+        // Der erwartete Eigenverbrauch reduziert nicht diese Sollmenge, sondern nur die
+        // tatsächlich erreichbare Netzleistung. Dadurch verlängert sich die notwendige
+        // Laufzeit, bis die geplanten Netz-kWh erreicht sind.
         $remaining = $available;
         $maxKW = max(0.0, $this->ReadPropertyInteger('MaxDischargePowerW') / 1000.0);
         $selected = [];
         $revenue = 0.0;
-        $scheduledBatteryEnergy = 0.0;
-        $scheduledExportEnergy = 0.0;
+        $scheduledEnergy = 0.0;
         $usedKeys = [];
 
         foreach ($economic as $p) {
@@ -4009,25 +4009,18 @@ class SmartBatteryOptimizer extends IPSModule
             if ($durationH <= 0) continue;
 
             $slotAvailability = ($slotStart >= $nightStartToday) ? $availableAtNightStart : $availableNow;
-            $slotBatteryRemaining = max(0.0, $slotAvailability - $scheduledBatteryEnergy);
-            if ($slotBatteryRemaining <= 0.001) continue;
+            $slotRemaining = max(0.0, $slotAvailability - $scheduledEnergy);
+            if ($slotRemaining <= 0.001) continue;
 
             $batteryPowerW = $this->GetPlannedBatteryPowerW($consumptionProfile, $slotStart);
-            $batteryPowerKW = $batteryPowerW / 1000.0;
             $expectedLoadW = $this->GetExpectedLoadPowerW($consumptionProfile, $slotStart);
             $expectedExportKW = max(0.0, ($batteryPowerW - $expectedLoadW) / 1000.0);
-            if ($expectedExportKW <= 0.001 || $batteryPowerKW <= 0.001) continue;
+            if ($expectedExportKW <= 0.001 || $batteryPowerW <= 0.0) continue;
 
-            $runtimeH = min(
-                $durationH,
-                $remaining / $batteryPowerKW,
-                $slotBatteryRemaining / $batteryPowerKW
-            );
-            if ($runtimeH <= 0.00001) continue;
-
-            $batteryEnergy = $batteryPowerKW * $runtimeH;
-            $energy = $expectedExportKW * $runtimeH;
-            $requiredSeconds = (int)ceil($runtimeH * 3600.0);
+            // Ziel bleibt Netz-kWh. Der Eigenverbrauch wirkt ausschließlich auf die
+            // Netzleistung und damit auf die erforderliche Zeit.
+            $energy = min($remaining, $slotRemaining, $expectedExportKW * $durationH);
+            $requiredSeconds = (int)ceil(($energy / $expectedExportKW) * 3600.0);
             $actualEnd = min($p['end'], $slotStart + max(1, $requiredSeconds));
             $key = $p['start'] . ':' . $p['end'];
 
@@ -4040,7 +4033,6 @@ class SmartBatteryOptimizer extends IPSModule
                 'priceCt' => $p['priceCt'],
                 'marketCt' => $p['marketCt'],
                 'energyKWh' => $energy,
-                'batteryEnergyKWh' => $batteryEnergy,
                 'powerW' => $batteryPowerW,
                 'expectedGridExportW' => $expectedExportKW * 1000.0,
                 'expectedLoadW' => $expectedLoadW,
@@ -4048,9 +4040,8 @@ class SmartBatteryOptimizer extends IPSModule
             ];
             $usedKeys[$key] = true;
             $revenue += $energy * $p['priceCt'] / 100.0;
-            $remaining = max(0.0, $remaining - $batteryEnergy);
-            $scheduledBatteryEnergy += $batteryEnergy;
-            $scheduledExportEnergy += $energy;
+            $remaining = max(0.0, $remaining - $energy);
+            $scheduledEnergy += $energy;
         }
 
         // Falls die normalen Preisfenster nicht genug Speicherplatz freimachen, werden
@@ -4081,25 +4072,16 @@ class SmartBatteryOptimizer extends IPSModule
                 $durationH = max(0.0, ($p['end'] - $slotStart) / 3600.0);
                 if ($durationH <= 0) continue;
                 $slotAvailability = ($slotStart >= $nightStartToday) ? $availableAtNightStart : $availableNow;
-                $slotBatteryRemaining = max(0.0, $slotAvailability - $scheduledBatteryEnergy);
-                if ($slotBatteryRemaining <= 0.001) continue;
+                $slotRemaining = max(0.0, $slotAvailability - $scheduledEnergy);
+                if ($slotRemaining <= 0.001) continue;
                 $batteryPowerW = $this->GetPlannedBatteryPowerW($consumptionProfile, $slotStart);
-                $batteryPowerKW = $batteryPowerW / 1000.0;
                 $expectedLoadW = $this->GetExpectedLoadPowerW($consumptionProfile, $slotStart);
                 $expectedExportKW = max(0.0, ($batteryPowerW - $expectedLoadW) / 1000.0);
-                if ($expectedExportKW <= 0.001 || $batteryPowerKW <= 0.001) continue;
+                if ($expectedExportKW <= 0.001 || $batteryPowerW <= 0.0) continue;
 
-                $runtimeH = min(
-                    $durationH,
-                    $remaining / $batteryPowerKW,
-                    $slotBatteryRemaining / $batteryPowerKW,
-                    $mandatoryMissing / $batteryPowerKW
-                );
-                if ($runtimeH <= 0.00001) continue;
-
-                $batteryEnergy = $batteryPowerKW * $runtimeH;
-                $energy = $expectedExportKW * $runtimeH;
-                $actualEnd = min($p['end'], $slotStart + max(1, (int)ceil($runtimeH * 3600.0)));
+                $energy = min($remaining, $mandatoryMissing, $slotRemaining, $expectedExportKW * $durationH);
+                if ($energy <= 0.00001) continue;
+                $actualEnd = min($p['end'], $slotStart + max(1, (int)ceil(($energy / $expectedExportKW) * 3600.0)));
                 $selected[] = [
                     'start' => $slotStart,
                     'priceIntervalStart' => $p['start'],
@@ -4108,17 +4090,15 @@ class SmartBatteryOptimizer extends IPSModule
                     'priceCt' => $p['priceCt'],
                     'marketCt' => $p['marketCt'],
                     'energyKWh' => $energy,
-                    'batteryEnergyKWh' => $batteryEnergy,
                     'powerW' => $batteryPowerW,
                     'expectedGridExportW' => $expectedExportKW * 1000.0,
                     'expectedLoadW' => $expectedLoadW,
                     'reason' => 'pv_space_required'
                 ];
                 $revenue += $energy * $p['priceCt'] / 100.0;
-                $remaining = max(0.0, $remaining - $batteryEnergy);
-                $scheduledBatteryEnergy += $batteryEnergy;
-                $scheduledExportEnergy += $energy;
-                $mandatoryMissing = max(0.0, $mandatoryMissing - $batteryEnergy);
+                $remaining = max(0.0, $remaining - $energy);
+                $scheduledEnergy += $energy;
+                $mandatoryMissing = max(0.0, $mandatoryMissing - $energy);
             }
         }
 
@@ -4167,7 +4147,6 @@ class SmartBatteryOptimizer extends IPSModule
             $first['priceIntervalEnd'] = $hourEnd;
             $first['planKey'] = $hourStart . ':' . $hourEnd;
             $first['energyKWh'] = $energy;
-            $first['batteryEnergyKWh'] = array_sum(array_map(static fn($x) => (float)($x['batteryEnergyKWh'] ?? 0.0), $hourSlots));
             if ($energy > 0.0) $first['priceCt'] = $revenueEnergy / $energy;
             $first['powerW'] = max(array_map(static fn($x) => (float)($x['powerW'] ?? 0.0), $hourSlots));
             $first['expectedGridExportW'] = $duration > 0 ? ($energy / ($duration / 3600.0)) * 1000.0 : 0.0;
@@ -4179,7 +4158,6 @@ class SmartBatteryOptimizer extends IPSModule
                 'priceIntervalStart' => $hourStart,
                 'priceIntervalEnd' => $hourEnd,
                 'energyKWh' => $energy,
-                'batteryEnergyKWh' => (float)$first['batteryEnergyKWh'],
                 'powerW' => (float)$first['powerW'],
                 'expectedGridExportW' => (float)$first['expectedGridExportW'],
                 'expectedLoadW' => (float)($first['expectedLoadW'] ?? 0.0),
@@ -4203,7 +4181,6 @@ class SmartBatteryOptimizer extends IPSModule
                 $e1=max(0.0,(float)($prev['energyKWh']??0.0));$e2=max(0.0,(float)($slot['energyKWh']??0.0));$te=$e1+$e2;
                 $prev['priceCt']=$te>0.0?(($e1*(float)($prev['priceCt']??0.0)+$e2*(float)($slot['priceCt']??0.0))/$te):0.0;
                 $prev['energyKWh']=$te;
-                $prev['batteryEnergyKWh']=max(0.0,(float)($prev['batteryEnergyKWh']??0.0))+max(0.0,(float)($slot['batteryEnergyKWh']??0.0));
                 $prev['end']=max((int)$prev['end'],(int)$slot['end']);$prev['priceIntervalEnd']=max($prevIntervalEnd,(int)($slot['priceIntervalEnd']??$slot['end']));
                 $prev['powerW']=max((float)($prev['powerW']??0.0),(float)($slot['powerW']??0.0));$duration=max(1,(int)$prev['end']-(int)$prev['start']);$prev['expectedGridExportW']=($te/($duration/3600.0))*1000.0;
                 $prev['segments']=array_merge(is_array($prev['segments']??null)?$prev['segments']:[],is_array($slot['segments']??null)?$slot['segments']:[]);
@@ -4289,8 +4266,6 @@ class SmartBatteryOptimizer extends IPSModule
             . ' | Gesamtreserve=' . round($reserve,3) . ' kWh'
             . ' | verfügbar jetzt=' . round($availableNow,3) . ' kWh'
             . ' | verfügbar ab Nachtbeginn=' . round($availableAtNightStart,3) . ' kWh'
-            . ' | geplante Batterieenergie=' . round($scheduledBatteryEnergy,3) . ' kWh'
-            . ' | geplante Netzeinspeisung=' . round($scheduledExportEnergy,3) . ' kWh'
             . ' | PV morgen=' . round($tomorrowPV,3) . ' kWh'
             . ' | Überschuss=' . round($pvSurplusTomorrow,3) . ' kWh'
             . ' | PV Spitze=' . round((float)($gridRisk['peakPVW'] ?? 0)) . ' W'
@@ -6724,21 +6699,35 @@ class SmartBatteryOptimizer extends IPSModule
             $hourBuckets[$hourTs]['market'][] = (float)($p['marketCt'] ?? 0.0);
             $hourBuckets[$hourTs]['price'][] = (float)($p['priceCt'] ?? 0.0);
 
-            foreach ($plan['slots'] as $slot) {
-                $slotStart = (int)($slot['start'] ?? 0);
-                $slotPlanStart = (int)($slot['priceIntervalStart'] ?? $slotStart);
-                $slotPlanEnd = (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0));
-                if ($slotPlanStart < $end && $slotPlanEnd > $start) {
-                    $hourBuckets[$hourTs]['selected'] = true;
-                    if (($slot['reason'] ?? '') === 'pv_space') {
-                        $hourBuckets[$hourTs]['reason'] = 'pv_space';
-                    } elseif ($hourBuckets[$hourTs]['reason'] === '') {
-                        $hourBuckets[$hourTs]['reason'] = 'price';
+        }
+
+        // Planenergie separat genau einmal auf Stunden verteilen. Die Preisquelle kann
+        // intern 15-Minuten-Slots liefern; deshalb darf die Gesamtenergie eines Plans
+        // nicht innerhalb jeder Viertelstunde erneut addiert werden.
+        foreach (($plan['slots'] ?? []) as $slot) {
+            $segments = isset($slot['segments']) && is_array($slot['segments']) ? $slot['segments'] : [$slot];
+            foreach ($segments as $segment) {
+                $segStart = (int)($segment['start'] ?? ($segment['priceIntervalStart'] ?? 0));
+                $segEnd = (int)($segment['end'] ?? ($segment['priceIntervalEnd'] ?? 0));
+                if ($segStart <= 0 || $segEnd <= $segStart) continue;
+                foreach ($hourBuckets as $hourTs => &$bucket) {
+                    $hourEnd = $hourTs + 3600;
+                    $overlapStart = max($segStart, $hourTs);
+                    $overlapEnd = min($segEnd, $hourEnd);
+                    if ($overlapEnd <= $overlapStart) continue;
+
+                    $segmentDuration = max(1, $segEnd - $segStart);
+                    $fraction = ($overlapEnd - $overlapStart) / $segmentDuration;
+                    $bucket['selected'] = true;
+                    if (($segment['reason'] ?? '') === 'pv_space') {
+                        $bucket['reason'] = 'pv_space';
+                    } elseif ($bucket['reason'] === '') {
+                        $bucket['reason'] = 'price';
                     }
-                    $hourBuckets[$hourTs]['powerW'] = max($hourBuckets[$hourTs]['powerW'], (float)($slot['powerW'] ?? 0.0));
-                    $hourBuckets[$hourTs]['energyKWh'] += (float)($slot['energyKWh'] ?? 0.0);
-                    break;
+                    $bucket['powerW'] = max($bucket['powerW'], (float)($segment['expectedGridExportW'] ?? $segment['powerW'] ?? 0.0));
+                    $bucket['energyKWh'] += max(0.0, (float)($segment['energyKWh'] ?? 0.0)) * $fraction;
                 }
+                unset($bucket);
             }
         }
 
