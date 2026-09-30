@@ -1,5 +1,13 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.04 / Build 175
+- Nacht-Einspeiseplanung verwendet für die Batterie-/Dispatch-Leistung jetzt ausschließlich den Konfigurationswert **„Max. Einspeise-/Entladeleistung“**.
+- Bei 20.000 W Konfiguration werden an AlphaESS weiterhin 20.000 W Dispatch-Leistung geschrieben.
+- Für die rechnerisch erwartete Netzeinspeisung wird nur der prognostizierte Eigenverbrauch aus dem stündlichen Lastprofil abgezogen: `Netzleistung = Max. Einspeise-/Entladeleistung - Eigenverbrauch`.
+- Das separate Netzeinspeiselimit und der Sicherheitsabstand (z. B. 10.000 W - 500 W = 9.500 W) begrenzen die nächtliche Preis-Einspeiseplanung nicht mehr.
+- Laufzeit, geplante Energiemenge und Tooltip basieren dadurch auf der korrekten erwarteten Netzleistung.
+- Zukunftspläne aus älteren Planner-Versionen werden einmalig neu berechnet; Archivdaten bleiben unangetastet.
+
 ## v1.10.03 / Build 174
 - `davon für Einspeisung frei` ist wieder die Soll-Netzeinspeisemenge; bei 20,09 kWh frei werden 20,09 kWh geplant.
 - Der erwartete Eigenverbrauch verkleinert nicht die Soll-kWh, sondern reduziert die erwartete Netzleistung und verlängert dadurch die Laufzeit.

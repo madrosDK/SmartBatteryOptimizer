@@ -398,10 +398,11 @@ class SmartBatteryOptimizer extends IPSModule
         $this->InitializeFeedInFactorMemory();
         $this->EnsurePVSurfaceStableIDs();
 
-        // v1.10.02: ältere zukünftige Pläne wurden mit einer fehlerhaften Energie-/Fensterlogik erzeugt.
+        // v1.10.04: ältere Zukunftspläne konnten die Nacht-Einspeiseleistung fälschlich
+        // mit Netzeinspeiselimit minus Sicherheitsabstand begrenzen (z.B. 10 kW - 0,5 kW = 9,5 kW).
         // Nur den zwischengespeicherten Plan verwerfen, niemals Archivdaten. Einen bereits laufenden
         // Einspeisevorgang lassen wir unangetastet.
-        if ($this->ReadAttributeInteger('FeedInPlannerVersion') < 3) {
+        if ($this->ReadAttributeInteger('FeedInPlannerVersion') < 4) {
             if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
                 $this->WriteAttributeString('PlanJSON', '[]');
                 $targetVar = (int)@$this->GetIDForIdent('FeedInTargetEnergy');
@@ -410,9 +411,9 @@ class SmartBatteryOptimizer extends IPSModule
                 if ($targetVar > 0) SetValue($targetVar, 0.0);
                 if ($deliveredVar > 0) SetValue($deliveredVar, 0.0);
                 if ($windowVar > 0) SetValue($windowVar, '-');
-                $this->DebugLog('Einspeiseplan', 'v1.10.03: alten Zukunftsplan verworfen; Neuplanung mit 20,09-kWh-Zielmodell und verbrauchsabhängiger Laufzeit.');
+                $this->DebugLog('Einspeiseplan', 'v1.10.04: alten Zukunftsplan verworfen; Nachtplanung jetzt mit Max. Einspeise-/Entladeleistung minus prognostiziertem Eigenverbrauch.');
             }
-            $this->WriteAttributeInteger('FeedInPlannerVersion', 3);
+            $this->WriteAttributeInteger('FeedInPlannerVersion', 4);
         }
         // Zeitreihen ab 1.9.79 im IP-Symcon Archive Control verwalten.
         // Bestehende JSON-Lerndaten/Statistiken werden beim ersten Lauf einmalig uebernommen.
@@ -504,7 +505,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
         // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.10.03';
+        $currentModuleVersion = '1.10.04';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
@@ -565,7 +566,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.03',
+            'moduleVersion' => '1.10.04',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -4378,14 +4379,15 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function GetPlannedBatteryPowerW(array $consumptionProfile, int $timestamp): float
     {
-        $maxDischargeW = max(0.0, (float)$this->ReadPropertyInteger('MaxDischargePowerW'));
-        $loadW = $this->GetExpectedLoadPowerW($consumptionProfile, $timestamp);
-        $gridLimitW = max(0.0, (float)$this->GetRuntimeInteger('RuntimeGridFeedInLimitW', $this->ReadPropertyInteger('GridFeedInLimitW')));
-        $safetyW = max(0.0, (float)$this->GetRuntimeInteger('RuntimeGridLimitSafetyW', $this->ReadPropertyInteger('GridLimitSafetyW')));
-        $effectiveGridLimitW = $gridLimitW > 0.0 ? max(0.0, $gridLimitW - $safetyW) : $maxDischargeW;
-        // Batterie muss Eigenverbrauch + gewünschte Netzeinspeisung liefern, darf aber weder
-        // ihre Entladegrenze noch die effektive Netzeinspeisegrenze überschreiten.
-        return max(0.0, min($maxDischargeW, $effectiveGridLimitW + $loadW));
+        // Preis-Einspeiseautomatik: Der AlphaESS-Dispatch wird immer mit der in der
+        // Konfiguration eingestellten "Max. Einspeise-/Entladeleistung" gefahren.
+        // Das separate Netzeinspeiselimit und dessen Sicherheitsabstand gehören zum
+        // PV-/Netzlimit-Schutz und dürfen die nächtliche Preis-Einspeisung nicht begrenzen.
+        //
+        // Für die PLANUNG der tatsächlich erreichbaren Netzeinspeisung wird der
+        // prognostizierte Eigenverbrauch anschließend in GetExpectedGridExportPowerW()
+        // vom konfigurierten Dispatch-Wert abgezogen.
+        return max(0.0, (float)$this->ReadPropertyInteger('MaxDischargePowerW'));
     }
 
     private function GetExpectedGridExportPowerW(array $consumptionProfile, int $timestamp): float

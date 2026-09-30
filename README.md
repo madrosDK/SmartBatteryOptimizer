@@ -15,7 +15,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.03 / Build 174**
+**1.10.04 / Build 175**
 
 ## Neu in 1.2.3
 
@@ -438,7 +438,7 @@ Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig sc
 
 ## Einspeiseplanung mit Lastprofil (v1.9.48)
 
-Bei der Preis-Einspeisung wird die theoretische Batterie-/Wechselrichterleistung nicht mehr 1:1 als mögliche Netzeinspeisung angesetzt. Für den jeweiligen Zeitpunkt wird das gelernte stündliche Lastprofil abgezogen. Zusätzlich werden die konfigurierte maximale Entladeleistung und die effektive Netzeinspeisegrenze berücksichtigt.
+Bei der Preis-Einspeisung wird der AlphaESS-Dispatch immer mit der konfigurierten **Max. Einspeise-/Entladeleistung** ausgeführt. Für die rechnerisch erwartete Netzeinspeisung wird davon ausschließlich der prognostizierte Eigenverbrauch aus dem stündlichen Lastprofil abgezogen. Das separate Netzeinspeiselimit samt Sicherheitsabstand begrenzt die nächtliche Preis-Einspeiseplanung nicht.
 
 Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und dem Lastprofil eine neue Restlaufzeit berechnet. Die AlphaESS Dispatch Time wird auf diese Restlaufzeit zuzüglich 30 % Sicherheitsreserve gesetzt.
 
