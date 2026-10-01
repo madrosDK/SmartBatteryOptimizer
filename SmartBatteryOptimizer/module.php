@@ -467,6 +467,16 @@ class SmartBatteryOptimizer extends IPSModule
             }
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
+
+        // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
+        // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
+        // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
+        $currentModuleVersion = '1.10.12';
+        if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
+            $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
+            $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
+            $this->SetTimerInterval('FullRefreshWorker', 1500);
+        }
     }
 
     public function DeferredDebugRebuild()
@@ -503,15 +513,6 @@ class SmartBatteryOptimizer extends IPSModule
         } catch (Throwable $e) {
             $this->DebugLog('Debug-Rebuild', $e->getMessage(), 0);
         }
-        // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
-        // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.10.06';
-        if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
-            $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
-            $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
-            $this->SetTimerInterval('FullRefreshWorker', 1500);
-        }
-
     }
 
     public function ExportStoredData(): string
@@ -1191,12 +1192,18 @@ class SmartBatteryOptimizer extends IPSModule
             return;
         }
         $this->WriteAttributeInteger('CalculationLockUntil', $nowCalcLock + 900);
-        // Execute a due saved window before rebuilding or fetching remote data.
-        $this->Control();
         $this->DebugLog('Recalculate', 'Start | PV-Prognose neu abrufen=' . ($refreshPVForecast ? 'ja' : 'nein'));
         $dayNight = $this->GetCurrentDayNightStatus();
         $this->DebugLog('DayNight', ($dayNight['isNight'] ? 'NACHT' : 'TAG') . ' | Fenster ' . date('Y-m-d H:i', (int)$dayNight['start']) . ' -> ' . date('Y-m-d H:i', (int)$dayNight['end']) . ' | Modus=' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell'));
         try {
+            // Ein Fehler in der Steuerpruefung darf die zyklische Prognose-/Preis-
+            // aktualisierung niemals blockieren. Insbesondere muss die Berechnungs-
+            // sperre auch bei einer Exception in Control() wieder freigegeben werden.
+            try {
+                $this->Control();
+            } catch (Throwable $controlError) {
+                $this->DebugLog('Control', 'Steuerpruefung vor Aktualisierung fehlgeschlagen, Aktualisierung laeuft trotzdem weiter: ' . $controlError->getMessage(), 0);
+            }
             $this->ForecastDiagnosticStep('01 Nachtverbrauch START');
             $night = $this->LearnNightConsumptionInternal();
             $this->ForecastDiagnosticStep('02 Nachtverbrauch ENDE');
@@ -1212,16 +1219,30 @@ class SmartBatteryOptimizer extends IPSModule
                     $refreshPVForecast = true;
                 }
             }
+            $forecastWarning = '';
             if ($refreshPVForecast) {
                 // Zuerst Kalibrierung/Faktoren aktualisieren, erst danach Prognose berechnen und Highcharts rendern.
-                $this->ForecastDiagnosticStep('05 PV-Kalibrierung START');
-                $this->UpdatePVCalibrationState(false);
-                $this->ForecastDiagnosticStep('06 PV-Kalibrierung ENDE');
-                $this->ForecastDiagnosticStep('07 FetchPVForecast START');
-                $forecast = $this->FetchPVForecast($forceForecastProviders);
-                $this->ForecastDiagnosticStep('08 FetchPVForecast ENDE');
-                $this->DebugLog('PV-Prognose', ['heuteKWh'=>$forecast['todayKWh'] ?? null,'morgenKWh'=>$forecast['tomorrowKWh'] ?? null,'Quellen'=>$forecast['forecastSources'] ?? [],'Gewichte'=>$forecast['forecastSourceWeights'] ?? []]);
-                $this->StorePVForecastHistory($forecast);
+                // Schlaegt nur der externe Prognoseabruf fehl, wird mit dem letzten gueltigen
+                // Forecast weitergerechnet. Preise, Planung und Anzeigen duerfen deswegen nicht
+                // auf einem alten Stand stehen bleiben.
+                try {
+                    $this->ForecastDiagnosticStep('05 PV-Kalibrierung START');
+                    $this->UpdatePVCalibrationState(false);
+                    $this->ForecastDiagnosticStep('06 PV-Kalibrierung ENDE');
+                    $this->ForecastDiagnosticStep('07 FetchPVForecast START');
+                    $forecast = $this->FetchPVForecast($forceForecastProviders);
+                    $this->ForecastDiagnosticStep('08 FetchPVForecast ENDE');
+                    $this->DebugLog('PV-Prognose', ['heuteKWh'=>$forecast['todayKWh'] ?? null,'morgenKWh'=>$forecast['tomorrowKWh'] ?? null,'Quellen'=>$forecast['forecastSources'] ?? [],'Gewichte'=>$forecast['forecastSourceWeights'] ?? []]);
+                    $this->StorePVForecastHistory($forecast);
+                } catch (Throwable $forecastError) {
+                    $cachedForecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+                    if (!is_array($cachedForecast) || empty($cachedForecast)) {
+                        throw $forecastError;
+                    }
+                    $forecast = $cachedForecast;
+                    $forecastWarning = 'PV-Prognose konnte nicht neu geladen werden: ' . $forecastError->getMessage();
+                    $this->DebugLog('PV-Prognose', $forecastWarning . ' | letzter gueltiger Forecast wird weiterverwendet', 0);
+                }
             }
             $forecast = $this->ApplyConsumptionForecastToPV($forecast, $consumptionProfile, $night);
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
@@ -1233,6 +1254,11 @@ class SmartBatteryOptimizer extends IPSModule
             $this->DebugLog('Preise', 'Geladene interne Preis-Slots: ' . count($prices));
             $nightForPlan = (float)($forecast['nightConsumptionTomorrowKWh'] ?? $night);
             $this->ForecastDiagnosticStep('11 Einspeiseplan START');
+            // Veralteten Laufzustand bereinigen: Ein gesetzter ActiveFeedInPlanKey darf
+            // die Aktualisierung des zukünftigen Plans nur blockieren, wenn tatsächlich
+            // gerade eingespeist wird. Nach Neustart/Fehler kann der Schlüssel sonst
+            // stehen bleiben und FeedInTargetEnergy dauerhaft auf einem alten Wert halten.
+            $this->CleanupStaleActiveFeedInState();
             $previousPlan = json_decode($this->ReadAttributeString('PlanJSON'), true);
             if (!is_array($previousPlan)) $previousPlan = [];
             $plan = $this->BuildPlan($forecast, $prices, $nightForPlan, $consumptionProfile);
@@ -1273,7 +1299,11 @@ class SmartBatteryOptimizer extends IPSModule
                 SetValue($this->GetIDForIdent('FeedInTargetEnergy'), round($nextPlannedKWh, 3));
                 SetValue($this->GetIDForIdent('FeedInDeliveredEnergy'), 0.0);
             }
-            SetValue($this->GetIDForIdent('StatusText'), $plan['status']);
+            $finalStatus = (string)$plan['status'];
+            if ($forecastWarning !== '') {
+                $finalStatus .= ' | WARNUNG: ' . $forecastWarning;
+            }
+            SetValue($this->GetIDForIdent('StatusText'), $finalStatus);
             SetValue($this->GetIDForIdent('LastUpdate'), date('d.m.Y H:i:s'));
             SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
             SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
@@ -1289,11 +1319,57 @@ class SmartBatteryOptimizer extends IPSModule
             $this->Control();
         } catch (Throwable $e) {
             $this->DebugLog('Recalculate', $e->getMessage(), 0);
+
+            // Auch wenn ein Forecast-/Provider-Abruf fehlschlaegt, darf ein bereits
+            // gespeicherter verbindlicher Zukunftsplan nicht mit einer offensichtlich
+            // veralteten Energiemenge stehen bleiben. Falls der letzte erfolgreiche
+            // Plan bereits eine aktuelle Freigabemenge enthaelt, wird nur die
+            // Sicherheitskorrektur des bestehenden Preisfensters ausgefuehrt.
+            // Ein laufender Einspeisevorgang wird dabei bewusst nicht veraendert.
+            try {
+                $this->CleanupStaleActiveFeedInState();
+                if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
+                    $cachedPlan = json_decode($this->ReadAttributeString('PlanJSON'), true);
+                    if (is_array($cachedPlan) && !empty($cachedPlan)) {
+                        $safePlan = $this->PreserveCommittedFeedInPlan($cachedPlan, $cachedPlan);
+                        $this->WriteAttributeString('PlanJSON', json_encode($safePlan));
+
+                        SetValue($this->GetIDForIdent('AvailableFeedInEnergy'), round((float)($safePlan['availableKWh'] ?? 0.0), 3));
+                        SetValue($this->GetIDForIdent('ExpectedRevenue'), round((float)($safePlan['expectedRevenueEUR'] ?? 0.0), 3));
+                        SetValue($this->GetIDForIdent('NextFeedInWindow'), (string)($safePlan['nextWindow'] ?? '-'));
+
+                        $nextPlannedKWh = 0.0;
+                        $nowPlan = time();
+                        foreach (($safePlan['slots'] ?? []) as $plannedSlot) {
+                            if ((int)($plannedSlot['end'] ?? 0) <= $nowPlan) continue;
+                            $nextPlannedKWh = max(0.0, (float)($plannedSlot['energyKWh'] ?? 0.0));
+                            break;
+                        }
+                        SetValue($this->GetIDForIdent('FeedInTargetEnergy'), round($nextPlannedKWh, 3));
+
+                        $cachedForecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+                        $cachedPrices = json_decode($this->ReadAttributeString('PricesJSON'), true);
+                        if (is_array($cachedForecast)) {
+                            SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($cachedForecast, $safePlan, (float)($safePlan['nightConsumptionKWh'] ?? 0.0)));
+                            if (is_array($cachedPrices)) {
+                                SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($cachedForecast, $cachedPrices, $safePlan));
+                                SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($cachedForecast, $cachedPrices, $safePlan));
+                            }
+                        }
+                        $this->DebugLog('Einspeiseplan', 'Fallback-Sicherheitsabgleich trotz Rechenfehler ausgefuehrt | Ziel=' . round($nextPlannedKWh, 3) . ' kWh');
+                    }
+                }
+            } catch (Throwable $planSafetyError) {
+                $this->DebugLog('Einspeiseplan', 'Fallback-Sicherheitsabgleich fehlgeschlagen: ' . $planSafetyError->getMessage(), 0);
+            }
+
             SetValue($this->GetIDForIdent('StatusText'), 'Fehler: ' . $e->getMessage());
             $this->SetStatus(201);
             $this->StopFeedIn();
+        } finally {
+            // Die Sperre MUSS auch nach jeder Exception wieder geloescht werden.
+            $this->WriteAttributeInteger('CalculationLockUntil', 0);
         }
-        $this->WriteAttributeInteger('CalculationLockUntil', 0);
     }
 
     public function LearnNightConsumption()
@@ -1785,6 +1861,44 @@ class SmartBatteryOptimizer extends IPSModule
         } finally {
             IPS_SemaphoreLeave($lock);
         }
+    }
+
+    private function CleanupStaleActiveFeedInState(): void
+    {
+        $key = $this->ReadAttributeString('ActiveFeedInPlanKey');
+        if ($key === '') return;
+
+        $feedInActive = false;
+        $feedInVar = (int)@$this->GetIDForIdent('FeedInActive');
+        if ($feedInVar > 0) $feedInActive = (bool)GetValue($feedInVar);
+        $plannedPower = 0.0;
+        $powerVar = (int)@$this->GetIDForIdent('PlannedPower');
+        if ($powerVar > 0) $plannedPower = (float)GetValue($powerVar);
+
+        // Während einer echten Einspeisung niemals eingreifen.
+        if ($feedInActive || $plannedPower > 1.0) return;
+
+        $startedTs = $this->ReadAttributeInteger('ActiveFeedInStartedTs');
+        $lastTs = $this->ReadAttributeInteger('ActiveFeedInLastTs');
+        $referenceTs = max($startedTs, $lastTs);
+
+        // Ein frisch gestarteter Lauf kann für wenige Sekunden noch keinen sichtbaren
+        // Leistungswert haben. Erst nach 5 Minuten ohne aktive Einspeisung bereinigen.
+        if ($referenceTs > 0 && time() - $referenceTs <= 300) return;
+
+        $this->DebugLog('Einspeiseplan', 'Veralteten aktiven Einspeisezustand bereinigt | Key=' . $key);
+        $this->WriteAttributeString('ActiveFeedInPlanKey', '');
+        $this->WriteAttributeFloat('ActiveFeedInTargetKWh', 0.0);
+        $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
+        $this->WriteAttributeInteger('ActiveFeedInLastTs', 0);
+        $this->WriteAttributeFloat('ActiveFeedInLastExportW', 0.0);
+        $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
+        $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
+        $this->WriteAttributeInteger('ActiveFeedInStartedTs', 0);
+        $this->WriteAttributeFloat('ActiveFeedInPriceCt', 0.0);
+        $this->WriteAttributeString('ActiveFeedInReason', '');
+        if ($feedInVar > 0) SetValue($feedInVar, false);
+        if ($powerVar > 0) SetValue($powerVar, 0.0);
     }
 
     private function StartMeasuredFeedInRun(string $key, float $targetKWh, ?float $expectedSOCPct = null): void
@@ -4340,12 +4454,105 @@ class SmartBatteryOptimizer extends IPSModule
         if (empty($committed)) return $newPlan;
 
         usort($committed, fn($a, $b) => ((int)$a['start']) <=> ((int)$b['start']));
+
+        // Ein bereits gewähltes Preisfenster bleibt verbindlich. Die darin geplante
+        // Energiemenge darf jedoch nicht dauerhaft von der aktuell freigegebenen
+        // Einspeisemenge abweichen. Kleine Prognoseänderungen bis +/-10 % werden bewusst
+        // toleriert, damit der Plan nicht bei jedem Rechenlauf geringfügig verändert wird.
+        $plannedEnergyKWh = array_sum(array_map(static fn($x) => max(0.0, (float)($x['energyKWh'] ?? 0.0)), $committed));
+        $releasedEnergyKWh = max(0.0, (float)($newPlan['availableKWh'] ?? 0.0));
+        $lowerToleranceKWh = $releasedEnergyKWh * 0.90;
+        $upperToleranceKWh = $releasedEnergyKWh * 1.10;
+        $energyAdjusted = false;
+
+        if ($plannedEnergyKWh < $lowerToleranceKWh - 0.001 || $plannedEnergyKWh > $upperToleranceKWh + 0.001) {
+            $targetEnergyKWh = $releasedEnergyKWh;
+            $remainingTargetKWh = $targetEnergyKWh;
+            $adjusted = [];
+
+            foreach ($committed as $slot) {
+                if ($remainingTargetKWh <= 0.001) break;
+
+                $start = max($now, (int)($slot['start'] ?? 0));
+                $intervalEnd = (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0));
+                if ($intervalEnd <= $start) continue;
+
+                $expectedGridExportW = max(0.0, (float)($slot['expectedGridExportW'] ?? 0.0));
+                if ($expectedGridExportW <= 1.0) {
+                    $duration = max(1, (int)($slot['end'] ?? $intervalEnd) - (int)($slot['start'] ?? $start));
+                    $oldEnergy = max(0.0, (float)($slot['energyKWh'] ?? 0.0));
+                    if ($oldEnergy > 0.0) $expectedGridExportW = ($oldEnergy / ($duration / 3600.0)) * 1000.0;
+                }
+                if ($expectedGridExportW <= 1.0) continue;
+
+                $capacityKWh = ($expectedGridExportW / 1000.0) * (($intervalEnd - $start) / 3600.0);
+                $slotEnergyKWh = min($remainingTargetKWh, max(0.0, $capacityKWh));
+                if ($slotEnergyKWh <= 0.001) continue;
+
+                $requiredSeconds = max(1, (int)ceil(($slotEnergyKWh / ($expectedGridExportW / 1000.0)) * 3600.0));
+                $slot['start'] = $start;
+                $slot['end'] = min($intervalEnd, $start + $requiredSeconds);
+                $slot['energyKWh'] = $slotEnergyKWh;
+                $slot['expectedGridExportW'] = $expectedGridExportW;
+                $slot['segments'] = [[
+                    'start' => $slot['start'],
+                    'end' => $slot['end'],
+                    'priceIntervalStart' => (int)($slot['priceIntervalStart'] ?? $slot['start']),
+                    'priceIntervalEnd' => $intervalEnd,
+                    'energyKWh' => $slotEnergyKWh,
+                    'powerW' => (float)($slot['powerW'] ?? 0.0),
+                    'expectedGridExportW' => $expectedGridExportW,
+                    'expectedLoadW' => (float)($slot['expectedLoadW'] ?? 0.0),
+                    'priceCt' => (float)($slot['priceCt'] ?? 0.0),
+                    'reason' => (string)($slot['reason'] ?? 'price')
+                ]];
+                $adjusted[] = $slot;
+                $remainingTargetKWh = max(0.0, $remainingTargetKWh - $slotEnergyKWh);
+            }
+
+            $committed = $adjusted;
+            $energyAdjusted = true;
+            $adjustedTotalKWh = array_sum(array_map(static fn($x) => max(0.0, (float)($x['energyKWh'] ?? 0.0)), $committed));
+            $this->DebugLog(
+                'Einspeiseplan',
+                'Verbindliche Planmenge angepasst | alt=' . round($plannedEnergyKWh, 3) . ' kWh'
+                . ' | aktuell freigegeben=' . round($releasedEnergyKWh, 3) . ' kWh'
+                . ' | Toleranz=' . round($lowerToleranceKWh, 3) . '-' . round($upperToleranceKWh, 3) . ' kWh'
+                . ' | neu=' . round($adjustedTotalKWh, 3) . ' kWh'
+            );
+
+            // Kann innerhalb des bereits verbindlichen Fensters nicht die komplette
+            // aktuelle Freigabemenge untergebracht werden, bleibt die physikalisch
+            // mögliche Menge bestehen; ein neues Preisfenster wird nicht erzwungen.
+            if ($remainingTargetKWh > 0.001) {
+                $this->DebugLog('Einspeiseplan', 'Verbindliches Fenster kann ' . round($remainingTargetKWh, 3) . ' kWh der aktuellen Freigabe nicht mehr aufnehmen');
+            }
+        }
+
+        if (empty($committed)) {
+            $newPlan['slots'] = [];
+            $newPlan['nextWindow'] = '-';
+            $newPlan['highestPriceCt'] = 0.0;
+            $newPlan['expectedRevenueEUR'] = 0.0;
+            $newPlan['status'] = 'Verbindlicher Einspeiseplan aktiv – aktuell keine Einspeisemenge freigegeben';
+            return $newPlan;
+        }
+
         $newPlan['slots'] = $committed;
         $newPlan['nextWindow'] = date('d.m. H:i', (int)$committed[0]['start']) . '–' . date('H:i', (int)$committed[0]['end']);
         $newPlan['highestPriceCt'] = max(array_map(static fn($x) => (float)($x['priceCt'] ?? 0.0), $committed));
         $newPlan['expectedRevenueEUR'] = array_sum(array_map(static fn($x) => (float)($x['energyKWh'] ?? 0.0) * (float)($x['priceCt'] ?? 0.0) / 100.0, $committed));
-        $newPlan['status'] = 'Verbindlicher Einspeiseplan aktiv – geplante Fenster bleiben bis zur Ausführung erhalten';
-        $this->DebugLog('Einspeiseplan', 'Verbindlichen bestehenden Plan beibehalten | offene Slots=' . count($committed));
+        $newPlan['status'] = $energyAdjusted
+            ? 'Verbindlicher Einspeiseplan aktiv – Energiemenge wegen >10 % Abweichung an aktuelle Freigabe angepasst'
+            : 'Verbindlicher Einspeiseplan aktiv – geplante Menge innerhalb +/-10 % Toleranz';
+        if (!$energyAdjusted) {
+            $this->DebugLog(
+                'Einspeiseplan',
+                'Verbindlichen bestehenden Plan beibehalten | geplant=' . round($plannedEnergyKWh, 3) . ' kWh'
+                . ' | aktuell freigegeben=' . round($releasedEnergyKWh, 3) . ' kWh'
+                . ' | Toleranz=' . round($lowerToleranceKWh, 3) . '-' . round($upperToleranceKWh, 3) . ' kWh'
+            );
+        }
         return $newPlan;
     }
 
