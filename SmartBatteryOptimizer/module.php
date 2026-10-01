@@ -479,7 +479,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.23';
+        $currentModuleVersion = '1.10.24';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -1056,14 +1056,10 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetActionFeedback($text);
         }
     }
-
     public function RefreshOptimization()
     {
-        $this->DebugLog('RefreshTimer', 'Timer Preise/Optimierung gestartet – Variablen, Plan und Anzeigen werden aktualisiert');
+        $this->DebugLog('RefreshTimer', 'Automatische Preise/Optimierung gestartet');
         $this->RecalculateInternal(false);
-        $now = time();
-        $this->WriteAttributeInteger('LastScheduledOptimizationTs', $now);
-        $this->WriteAttributeInteger('LastScheduledPVActualTs', $now);
     }
 
     public function RefreshPVForecast()
@@ -1080,10 +1076,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->SetTimerInterval('PVForecastRetryTimer', 0);
         $this->DebugLog('PVForecastTimer', 'Timer PV-Prognose gestartet – Provider/Cache, abhängige Variablen, Plan und Anzeigen werden aktualisiert');
         $this->RecalculateInternal(true);
-        $now = time();
-        $this->WriteAttributeInteger('LastScheduledPVForecastTs', $now);
-        $this->WriteAttributeInteger('LastScheduledOptimizationTs', $now);
-        $this->WriteAttributeInteger('LastScheduledPVActualTs', $now);
     }
 
     public function RefreshPVForecastRetry()
@@ -1108,9 +1100,6 @@ class SmartBatteryOptimizer extends IPSModule
         // Die Prognose besitzt wieder ihr eigenes konfigurierbares Intervall.
         $this->DebugLog('PVActualTimer', 'Timer PV-Istwerte gestartet – Istwerte, abhängige Variablen und Grafiken werden aktualisiert');
         $this->RecalculateInternal(false);
-        $now = time();
-        $this->WriteAttributeInteger('LastScheduledPVActualTs', $now);
-        $this->WriteAttributeInteger('LastScheduledOptimizationTs', $now);
 
         // Diagramme bewusst nochmals direkt aus Archiv + gespeichertem Forecast/Profile
         // aufbauen. Dadurch werden die Istwerte auch dann im konfigurierten
@@ -1994,64 +1983,6 @@ class SmartBatteryOptimizer extends IPSModule
             try { $this->StopFeedIn(); } catch (Throwable $ignored) {}
         } finally {
             IPS_SemaphoreLeave($lock);
-            // Der 15-s-Steuertimer dient zusaetzlich als Watchdog fuer die drei
-            // konfigurierbaren Aktualisierungsintervalle. Dadurch werden Variablen
-            // und Diagramme auch dann weiter aktualisiert, wenn ein einzelnes
-            // IP-Symcon-Timerereignis nach einem Modulupdate nicht sauber feuert.
-            try {
-                $this->RunScheduledRefreshWatchdog();
-            } catch (Throwable $watchdogError) {
-                $this->DebugLog('TimerWatchdog', 'Fehler: ' . $watchdogError->getMessage(), 0);
-            }
-        }
-    }
-
-    private function RunScheduledRefreshWatchdog(): void
-    {
-        $now = time();
-        // Wird Control() aus einer laufenden RecalculateInternal()-Berechnung heraus
-        // aufgerufen, darf der Watchdog keinen rekursiven zweiten Lauf starten.
-        if ($this->ReadAttributeInteger('CalculationLockUntil') > $now) return;
-
-        $optimizationSeconds = max(5, $this->ReadPropertyInteger('RefreshMinutes')) * 60;
-        $forecastSeconds = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes')) * 60;
-        $actualSeconds = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes')) * 60;
-
-        $lastOptimization = $this->ReadAttributeInteger('LastScheduledOptimizationTs');
-        $lastForecast = $this->ReadAttributeInteger('LastScheduledPVForecastTs');
-        $lastActual = $this->ReadAttributeInteger('LastScheduledPVActualTs');
-
-        $forecastDue = ($lastForecast <= 0 || $now - $lastForecast >= $forecastSeconds);
-        $optimizationDue = ($lastOptimization <= 0 || $now - $lastOptimization >= $optimizationSeconds);
-        $actualDue = ($lastActual <= 0 || $now - $lastActual >= $actualSeconds);
-
-        // Der umfangreichste faellige Lauf gewinnt. Ein PV-Prognoselauf aktualisiert
-        // zugleich alle abhaengigen Variablen, Planung und Grafiken.
-        if ($forecastDue) {
-            $this->DebugLog('TimerWatchdog', 'PV-Prognose ueberfaellig – automatischer Nachhol-Lauf');
-            $this->RecalculateInternal(true);
-            $done = time();
-            $this->WriteAttributeInteger('LastScheduledPVForecastTs', $done);
-            $this->WriteAttributeInteger('LastScheduledOptimizationTs', $done);
-            $this->WriteAttributeInteger('LastScheduledPVActualTs', $done);
-            return;
-        }
-
-        if ($optimizationDue) {
-            $this->DebugLog('TimerWatchdog', 'Preise/Optimierung ueberfaellig – Variablen und Plan werden nachgeholt');
-            $this->RecalculateInternal(false);
-            $done = time();
-            $this->WriteAttributeInteger('LastScheduledOptimizationTs', $done);
-            $this->WriteAttributeInteger('LastScheduledPVActualTs', $done);
-            return;
-        }
-
-        if ($actualDue) {
-            $this->DebugLog('TimerWatchdog', 'PV-Istwerte/Grafik ueberfaellig – Aktualisierung wird nachgeholt');
-            $this->RecalculateInternal(false);
-            $done = time();
-            $this->WriteAttributeInteger('LastScheduledPVActualTs', $done);
-            $this->WriteAttributeInteger('LastScheduledOptimizationTs', $done);
         }
     }
 

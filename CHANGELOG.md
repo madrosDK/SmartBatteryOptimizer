@@ -1,3 +1,10 @@
+## 1.10.24 / Build 195
+
+- Automatische Aktualisierung auf den stabilen direkten Timerpfad zurückgestellt.
+- `RefreshTimer`, `PVForecastTimer` und `PVActualTimer` starten ihre Aktualisierung wieder direkt ohne zusätzlichen Watchdog-Zeitplan.
+- Der 15-Sekunden-`ControlTimer` startet keine verschachtelten Refresh-Läufe mehr.
+- Provider-Caches und alle späteren Planungs-/Statistikfunktionen bleiben unverändert erhalten.
+
 ## 1.10.23 / Build 194
 - Zyklische Aktualisierung erweitert: Preise/Optimierung, PV-Prognose und PV-Istwerte schreiben jetzt auch die jeweils abhängigen Modulvariablen regelmäßig neu.
 - Die Timerläufe protokollieren im Debug-Log eindeutig ihren Start.

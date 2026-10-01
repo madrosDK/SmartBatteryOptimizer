@@ -1,4 +1,4 @@
-## Version 1.10.23 – zyklische Variablenaktualisierung mit Timer-Watchdog
+## Version 1.10.24 – stabile direkte Timeraktualisierung
 
 - `Preise / Optimierung aktualisieren` berechnet im eingestellten Intervall auch die abhängigen Modulvariablen, den Einspeiseplan und alle relevanten Anzeigen neu.
 - `PV-Prognose aktualisieren` prüft Provider/Cache und aktualisiert danach Prognose-, Reserve-, Plan- und Anzeigevariablen.
@@ -23,7 +23,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.23 / Build 194**
+**1.10.24 / Build 195**
 
 ## Neu in 1.2.3
 
