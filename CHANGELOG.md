@@ -1,3 +1,8 @@
+## v1.10.11 / Build 182
+- Update-Erkennung korrigiert: der automatische Vollrefresh nach Modulupdates wird jetzt zuverlässig in `ApplyChanges()` ausgelöst und ist nicht mehr vom Debug-Modus abhängig.
+- Veraltete interne Versionskennung `1.10.06` entfernt; neue Modulversion `1.10.11` wird korrekt erkannt.
+- Dadurch werden nach dem Update PV-Quellen, Status, Prognose und Einspeiseplanung automatisch neu eingelesen bzw. aufgebaut.
+
 ## v1.10.10 / Build 181
 
 - Veraltete aktive Einspeisezustände werden automatisch erkannt und bereinigt, wenn tatsächlich keine Einspeisung läuft.

@@ -467,6 +467,16 @@ class SmartBatteryOptimizer extends IPSModule
             }
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
+
+        // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
+        // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
+        // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
+        $currentModuleVersion = '1.10.11';
+        if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
+            $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
+            $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
+            $this->SetTimerInterval('FullRefreshWorker', 1500);
+        }
     }
 
     public function DeferredDebugRebuild()
@@ -503,15 +513,6 @@ class SmartBatteryOptimizer extends IPSModule
         } catch (Throwable $e) {
             $this->DebugLog('Debug-Rebuild', $e->getMessage(), 0);
         }
-        // Nach Installation bzw. einem Modulupdate einmal vollständig aktualisieren.
-        // Normales "Übernehmen" ohne Versionswechsel startet keinen zusätzlichen Vollrefresh.
-        $currentModuleVersion = '1.10.06';
-        if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
-            $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
-            $this->SetActionFeedback('Modulupdate erkannt – Anzeigen und Diagramme werden aktualisiert ...');
-            $this->SetTimerInterval('FullRefreshWorker', 1500);
-        }
-
     }
 
     public function ExportStoredData(): string
