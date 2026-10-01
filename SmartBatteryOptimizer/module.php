@@ -472,7 +472,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.13';
+        $currentModuleVersion = '1.10.14';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -1013,9 +1013,23 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function Recalculate()
     {
-        $this->SetActionFeedback('Prognose & Plan: Auftrag angenommen – Berechnung startet ...');
-        $this->SetTimerInterval('ManualRecalculateWorker', 1000);
-        echo "Berechnung wurde gestartet. Der Fortschritt steht in „Letzte manuelle Aktion“.";
+        // Direkter Rechenlauf wie beim funktionierenden Force-Refresh.
+        // Der fruehere 1-s-One-Shot-Worker konnte in IP-Symcon ausbleiben; dann
+        // blieb die Aktion bei "Auftrag angenommen" stehen und weder Prognose,
+        // Preise noch Planung wurden aktualisiert.
+        $this->SetTimerInterval('ManualRecalculateWorker', 0);
+        $this->SetActionFeedback('Prognose & Plan: Berechnung läuft – Prognosequellen werden abgefragt ...');
+        try {
+            $this->RecalculateInternal(true);
+            $status = (string)GetValue($this->GetIDForIdent('StatusText'));
+            $this->SetActionFeedback('Prognose & Plan fertig. ' . $status);
+            echo 'Prognose und Planung wurden aktualisiert.';
+        } catch (Throwable $e) {
+            $text = 'Prognose & Plan FEHLER: ' . $e->getMessage();
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
+        }
     }
 
     public function RunManualRecalculate()

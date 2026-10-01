@@ -1,3 +1,10 @@
+# Changelog
+
+## 1.10.14 (Build 185)
+- Normaler Aufruf „Prognose & Plan“ startet die Berechnung jetzt direkt statt über den unzuverlässigen 1-Sekunden-One-Shot-Worker.
+- Dadurch bleibt die Aktion nicht mehr bei „Auftrag angenommen“ stehen; Provider, Preise, Plan und Diagramme werden im selben Aufruf aktualisiert.
+- Der bisherige Worker bleibt nur aus Kompatibilitätsgründen registriert, wird vom normalen Aufruf aber nicht mehr verwendet.
+
 ## 1.10.13 / Build 184
 
 - Automatische PV-Prognose aktualisiert jetzt direkt, statt nur den manuellen One-Shot-Worker anzustoßen.
