@@ -1,3 +1,9 @@
+## 1.10.25 / Build 196
+
+- Timer-Reparatur: Bei jedem `ApplyChanges()` werden die Skripte der zyklischen Haupttimer (`RefreshTimer`, `PVForecastTimer`, `PVActualTimer`, `PVCalibrationTimer`, `ControlTimer`) explizit auf die aktuellen SBO-Callbacks gesetzt.
+- Dadurch werden veraltete Timer-Aktionen in bestehenden Instanzen nach Modulupdates automatisch repariert; die eingestellten Aktualisierungsintervalle greifen wieder ohne Neuinstallation der Instanz.
+- Debug-Log `TimerRepair` zeigt Event-ID und gesetzten Callback.
+
 ## 1.10.24 / Build 195
 
 - Automatische Aktualisierung auf den stabilen direkten Timerpfad zurückgestellt.

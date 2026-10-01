@@ -446,6 +446,17 @@ class SmartBatteryOptimizer extends IPSModule
         $refresh = max(5, $this->ReadPropertyInteger('RefreshMinutes'));
         $pvForecastRefresh = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes'));
         $pvActualRefresh = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes'));
+        // Bestehende Modulinstanzen koennen nach mehreren Modulupdates noch alte
+        // Timer-Skripte besitzen. SetTimerInterval() aendert nur das Intervall,
+        // aber nicht zuverlaessig den bereits gespeicherten Event-Skripttext.
+        // Daher werden die zyklischen Haupttimer bei jedem ApplyChanges explizit
+        // auf die aktuell gueltigen SBO-Callbacks gesetzt.
+        $this->EnsureTimerEventScript('RefreshTimer', 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
+        $this->EnsureTimerEventScript('PVForecastTimer', 'SBO_RefreshPVForecast($_IPS[\'TARGET\']);');
+        $this->EnsureTimerEventScript('PVActualTimer', 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
+        $this->EnsureTimerEventScript('PVCalibrationTimer', 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
+        $this->EnsureTimerEventScript('ControlTimer', 'SBO_Control($_IPS[\'TARGET\']);');
+
         $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
         $this->SetTimerInterval('PVForecastTimer', $pvForecastRefresh * 60 * 1000);
         $this->SetTimerInterval('PVActualTimer', $pvActualRefresh * 60 * 1000);
@@ -479,11 +490,27 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.24';
+        $currentModuleVersion = '1.10.25';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
             $this->SetTimerInterval('FullRefreshWorker', 1500);
+        }
+    }
+
+    private function EnsureTimerEventScript(string $ident, string $script): void
+    {
+        $eventID = @IPS_GetObjectIDByIdent($ident, $this->InstanceID);
+        if ($eventID <= 0 || !@IPS_EventExists($eventID)) {
+            $this->DebugLog('TimerRepair', $ident . ': Event nicht gefunden');
+            return;
+        }
+
+        try {
+            IPS_SetEventScript($eventID, $script);
+            $this->DebugLog('TimerRepair', $ident . ': Event ' . $eventID . ' -> ' . $script);
+        } catch (Throwable $e) {
+            $this->DebugLog('TimerRepair', $ident . ': Skript konnte nicht gesetzt werden: ' . $e->getMessage());
         }
     }
 
