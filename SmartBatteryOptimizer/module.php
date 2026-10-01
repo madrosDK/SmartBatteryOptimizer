@@ -1233,6 +1233,11 @@ class SmartBatteryOptimizer extends IPSModule
             $this->DebugLog('Preise', 'Geladene interne Preis-Slots: ' . count($prices));
             $nightForPlan = (float)($forecast['nightConsumptionTomorrowKWh'] ?? $night);
             $this->ForecastDiagnosticStep('11 Einspeiseplan START');
+            // Veralteten Laufzustand bereinigen: Ein gesetzter ActiveFeedInPlanKey darf
+            // die Aktualisierung des zukünftigen Plans nur blockieren, wenn tatsächlich
+            // gerade eingespeist wird. Nach Neustart/Fehler kann der Schlüssel sonst
+            // stehen bleiben und FeedInTargetEnergy dauerhaft auf einem alten Wert halten.
+            $this->CleanupStaleActiveFeedInState();
             $previousPlan = json_decode($this->ReadAttributeString('PlanJSON'), true);
             if (!is_array($previousPlan)) $previousPlan = [];
             $plan = $this->BuildPlan($forecast, $prices, $nightForPlan, $consumptionProfile);
@@ -1297,6 +1302,7 @@ class SmartBatteryOptimizer extends IPSModule
             // Sicherheitskorrektur des bestehenden Preisfensters ausgefuehrt.
             // Ein laufender Einspeisevorgang wird dabei bewusst nicht veraendert.
             try {
+                $this->CleanupStaleActiveFeedInState();
                 if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
                     $cachedPlan = json_decode($this->ReadAttributeString('PlanJSON'), true);
                     if (is_array($cachedPlan) && !empty($cachedPlan)) {
@@ -1828,6 +1834,44 @@ class SmartBatteryOptimizer extends IPSModule
         } finally {
             IPS_SemaphoreLeave($lock);
         }
+    }
+
+    private function CleanupStaleActiveFeedInState(): void
+    {
+        $key = $this->ReadAttributeString('ActiveFeedInPlanKey');
+        if ($key === '') return;
+
+        $feedInActive = false;
+        $feedInVar = (int)@$this->GetIDForIdent('FeedInActive');
+        if ($feedInVar > 0) $feedInActive = (bool)GetValue($feedInVar);
+        $plannedPower = 0.0;
+        $powerVar = (int)@$this->GetIDForIdent('PlannedPower');
+        if ($powerVar > 0) $plannedPower = (float)GetValue($powerVar);
+
+        // Während einer echten Einspeisung niemals eingreifen.
+        if ($feedInActive || $plannedPower > 1.0) return;
+
+        $startedTs = $this->ReadAttributeInteger('ActiveFeedInStartedTs');
+        $lastTs = $this->ReadAttributeInteger('ActiveFeedInLastTs');
+        $referenceTs = max($startedTs, $lastTs);
+
+        // Ein frisch gestarteter Lauf kann für wenige Sekunden noch keinen sichtbaren
+        // Leistungswert haben. Erst nach 5 Minuten ohne aktive Einspeisung bereinigen.
+        if ($referenceTs > 0 && time() - $referenceTs <= 300) return;
+
+        $this->DebugLog('Einspeiseplan', 'Veralteten aktiven Einspeisezustand bereinigt | Key=' . $key);
+        $this->WriteAttributeString('ActiveFeedInPlanKey', '');
+        $this->WriteAttributeFloat('ActiveFeedInTargetKWh', 0.0);
+        $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
+        $this->WriteAttributeInteger('ActiveFeedInLastTs', 0);
+        $this->WriteAttributeFloat('ActiveFeedInLastExportW', 0.0);
+        $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
+        $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
+        $this->WriteAttributeInteger('ActiveFeedInStartedTs', 0);
+        $this->WriteAttributeFloat('ActiveFeedInPriceCt', 0.0);
+        $this->WriteAttributeString('ActiveFeedInReason', '');
+        if ($feedInVar > 0) SetValue($feedInVar, false);
+        if ($powerVar > 0) SetValue($powerVar, 0.0);
     }
 
     private function StartMeasuredFeedInRun(string $key, float $targetKWh, ?float $expectedSOCPct = null): void

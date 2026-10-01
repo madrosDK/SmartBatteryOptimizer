@@ -1,3 +1,9 @@
+## v1.10.10 / Build 181
+
+- Veraltete aktive Einspeisezustände werden automatisch erkannt und bereinigt, wenn tatsächlich keine Einspeisung läuft.
+- `Geplante Einspeisemenge aktuell` wird dadurch nicht mehr von einem hängen gebliebenen `ActiveFeedInPlanKey` auf einem alten Wert festgehalten.
+- Die ±10-%-Anpassung des verbindlichen Plans kann danach die Anzeige und Zielmenge wieder korrekt aktualisieren.
+
 ## v1.10.09 / Build 180
 
 - Sicherheitsabgleich fuer verbindliche Einspeiseplaene wird jetzt auch dann ausgefuehrt, wenn ein PV-Prognose-/Provider-Abruf den normalen Rechenlauf vorzeitig abbricht.
