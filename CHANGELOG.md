@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.20 (Build 191)
+- Zukünftige Einspeisefenster werden bis zum tatsächlichen Start bei jeder Planberechnung mit den neuesten Preisen neu optimiert, damit immer die erlösstärksten verfügbaren Zeitfenster genutzt werden.
+- Die +/-10-%-Toleranz gilt weiterhin nur für die geplante Energiemenge: Liegt die bisherige Zielmenge innerhalb der Toleranz zur aktuellen Freigabe, bleibt diese kWh-Menge bestehen, wird aber auf die aktuell besten Preisfenster neu verteilt.
+- Erst ein tatsächlich laufender Einspeisevorgang wird zeitlich verbindlich und nicht mehr durch neue Preise verschoben.
+
+## 1.10.19 (Build 190)
+- Netzbezug-/Netzeinspeisungsvariable wird beim ApplyChanges automatisch im IP-Symcon Archive Control aktiviert, falls Logging noch aus ist.
+- Aggregation der Netzvariable wird für die Einspeise-Statistik auf Standard/Rohwertbasis gesetzt, damit die Tagesintegration zuverlässig aus dem Archiv berechnet werden kann.
+
 ## 1.10.18 (Build 189)
 - Verbindliche Einspeisepläne: Innerhalb der +/-10-%-Toleranz bleibt der komplette Plan unverändert, einschließlich geplanter Energiemenge und Zeitfenster.
 - Erst bei einer Abweichung von mehr als 10 % zur aktuell freigegebenen Energiemenge wird der verbindliche Plan angepasst.

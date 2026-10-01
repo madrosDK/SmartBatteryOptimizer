@@ -476,7 +476,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.18';
+        $currentModuleVersion = '1.10.20';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -1312,9 +1312,56 @@ class SmartBatteryOptimizer extends IPSModule
             $previousPlan = json_decode($this->ReadAttributeString('PlanJSON'), true);
             if (!is_array($previousPlan)) $previousPlan = [];
             $plan = $this->BuildPlan($forecast, $prices, $nightForPlan, $consumptionProfile);
-            // Bereits veröffentlichte zukünftige Einspeisefenster sind verbindlich.
-            // Eine normale Neuberechnung darf sie nicht mehr entfernen oder verschieben.
-            $plan = $this->PreserveCommittedFeedInPlan($plan, $previousPlan);
+
+            $feedInActive = false;
+            $feedInActiveId = @$this->GetIDForIdent('FeedInActive');
+            if ($feedInActiveId > 0) {
+                $feedInActive = (bool)GetValue($feedInActiveId);
+            }
+            $activePlanKey = $this->ReadAttributeString('ActiveFeedInPlanKey');
+
+            if ($feedInActive || $activePlanKey !== '') {
+                // Erst wenn die Einspeisung tatsächlich läuft, bleibt das aktive Fenster
+                // verbindlich und wird nicht mehr durch neue Preise verschoben.
+                $plan = $this->PreserveCommittedFeedInPlan($plan, $previousPlan);
+            } else {
+                // Vor dem tatsächlichen Start wird bei jedem Lauf erneut auf maximalen
+                // Erlös optimiert. Die +/-10-%-Toleranz gilt ausschließlich für die
+                // Energiemenge: liegt die bisher geplante Menge innerhalb der Toleranz
+                // zur aktuellen Freigabe, bleibt diese Menge erhalten, wird aber auf die
+                // aktuell bestbezahlten zukünftigen Slots neu verteilt.
+                $oldPlannedKWh = 0.0;
+                $completedPlanKeys = json_decode($this->ReadAttributeString('CompletedFeedInPlanKeysJSON'), true);
+                if (!is_array($completedPlanKeys)) $completedPlanKeys = [];
+                $nowForReplan = time();
+                foreach (($previousPlan['slots'] ?? []) as $oldSlot) {
+                    $oldKey = (string)($oldSlot['planKey'] ?? ((int)($oldSlot['start'] ?? 0) . ':' . (int)($oldSlot['priceIntervalEnd'] ?? ($oldSlot['end'] ?? 0))));
+                    if ((int)($oldSlot['end'] ?? 0) <= $nowForReplan || isset($completedPlanKeys[$oldKey])) continue;
+                    $oldPlannedKWh += max(0.0, (float)($oldSlot['energyKWh'] ?? 0.0));
+                }
+
+                $releasedKWh = max(0.0, (float)($plan['availableKWh'] ?? 0.0));
+                $lowerToleranceKWh = $releasedKWh * 0.90;
+                $upperToleranceKWh = $releasedKWh * 1.10;
+                if ($oldPlannedKWh > 0.001
+                    && $oldPlannedKWh >= $lowerToleranceKWh - 0.001
+                    && $oldPlannedKWh <= $upperToleranceKWh + 0.001) {
+                    $plan = $this->BuildPlan($forecast, $prices, $nightForPlan, $consumptionProfile, $oldPlannedKWh);
+                    $plan['status'] .= ' | Preisfenster neu optimiert – Planmenge ' . number_format($oldPlannedKWh, 2, ',', '.')
+                        . ' kWh innerhalb +/-10 % Toleranz beibehalten';
+                    $this->DebugLog(
+                        'Einspeiseplan',
+                        'Preisfenster vor Start neu optimiert | Zielmenge beibehalten=' . round($oldPlannedKWh, 3) . ' kWh'
+                        . ' | aktuelle Freigabe=' . round($releasedKWh, 3) . ' kWh'
+                    );
+                } else {
+                    $this->DebugLog(
+                        'Einspeiseplan',
+                        'Preisfenster vor Start neu optimiert | aktuelle Freigabe=' . round($releasedKWh, 3) . ' kWh'
+                        . ' | bisher geplant=' . round($oldPlannedKWh, 3) . ' kWh'
+                    );
+                }
+            }
             $this->ForecastDiagnosticStep('12 Einspeiseplan ENDE');
             $this->DebugLog('Einspeiseplan', ['SoC'=>$plan['soc'] ?? null,'gespeichertKWh'=>$plan['storedKWh'] ?? null,'ReserveKWh'=>$plan['reserveKWh'] ?? null,'verfuegbarKWh'=>$plan['availableKWh'] ?? null,'PVSpeicherKWh'=>$plan['pvSpaceRequiredKWh'] ?? null,'Slots'=>count($plan['slots'] ?? []),'ErloesEUR'=>$plan['expectedRevenueEUR'] ?? null,'Status'=>$plan['status'] ?? '']);
 
@@ -4085,7 +4132,7 @@ class SmartBatteryOptimizer extends IPSModule
         return max(0.0, min(100.0, $this->GetRuntimeFloat('RuntimeMinimumSOC', $this->ReadPropertyFloat('MinimumSOC'))));
     }
 
-    private function BuildPlan(array $forecast, array $prices, float $nightKWh, array $consumptionProfile): array
+    private function BuildPlan(array $forecast, array $prices, float $nightKWh, array $consumptionProfile, ?float $feedInTargetOverrideKWh = null): array
     {
         $socVar = $this->ReadPropertyInteger('SOCVariable');
         if ($socVar <= 0) throw new Exception('SoC-Variable fehlt.');
@@ -4237,11 +4284,21 @@ class SmartBatteryOptimizer extends IPSModule
         $economic = array_values(array_filter($allSlots, fn($p) => $p['priceCt'] >= $minimumFeedInPrice));
         usort($economic, fn($a, $b) => $b['priceCt'] <=> $a['priceCt']);
 
-        // $available ist die für die NETZEINSPEISUNG freigegebene Energiemenge.
+        // $available ist die aktuell für die NETZEINSPEISUNG freigegebene Energiemenge.
+        // Innerhalb der +/-10-%-Hysterese darf für die reine Preisoptimierung eine bereits
+        // bestehende Zielmenge beibehalten werden. Die aktuelle Freigabe bleibt davon
+        // unberührt und wird weiterhin separat angezeigt.
+        $planningAvailable = $feedInTargetOverrideKWh !== null
+            ? max(0.0, (float)$feedInTargetOverrideKWh)
+            : $available;
+        $planningDelta = $planningAvailable - $available;
+        $planningAvailableNow = max(0.0, $availableNow + $planningDelta);
+        $planningAvailableAtNightStart = max(0.0, $availableAtNightStart + $planningDelta);
+
         // Der erwartete Eigenverbrauch reduziert nicht diese Sollmenge, sondern nur die
         // tatsächlich erreichbare Netzleistung. Dadurch verlängert sich die notwendige
         // Laufzeit, bis die geplanten Netz-kWh erreicht sind.
-        $remaining = $available;
+        $remaining = $planningAvailable;
         $maxKW = max(0.0, $this->ReadPropertyInteger('MaxDischargePowerW') / 1000.0);
         $selected = [];
         $revenue = 0.0;
@@ -4254,7 +4311,7 @@ class SmartBatteryOptimizer extends IPSModule
             $durationH = max(0.0, ($p['end'] - $slotStart) / 3600.0);
             if ($durationH <= 0) continue;
 
-            $slotAvailability = ($slotStart >= $nightStartToday) ? $availableAtNightStart : $availableNow;
+            $slotAvailability = ($slotStart >= $nightStartToday) ? $planningAvailableAtNightStart : $planningAvailableNow;
             $slotRemaining = max(0.0, $slotAvailability - $scheduledEnergy);
             if ($slotRemaining <= 0.001) continue;
 
@@ -4586,7 +4643,8 @@ class SmartBatteryOptimizer extends IPSModule
 
         usort($committed, fn($a, $b) => ((int)$a['start']) <=> ((int)$b['start']));
 
-        // Ein bereits gewähltes Preisfenster bleibt verbindlich. Die darin geplante
+        // Diese Funktion wird nur für einen tatsächlich laufenden Einspeisevorgang
+        // verwendet. Das bereits aktive Preisfenster bleibt dann verbindlich. Die darin geplante
         // Energiemenge darf jedoch nicht dauerhaft von der aktuell freigegebenen
         // Einspeisemenge abweichen. Kleine Prognoseänderungen bis +/-10 % werden bewusst
         // toleriert, damit der Plan nicht bei jedem Rechenlauf geringfügig verändert wird.
@@ -5719,6 +5777,17 @@ class SmartBatteryOptimizer extends IPSModule
             if ($actualID > 0) {
                 @IPS_SetHidden($actualID, true);
                 try { @AC_SetLoggingStatus($archiveID, $actualID, true); } catch (Throwable $e) {}
+            }
+        }
+
+        // Netzbezug / Netzeinspeisung für reale Einspeisestatistik sicher archivieren.
+        $gridVarID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
+        if ($gridVarID > 0 && @IPS_VariableExists($gridVarID)) {
+            try {
+                if (!AC_GetLoggingStatus($archiveID, $gridVarID)) AC_SetLoggingStatus($archiveID, $gridVarID, true);
+                if (AC_GetAggregationType($archiveID, $gridVarID) !== 0) AC_SetAggregationType($archiveID, $gridVarID, 0);
+            } catch (Throwable $e) {
+                $this->DebugLog('ArchiveStorage', 'Netzbezug/Netzeinspeisung ' . $gridVarID . ': ' . $e->getMessage(), 0);
             }
         }
 
