@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.18 (Build 189)
+- Verbindliche Einspeisepläne: Innerhalb der +/-10-%-Toleranz bleibt der komplette Plan unverändert, einschließlich geplanter Energiemenge und Zeitfenster.
+- Erst bei einer Abweichung von mehr als 10 % zur aktuell freigegebenen Energiemenge wird der verbindliche Plan angepasst.
+
+## 1.10.17 (Build 188)
+- Verbindliche Einspeisepläne: Innerhalb der +/-10-%-Toleranz bleibt das Preisfenster zeitlich unverändert, die Zielenergiemenge wird aber auf die aktuell freigegebene Energiemenge nachgeführt.
+- `Geplante Einspeisemenge aktuell` entspricht damit auch innerhalb der Toleranz der aktuellen Freigabe; die +/-10 % dienen nur noch als Hysterese gegen unnötige Neuberechnung des Fensters.
+- Einspeise-Statistik: responsive Balken etwas schmaler eingestellt, ohne feste Pixelbreite einzuführen.
+
 ## 1.10.16 (Build 187)
 - Provider-Caching optimiert: Open-Meteo und Forecast.Solar werden im Normalbetrieb maximal einmal pro Stunde je PV-Fläche extern abgefragt.
 - EPEX/smartENERGY-Preise werden eine Stunde gecacht; interne Planberechnungen können weiterhin beliebig oft laufen.
