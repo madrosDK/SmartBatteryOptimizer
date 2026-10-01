@@ -1,36 +1,4 @@
-## 1.10.12 / Build 183
-- Berechnungssperre wird jetzt garantiert per finally geloest; Fehler in Control() blockieren Prognose-/Preisupdates nicht mehr.
-- Fehler beim PV-Prognoseabruf stoppen die Preis-/Planaktualisierung nicht mehr, sofern ein letzter gueltiger Forecast vorhanden ist.
-- Status zeigt in diesem Fall eine Warnung, waehrend Preise, Planung und Diagramme weiter aktualisiert werden.
-
-## v1.10.11 / Build 182
-- Update-Erkennung korrigiert: der automatische Vollrefresh nach Modulupdates wird jetzt zuverlässig in `ApplyChanges()` ausgelöst und ist nicht mehr vom Debug-Modus abhängig.
-- Veraltete interne Versionskennung `1.10.06` entfernt; neue Modulversion `1.10.11` wird korrekt erkannt.
-- Dadurch werden nach dem Update PV-Quellen, Status, Prognose und Einspeiseplanung automatisch neu eingelesen bzw. aufgebaut.
-
-## v1.10.10 / Build 181
-
-- Veraltete aktive Einspeisezustände werden automatisch erkannt und bereinigt, wenn tatsächlich keine Einspeisung läuft.
-- `Geplante Einspeisemenge aktuell` wird dadurch nicht mehr von einem hängen gebliebenen `ActiveFeedInPlanKey` auf einem alten Wert festgehalten.
-- Die ±10-%-Anpassung des verbindlichen Plans kann danach die Anzeige und Zielmenge wieder korrekt aktualisieren.
-
-## v1.10.09 / Build 180
-
-- Sicherheitsabgleich fuer verbindliche Einspeiseplaene wird jetzt auch dann ausgefuehrt, wenn ein PV-Prognose-/Provider-Abruf den normalen Rechenlauf vorzeitig abbricht.
-- Ein alter Zukunftsplan kann dadurch nicht mehr mit einer veralteten Zielmenge stehen bleiben, obwohl die zuletzt erfolgreich berechnete Freigabemenge bereits deutlich kleiner ist.
-- Die +/-10-%-Toleranz aus v1.10.08 bleibt unveraendert; das bereits gewaehlte Preisfenster bleibt erhalten.
-- Laufende Einspeisevorgaenge werden vom Fehler-Fallback nicht veraendert.
-- Der eigentliche Prognosefehler bleibt weiterhin sichtbar und wird nicht unterdrueckt.
-
 # SmartBatteryOptimizer Changelog
-
-## v1.10.08 / Build 179
-
-- Verbindliche Einspeisepläne behalten weiterhin das bereits gewählte Preisfenster bei, die geplante Energiemenge wird aber mit der aktuell freigegebenen Einspeisemenge abgeglichen.
-- ±10-%-Toleranz ergänzt: Liegt die alte Planmenge zwischen 90 % und 110 % der aktuell freigegebenen Menge, bleibt der Plan unverändert.
-- Erst bei einer Abweichung von mehr als 10 % wird die Zielmenge auf die aktuell freigegebene Energiemenge angepasst.
-- Die erwartete Laufzeit innerhalb des bestehenden Preisfensters wird passend zur angepassten Zielmenge neu berechnet; es wird dafür kein neues Preisfenster gewählt.
-- Beispiel: Bei 6,50 kWh Freigabe bleiben 5,85 bis 7,15 kWh unverändert; 19,48 kWh werden auf 6,50 kWh angepasst.
 
 ## v1.10.07 / Build 178
 
