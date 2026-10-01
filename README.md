@@ -1,4 +1,11 @@
-## Version 1.10.25 – stabile direkte Timeraktualisierung
+
+### v1.10.26 / Build 197
+- Zyklische Aktualisierung auf einen zentralen versteckten IP-Symcon ScriptTimer umgestellt.
+- Der Scheduler läuft alle 15 Sekunden und steuert Preise/Optimierung, PV-Prognose, PV-Istwerte/Grafiken, PV-Kalibrierung und Control nach den konfigurierten Intervallen.
+- Die bisherigen periodischen Modul-Timer werden deaktiviert, damit alte/defekte Timerzustände bestehender Instanzen die Aktualisierung nicht mehr blockieren.
+- Provider-Caches bleiben unverändert bestehen; häufige Variablenaktualisierungen verursachen daher keine unnötigen API-Abfragen.
+
+## Version 1.10.26 / Build 197 – stabile direkte Timeraktualisierung
 
 - `Preise / Optimierung aktualisieren` berechnet im eingestellten Intervall auch die abhängigen Modulvariablen, den Einspeiseplan und alle relevanten Anzeigen neu.
 - `PV-Prognose aktualisieren` prüft Provider/Cache und aktualisiert danach Prognose-, Reserve-, Plan- und Anzeigevariablen.
@@ -23,7 +30,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.24 / Build 196**
+**1.10.24 / Build 197**
 
 ## Neu in 1.2.3
 

@@ -210,6 +210,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('LastScheduledOptimizationTs', 0);
         $this->RegisterAttributeInteger('LastScheduledPVForecastTs', 0);
         $this->RegisterAttributeInteger('LastScheduledPVActualTs', 0);
+        $this->RegisterAttributeInteger('LastScheduledPVCalibrationTs', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeInteger('PriceCacheUpdatedTs', 0);
         $this->RegisterAttributeString('PriceCacheSignature', '');
@@ -446,24 +447,19 @@ class SmartBatteryOptimizer extends IPSModule
         $refresh = max(5, $this->ReadPropertyInteger('RefreshMinutes'));
         $pvForecastRefresh = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes'));
         $pvActualRefresh = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes'));
-        // Bestehende Modulinstanzen koennen nach mehreren Modulupdates noch alte
-        // Timer-Skripte besitzen. SetTimerInterval() aendert nur das Intervall,
-        // aber nicht zuverlaessig den bereits gespeicherten Event-Skripttext.
-        // Daher werden die zyklischen Haupttimer bei jedem ApplyChanges explizit
-        // auf die aktuell gueltigen SBO-Callbacks gesetzt.
-        $this->EnsureTimerEventScript('RefreshTimer', 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
-        $this->EnsureTimerEventScript('PVForecastTimer', 'SBO_RefreshPVForecast($_IPS[\'TARGET\']);');
-        $this->EnsureTimerEventScript('PVActualTimer', 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
-        $this->EnsureTimerEventScript('PVCalibrationTimer', 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
-        $this->EnsureTimerEventScript('ControlTimer', 'SBO_Control($_IPS[\'TARGET\']);');
-
-        $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
-        $this->SetTimerInterval('PVForecastTimer', $pvForecastRefresh * 60 * 1000);
-        $this->SetTimerInterval('PVActualTimer', $pvActualRefresh * 60 * 1000);
+        // Ab v1.10.26 übernimmt ein einzelner, echter IP-Symcon ScriptTimer
+        // die komplette zyklische Steuerung. Die bisherigen internen Modultimer
+        // werden bewusst deaktiviert, da sie in bestehenden Instanzen nach vielen
+        // Modulupdates nicht zuverlässig weitergelaufen sind.
+        $this->SetTimerInterval('RefreshTimer', 0);
+        $this->SetTimerInterval('PVForecastTimer', 0);
+        $this->SetTimerInterval('PVForecastRetryTimer', 0);
+        $this->SetTimerInterval('PVActualTimer', 0);
+        $this->SetTimerInterval('PVCalibrationTimer', 0);
+        $this->SetTimerInterval('ControlTimer', 0);
         $pvCalibrationPollSeconds = max(10, min(120, $this->ReadPropertyInteger('PVCalibrationPollSeconds')));
-        $this->SetTimerInterval('PVCalibrationTimer', $pvCalibrationPollSeconds * 1000);
-        $this->SetTimerInterval('ControlTimer', 15 * 1000);
-        $this->DebugLog('ApplyChanges', 'Debug=' . ($this->ReadPropertyBoolean('DebugMode') ? 'AN' : 'AUS') . ' | Timer Preise=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min | Steuerprüfung=15 s');
+        $this->EnsureSchedulerScriptTimer(15);
+        $this->DebugLog('ApplyChanges', 'Scheduler aktiv | Preise=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min | PV-Kalibrierung=' . $pvCalibrationPollSeconds . ' s | Steuerprüfung=15 s');
 
         if ($this->ReadPropertyInteger('SOCVariable') <= 0 || $this->ReadPropertyInteger('HousePowerVariable') <= 0) {
             $this->SetStatus(200);
@@ -490,7 +486,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.25';
+        $currentModuleVersion = '1.10.26';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -498,19 +494,100 @@ class SmartBatteryOptimizer extends IPSModule
         }
     }
 
-    private function EnsureTimerEventScript(string $ident, string $script): void
+    private function EnsureSchedulerScriptTimer(int $intervalSeconds = 15): void
     {
-        $eventID = @IPS_GetObjectIDByIdent($ident, $this->InstanceID);
-        if ($eventID <= 0 || !@IPS_EventExists($eventID)) {
-            $this->DebugLog('TimerRepair', $ident . ': Event nicht gefunden');
+        $intervalSeconds = max(5, min(60, $intervalSeconds));
+        $ident = 'SmartBatteryScheduler';
+        $scriptID = @IPS_GetObjectIDByIdent($ident, $this->InstanceID);
+        if ($scriptID <= 0 || !@IPS_ScriptExists($scriptID)) {
+            $scriptID = IPS_CreateScript(0);
+            IPS_SetParent($scriptID, $this->InstanceID);
+            IPS_SetIdent($scriptID, $ident);
+            IPS_SetName($scriptID, 'SmartBatteryOptimizer Scheduler');
+            @IPS_SetHidden($scriptID, true);
+        }
+
+        $content = '<?php' . PHP_EOL
+            . 'SBO_SchedulerTick(' . $this->InstanceID . ');' . PHP_EOL
+            . '?>';
+        IPS_SetScriptContent($scriptID, $content);
+        IPS_SetScriptTimer($scriptID, $intervalSeconds);
+        @IPS_SetHidden($scriptID, true);
+        $this->DebugLog('Scheduler', 'ScriptTimer #' . $scriptID . ' aktiv | Intervall=' . $intervalSeconds . ' s');
+    }
+
+    public function SchedulerTick(): void
+    {
+        $now = time();
+
+        // Die Steuerung (Start/Stop/Dispatch) muss unabhängig von Prognose- und
+        // Preisintervallen engmaschig laufen.
+        try {
+            $this->Control();
+        } catch (Throwable $e) {
+            $this->DebugLog('Scheduler', 'Control fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
+
+        // PV-Kalibrierung besitzt weiterhin ihr eigenes Sekundenintervall, wird
+        // aber ebenfalls vom zentralen Scheduler ausgelöst.
+        $calibrationInterval = max(10, min(120, $this->ReadPropertyInteger('PVCalibrationPollSeconds')));
+        $lastCalibration = $this->ReadAttributeInteger('LastScheduledPVCalibrationTs');
+        if ($lastCalibration <= 0 || ($now - $lastCalibration) >= $calibrationInterval) {
+            $this->WriteAttributeInteger('LastScheduledPVCalibrationTs', $now);
+            try {
+                $this->RefreshPVCalibration();
+            } catch (Throwable $e) {
+                $this->DebugLog('Scheduler', 'PV-Kalibrierung fehlgeschlagen: ' . $e->getMessage(), 0);
+            }
+        }
+
+        $refreshSeconds = max(5, $this->ReadPropertyInteger('RefreshMinutes')) * 60;
+        $forecastSeconds = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes')) * 60;
+        $actualSeconds = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes')) * 60;
+
+        $lastOptimization = $this->ReadAttributeInteger('LastScheduledOptimizationTs');
+        $lastForecast = $this->ReadAttributeInteger('LastScheduledPVForecastTs');
+        $lastActual = $this->ReadAttributeInteger('LastScheduledPVActualTs');
+
+        $forecastDue = ($lastForecast <= 0 || ($now - $lastForecast) >= $forecastSeconds);
+        $optimizationDue = ($lastOptimization <= 0 || ($now - $lastOptimization) >= $refreshSeconds);
+        $actualDue = ($lastActual <= 0 || ($now - $lastActual) >= $actualSeconds);
+
+        // Läuft bereits eine Berechnung, wird nichts verworfen. Der Scheduler
+        // prüft 15 Sekunden später erneut, ohne die Fälligkeitszeit zu verändern.
+        if ($this->ReadAttributeInteger('CalculationLockUntil') > $now) {
+            if ($forecastDue || $optimizationDue || $actualDue) {
+                $this->DebugLog('Scheduler', 'Aktualisierung fällig, aber Berechnung noch aktiv – erneuter Versuch beim nächsten Tick');
+            }
             return;
         }
 
-        try {
-            IPS_SetEventScript($eventID, $script);
-            $this->DebugLog('TimerRepair', $ident . ': Event ' . $eventID . ' -> ' . $script);
-        } catch (Throwable $e) {
-            $this->DebugLog('TimerRepair', $ident . ': Skript konnte nicht gesetzt werden: ' . $e->getMessage());
+        // Priorität: Forecast > Optimierung > reine Istwert/Grafik-Aktualisierung.
+        // Ein Forecast-Lauf aktualisiert bereits alle abhängigen Variablen und
+        // Diagramme, daher werden die beiden anderen Zeitstempel mitgeführt.
+        if ($forecastDue) {
+            $this->DebugLog('Scheduler', 'PV-Prognose fällig – vollständige Aktualisierung startet');
+            $this->RefreshPVForecast();
+            $done = time();
+            $this->WriteAttributeInteger('LastScheduledPVForecastTs', $done);
+            $this->WriteAttributeInteger('LastScheduledOptimizationTs', $done);
+            $this->WriteAttributeInteger('LastScheduledPVActualTs', $done);
+            return;
+        }
+
+        if ($optimizationDue) {
+            $this->DebugLog('Scheduler', 'Preise/Optimierung fällig – Variablen und Anzeigen werden aktualisiert');
+            $this->RefreshOptimization();
+            $done = time();
+            $this->WriteAttributeInteger('LastScheduledOptimizationTs', $done);
+            $this->WriteAttributeInteger('LastScheduledPVActualTs', $done);
+            return;
+        }
+
+        if ($actualDue) {
+            $this->DebugLog('Scheduler', 'PV-Istwerte/Grafiken fällig');
+            $this->RefreshPVActual();
+            $this->WriteAttributeInteger('LastScheduledPVActualTs', time());
         }
     }
 
@@ -563,7 +640,7 @@ class SmartBatteryOptimizer extends IPSModule
             'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
             'PVCalibrationBlockedFromTs','PVCalibrationExclusionActiveFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
-            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','FeedInStatisticsLastRenderTs','LastScheduledOptimizationTs','LastScheduledPVForecastTs','LastScheduledPVActualTs'
+            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','FeedInStatisticsLastRenderTs','LastScheduledOptimizationTs','LastScheduledPVForecastTs','LastScheduledPVActualTs','LastScheduledPVCalibrationTs'
         ];
         $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
         $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized','FeedInPriceLockActive','FeedInFactorOriginalValid'];

@@ -1,3 +1,9 @@
+## 1.10.26 / Build 197
+- Zentraler Scheduler als versteckter IP-Symcon ScriptTimer (15 s) eingeführt.
+- Preise/Optimierung, PV-Prognose, PV-Istwerte/Grafiken und PV-Kalibrierung werden zuverlässig anhand der eingestellten Intervalle ausgelöst.
+- Periodische interne Modultimer für diese Aufgaben deaktiviert, um hängende Altzustände bestehender Instanzen zu umgehen.
+- Control läuft weiterhin alle 15 Sekunden über denselben Scheduler.
+
 ## 1.10.25 / Build 196
 
 - Timer-Reparatur: Bei jedem `ApplyChanges()` werden die Skripte der zyklischen Haupttimer (`RefreshTimer`, `PVForecastTimer`, `PVActualTimer`, `PVCalibrationTimer`, `ControlTimer`) explizit auf die aktuellen SBO-Callbacks gesetzt.
