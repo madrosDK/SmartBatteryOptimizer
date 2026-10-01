@@ -1289,6 +1289,49 @@ class SmartBatteryOptimizer extends IPSModule
             $this->Control();
         } catch (Throwable $e) {
             $this->DebugLog('Recalculate', $e->getMessage(), 0);
+
+            // Auch wenn ein Forecast-/Provider-Abruf fehlschlaegt, darf ein bereits
+            // gespeicherter verbindlicher Zukunftsplan nicht mit einer offensichtlich
+            // veralteten Energiemenge stehen bleiben. Falls der letzte erfolgreiche
+            // Plan bereits eine aktuelle Freigabemenge enthaelt, wird nur die
+            // Sicherheitskorrektur des bestehenden Preisfensters ausgefuehrt.
+            // Ein laufender Einspeisevorgang wird dabei bewusst nicht veraendert.
+            try {
+                if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
+                    $cachedPlan = json_decode($this->ReadAttributeString('PlanJSON'), true);
+                    if (is_array($cachedPlan) && !empty($cachedPlan)) {
+                        $safePlan = $this->PreserveCommittedFeedInPlan($cachedPlan, $cachedPlan);
+                        $this->WriteAttributeString('PlanJSON', json_encode($safePlan));
+
+                        SetValue($this->GetIDForIdent('AvailableFeedInEnergy'), round((float)($safePlan['availableKWh'] ?? 0.0), 3));
+                        SetValue($this->GetIDForIdent('ExpectedRevenue'), round((float)($safePlan['expectedRevenueEUR'] ?? 0.0), 3));
+                        SetValue($this->GetIDForIdent('NextFeedInWindow'), (string)($safePlan['nextWindow'] ?? '-'));
+
+                        $nextPlannedKWh = 0.0;
+                        $nowPlan = time();
+                        foreach (($safePlan['slots'] ?? []) as $plannedSlot) {
+                            if ((int)($plannedSlot['end'] ?? 0) <= $nowPlan) continue;
+                            $nextPlannedKWh = max(0.0, (float)($plannedSlot['energyKWh'] ?? 0.0));
+                            break;
+                        }
+                        SetValue($this->GetIDForIdent('FeedInTargetEnergy'), round($nextPlannedKWh, 3));
+
+                        $cachedForecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+                        $cachedPrices = json_decode($this->ReadAttributeString('PricesJSON'), true);
+                        if (is_array($cachedForecast)) {
+                            SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($cachedForecast, $safePlan, (float)($safePlan['nightConsumptionKWh'] ?? 0.0)));
+                            if (is_array($cachedPrices)) {
+                                SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($cachedForecast, $cachedPrices, $safePlan));
+                                SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($cachedForecast, $cachedPrices, $safePlan));
+                            }
+                        }
+                        $this->DebugLog('Einspeiseplan', 'Fallback-Sicherheitsabgleich trotz Rechenfehler ausgefuehrt | Ziel=' . round($nextPlannedKWh, 3) . ' kWh');
+                    }
+                }
+            } catch (Throwable $planSafetyError) {
+                $this->DebugLog('Einspeiseplan', 'Fallback-Sicherheitsabgleich fehlgeschlagen: ' . $planSafetyError->getMessage(), 0);
+            }
+
             SetValue($this->GetIDForIdent('StatusText'), 'Fehler: ' . $e->getMessage());
             $this->SetStatus(201);
             $this->StopFeedIn();

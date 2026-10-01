@@ -1,3 +1,11 @@
+## v1.10.09 / Build 180
+
+- Sicherheitsabgleich fuer verbindliche Einspeiseplaene wird jetzt auch dann ausgefuehrt, wenn ein PV-Prognose-/Provider-Abruf den normalen Rechenlauf vorzeitig abbricht.
+- Ein alter Zukunftsplan kann dadurch nicht mehr mit einer veralteten Zielmenge stehen bleiben, obwohl die zuletzt erfolgreich berechnete Freigabemenge bereits deutlich kleiner ist.
+- Die +/-10-%-Toleranz aus v1.10.08 bleibt unveraendert; das bereits gewaehlte Preisfenster bleibt erhalten.
+- Laufende Einspeisevorgaenge werden vom Fehler-Fallback nicht veraendert.
+- Der eigentliche Prognosefehler bleibt weiterhin sichtbar und wird nicht unterdrueckt.
+
 # SmartBatteryOptimizer Changelog
 
 ## v1.10.08 / Build 179
