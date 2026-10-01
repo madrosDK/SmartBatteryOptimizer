@@ -1,3 +1,9 @@
+## 1.10.21 / Build 192
+
+- Preisfenster-Neuoptimierung vor dem Start fehlertolerant gemacht.
+- Die optionale Beibehaltung der alten Zielmenge innerhalb +/-10 % kann den normalen Aktualisierungslauf nicht mehr abbrechen.
+- Bei einem Fehler der Zusatz-Neuoptimierung werden Werte und Grafiken mit dem bereits gültigen Standardplan weiter aktualisiert.
+
 # Changelog
 
 ## 1.10.20 (Build 191)

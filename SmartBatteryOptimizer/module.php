@@ -476,7 +476,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.20';
+        $currentModuleVersion = '1.10.21';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -1346,14 +1346,33 @@ class SmartBatteryOptimizer extends IPSModule
                 if ($oldPlannedKWh > 0.001
                     && $oldPlannedKWh >= $lowerToleranceKWh - 0.001
                     && $oldPlannedKWh <= $upperToleranceKWh + 0.001) {
-                    $plan = $this->BuildPlan($forecast, $prices, $nightForPlan, $consumptionProfile, $oldPlannedKWh);
-                    $plan['status'] .= ' | Preisfenster neu optimiert – Planmenge ' . number_format($oldPlannedKWh, 2, ',', '.')
-                        . ' kWh innerhalb +/-10 % Toleranz beibehalten';
-                    $this->DebugLog(
-                        'Einspeiseplan',
-                        'Preisfenster vor Start neu optimiert | Zielmenge beibehalten=' . round($oldPlannedKWh, 3) . ' kWh'
-                        . ' | aktuelle Freigabe=' . round($releasedKWh, 3) . ' kWh'
-                    );
+                    // Die optionale Preis-Neuoptimierung mit beibehaltener Zielmenge darf
+                    // niemals den gesamten Hauptlauf blockieren. Der zuvor berechnete
+                    // Standardplan bleibt deshalb als sicherer Fallback erhalten.
+                    $basePlan = $plan;
+                    try {
+                        $optimizedPlan = $this->BuildPlan($forecast, $prices, $nightForPlan, $consumptionProfile, $oldPlannedKWh);
+                        if (!is_array($optimizedPlan) || !isset($optimizedPlan['slots'])) {
+                            throw new Exception('Neuoptimierter Plan ist unvollstaendig.');
+                        }
+                        $plan = $optimizedPlan;
+                        $plan['status'] .= ' | Preisfenster neu optimiert – Planmenge ' . number_format($oldPlannedKWh, 2, ',', '.')
+                            . ' kWh innerhalb +/-10 % Toleranz beibehalten';
+                        $this->DebugLog(
+                            'Einspeiseplan',
+                            'Preisfenster vor Start neu optimiert | Zielmenge beibehalten=' . round($oldPlannedKWh, 3) . ' kWh'
+                            . ' | aktuelle Freigabe=' . round($releasedKWh, 3) . ' kWh'
+                        );
+                    } catch (Throwable $reoptimizeError) {
+                        $plan = $basePlan;
+                        $plan['status'] .= ' | WARNUNG: Preisfenster-Neuoptimierung fehlgeschlagen – Standardplan wird verwendet';
+                        $this->DebugLog(
+                            'Einspeiseplan',
+                            'Preisfenster-Neuoptimierung fehlgeschlagen, Hauptlauf wird mit Standardplan fortgesetzt: '
+                            . $reoptimizeError->getMessage(),
+                            0
+                        );
+                    }
                 } else {
                     $this->DebugLog(
                         'Einspeiseplan',
