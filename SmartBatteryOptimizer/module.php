@@ -245,7 +245,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('AlphaTestTrace', '');
 
         $this->RegisterTimer('RefreshTimer', 0, 'SBO_RefreshOptimization($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('PVForecastTimer', 0, 'SBO_Recalculate($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('PVForecastTimer', 0, 'SBO_RefreshPVForecast($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('PVForecastRetryTimer', 0, 'SBO_RefreshPVForecastRetry($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVCalibrationTimer', 0, 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
@@ -471,7 +472,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.12';
+        $currentModuleVersion = '1.10.13';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -1035,6 +1036,34 @@ class SmartBatteryOptimizer extends IPSModule
     public function RefreshOptimization()
     {
         $this->RecalculateInternal(false);
+    }
+
+    public function RefreshPVForecast()
+    {
+        // Der automatische PV-Timer muss die eigentliche Berechnung direkt starten.
+        // Recalculate() ist bewusst nur der manuelle UI-Einstieg und schaltet einen
+        // One-Shot-Worker dazwischen; dieser Umweg darf fuer zyklische Timer nicht
+        // verwendet werden.
+        if ($this->ReadAttributeInteger('CalculationLockUntil') > time()) {
+            $this->DebugLog('PVForecastTimer', 'Berechnung belegt – PV-Prognose wird in 30 s erneut versucht');
+            $this->SetTimerInterval('PVForecastRetryTimer', 30000);
+            return;
+        }
+        $this->SetTimerInterval('PVForecastRetryTimer', 0);
+        $this->DebugLog('PVForecastTimer', 'Automatische PV-Prognose startet direkt');
+        $this->RecalculateInternal(true);
+    }
+
+    public function RefreshPVForecastRetry()
+    {
+        $this->SetTimerInterval('PVForecastRetryTimer', 0);
+        if ($this->ReadAttributeInteger('CalculationLockUntil') > time()) {
+            $this->DebugLog('PVForecastRetry', 'Berechnung weiterhin belegt – erneuter Versuch in 30 s');
+            $this->SetTimerInterval('PVForecastRetryTimer', 30000);
+            return;
+        }
+        $this->DebugLog('PVForecastRetry', 'Nachgeholte automatische PV-Prognose startet');
+        $this->RecalculateInternal(true);
     }
 
     public function RefreshPVActual()

@@ -1,3 +1,9 @@
+## 1.10.13 / Build 184
+
+- Automatische PV-Prognose aktualisiert jetzt direkt, statt nur den manuellen One-Shot-Worker anzustoßen.
+- Bei gleichzeitiger Preis-/Planberechnung wird der PV-Abruf nach 30 Sekunden automatisch nachgeholt, statt auszufallen.
+- Force-Refresh und automatischer PV-Refresh verwenden damit denselben eigentlichen Berechnungspfad; der Force-Refresh umgeht weiterhin bewusst Provider-Caches.
+
 ## 1.10.12 / Build 183
 - Berechnungssperre wird jetzt garantiert per finally geloest; Fehler in Control() blockieren Prognose-/Preisupdates nicht mehr.
 - Fehler beim PV-Prognoseabruf stoppen die Preis-/Planaktualisierung nicht mehr, sofern ein letzter gueltiger Forecast vorhanden ist.
