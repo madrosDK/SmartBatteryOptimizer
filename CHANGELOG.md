@@ -1,5 +1,13 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.08 / Build 179
+
+- Verbindliche Einspeisepläne behalten weiterhin das bereits gewählte Preisfenster bei, die geplante Energiemenge wird aber mit der aktuell freigegebenen Einspeisemenge abgeglichen.
+- ±10-%-Toleranz ergänzt: Liegt die alte Planmenge zwischen 90 % und 110 % der aktuell freigegebenen Menge, bleibt der Plan unverändert.
+- Erst bei einer Abweichung von mehr als 10 % wird die Zielmenge auf die aktuell freigegebene Energiemenge angepasst.
+- Die erwartete Laufzeit innerhalb des bestehenden Preisfensters wird passend zur angepassten Zielmenge neu berechnet; es wird dafür kein neues Preisfenster gewählt.
+- Beispiel: Bei 6,50 kWh Freigabe bleiben 5,85 bis 7,15 kWh unverändert; 19,48 kWh werden auf 6,50 kWh angepasst.
+
 ## v1.10.07 / Build 178
 
 - PV-Prognose-Diagramm korrigiert: vollständig vergangene Stunden verwenden für Anbieterlinien und den blauen kombinierten Prognosebalken nun denselben eingefrorenen Prognosestand.

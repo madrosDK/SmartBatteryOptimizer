@@ -4340,12 +4340,105 @@ class SmartBatteryOptimizer extends IPSModule
         if (empty($committed)) return $newPlan;
 
         usort($committed, fn($a, $b) => ((int)$a['start']) <=> ((int)$b['start']));
+
+        // Ein bereits gewähltes Preisfenster bleibt verbindlich. Die darin geplante
+        // Energiemenge darf jedoch nicht dauerhaft von der aktuell freigegebenen
+        // Einspeisemenge abweichen. Kleine Prognoseänderungen bis +/-10 % werden bewusst
+        // toleriert, damit der Plan nicht bei jedem Rechenlauf geringfügig verändert wird.
+        $plannedEnergyKWh = array_sum(array_map(static fn($x) => max(0.0, (float)($x['energyKWh'] ?? 0.0)), $committed));
+        $releasedEnergyKWh = max(0.0, (float)($newPlan['availableKWh'] ?? 0.0));
+        $lowerToleranceKWh = $releasedEnergyKWh * 0.90;
+        $upperToleranceKWh = $releasedEnergyKWh * 1.10;
+        $energyAdjusted = false;
+
+        if ($plannedEnergyKWh < $lowerToleranceKWh - 0.001 || $plannedEnergyKWh > $upperToleranceKWh + 0.001) {
+            $targetEnergyKWh = $releasedEnergyKWh;
+            $remainingTargetKWh = $targetEnergyKWh;
+            $adjusted = [];
+
+            foreach ($committed as $slot) {
+                if ($remainingTargetKWh <= 0.001) break;
+
+                $start = max($now, (int)($slot['start'] ?? 0));
+                $intervalEnd = (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0));
+                if ($intervalEnd <= $start) continue;
+
+                $expectedGridExportW = max(0.0, (float)($slot['expectedGridExportW'] ?? 0.0));
+                if ($expectedGridExportW <= 1.0) {
+                    $duration = max(1, (int)($slot['end'] ?? $intervalEnd) - (int)($slot['start'] ?? $start));
+                    $oldEnergy = max(0.0, (float)($slot['energyKWh'] ?? 0.0));
+                    if ($oldEnergy > 0.0) $expectedGridExportW = ($oldEnergy / ($duration / 3600.0)) * 1000.0;
+                }
+                if ($expectedGridExportW <= 1.0) continue;
+
+                $capacityKWh = ($expectedGridExportW / 1000.0) * (($intervalEnd - $start) / 3600.0);
+                $slotEnergyKWh = min($remainingTargetKWh, max(0.0, $capacityKWh));
+                if ($slotEnergyKWh <= 0.001) continue;
+
+                $requiredSeconds = max(1, (int)ceil(($slotEnergyKWh / ($expectedGridExportW / 1000.0)) * 3600.0));
+                $slot['start'] = $start;
+                $slot['end'] = min($intervalEnd, $start + $requiredSeconds);
+                $slot['energyKWh'] = $slotEnergyKWh;
+                $slot['expectedGridExportW'] = $expectedGridExportW;
+                $slot['segments'] = [[
+                    'start' => $slot['start'],
+                    'end' => $slot['end'],
+                    'priceIntervalStart' => (int)($slot['priceIntervalStart'] ?? $slot['start']),
+                    'priceIntervalEnd' => $intervalEnd,
+                    'energyKWh' => $slotEnergyKWh,
+                    'powerW' => (float)($slot['powerW'] ?? 0.0),
+                    'expectedGridExportW' => $expectedGridExportW,
+                    'expectedLoadW' => (float)($slot['expectedLoadW'] ?? 0.0),
+                    'priceCt' => (float)($slot['priceCt'] ?? 0.0),
+                    'reason' => (string)($slot['reason'] ?? 'price')
+                ]];
+                $adjusted[] = $slot;
+                $remainingTargetKWh = max(0.0, $remainingTargetKWh - $slotEnergyKWh);
+            }
+
+            $committed = $adjusted;
+            $energyAdjusted = true;
+            $adjustedTotalKWh = array_sum(array_map(static fn($x) => max(0.0, (float)($x['energyKWh'] ?? 0.0)), $committed));
+            $this->DebugLog(
+                'Einspeiseplan',
+                'Verbindliche Planmenge angepasst | alt=' . round($plannedEnergyKWh, 3) . ' kWh'
+                . ' | aktuell freigegeben=' . round($releasedEnergyKWh, 3) . ' kWh'
+                . ' | Toleranz=' . round($lowerToleranceKWh, 3) . '-' . round($upperToleranceKWh, 3) . ' kWh'
+                . ' | neu=' . round($adjustedTotalKWh, 3) . ' kWh'
+            );
+
+            // Kann innerhalb des bereits verbindlichen Fensters nicht die komplette
+            // aktuelle Freigabemenge untergebracht werden, bleibt die physikalisch
+            // mögliche Menge bestehen; ein neues Preisfenster wird nicht erzwungen.
+            if ($remainingTargetKWh > 0.001) {
+                $this->DebugLog('Einspeiseplan', 'Verbindliches Fenster kann ' . round($remainingTargetKWh, 3) . ' kWh der aktuellen Freigabe nicht mehr aufnehmen');
+            }
+        }
+
+        if (empty($committed)) {
+            $newPlan['slots'] = [];
+            $newPlan['nextWindow'] = '-';
+            $newPlan['highestPriceCt'] = 0.0;
+            $newPlan['expectedRevenueEUR'] = 0.0;
+            $newPlan['status'] = 'Verbindlicher Einspeiseplan aktiv – aktuell keine Einspeisemenge freigegeben';
+            return $newPlan;
+        }
+
         $newPlan['slots'] = $committed;
         $newPlan['nextWindow'] = date('d.m. H:i', (int)$committed[0]['start']) . '–' . date('H:i', (int)$committed[0]['end']);
         $newPlan['highestPriceCt'] = max(array_map(static fn($x) => (float)($x['priceCt'] ?? 0.0), $committed));
         $newPlan['expectedRevenueEUR'] = array_sum(array_map(static fn($x) => (float)($x['energyKWh'] ?? 0.0) * (float)($x['priceCt'] ?? 0.0) / 100.0, $committed));
-        $newPlan['status'] = 'Verbindlicher Einspeiseplan aktiv – geplante Fenster bleiben bis zur Ausführung erhalten';
-        $this->DebugLog('Einspeiseplan', 'Verbindlichen bestehenden Plan beibehalten | offene Slots=' . count($committed));
+        $newPlan['status'] = $energyAdjusted
+            ? 'Verbindlicher Einspeiseplan aktiv – Energiemenge wegen >10 % Abweichung an aktuelle Freigabe angepasst'
+            : 'Verbindlicher Einspeiseplan aktiv – geplante Menge innerhalb +/-10 % Toleranz';
+        if (!$energyAdjusted) {
+            $this->DebugLog(
+                'Einspeiseplan',
+                'Verbindlichen bestehenden Plan beibehalten | geplant=' . round($plannedEnergyKWh, 3) . ' kWh'
+                . ' | aktuell freigegeben=' . round($releasedEnergyKWh, 3) . ' kWh'
+                . ' | Toleranz=' . round($lowerToleranceKWh, 3) . '-' . round($upperToleranceKWh, 3) . ' kWh'
+            );
+        }
         return $newPlan;
     }
 
