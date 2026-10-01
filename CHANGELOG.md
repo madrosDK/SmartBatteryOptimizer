@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.15 (Build 186)
+- Provider-Caching optimiert: Open-Meteo und Forecast.Solar werden im Normalbetrieb maximal einmal pro Stunde je PV-Fläche extern abgefragt.
+- EPEX/smartENERGY-Preise werden eine Stunde gecacht; interne Planberechnungen können weiterhin beliebig oft laufen.
+- pvnode behält die bestehende Tageslimit-/Cache-Logik (typisch ein Live-Abruf pro Tag).
+- Force-Refresh der Prognoseanbieter umgeht die PV-Provider-Caches weiterhin bewusst.
+- Einspeise-Statistik wird im laufenden Betrieb maximal einmal pro Minute neu gerendert, damit der heutige Balken mitläuft.
+- Einspeise-Statistik reagiert per ResizeObserver/Highcharts-Reflow dynamisch auf die verfügbare Breite.
+
+
 ## 1.10.14 (Build 185)
 - Normaler Aufruf „Prognose & Plan“ startet die Berechnung jetzt direkt statt über den unzuverlässigen 1-Sekunden-One-Shot-Worker.
 - Dadurch bleibt die Aktion nicht mehr bei „Auftrag angenommen“ stehen; Provider, Preise, Plan und Diagramme werden im selben Aufruf aktualisiert.

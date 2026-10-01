@@ -173,6 +173,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('PVForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('PVSourceForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('ForecastSolarSurfaceCacheJSON', '{}');
+        $this->RegisterAttributeString('OpenMeteoSurfaceCacheJSON', '{}');
         $this->RegisterAttributeInteger('ForecastSolarRetryAfterTs', 0);
         $this->RegisterAttributeString('PVDebugVisibilityJSON', '{}');
         $this->RegisterAttributeString('ProviderDebugLogJSON', '[]');
@@ -207,6 +208,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('PVCalibrationCleanupStatus', '');
         $this->RegisterAttributeInteger('CalculationLockUntil', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
+        $this->RegisterAttributeInteger('PriceCacheUpdatedTs', 0);
+        $this->RegisterAttributeString('PriceCacheSignature', '');
         $this->RegisterAttributeString('PlanJSON', '[]');
         $this->RegisterAttributeInteger('FeedInPlannerVersion', 0);
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
@@ -230,6 +233,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('GridExportDailyJSON', '{}');
         $this->RegisterAttributeInteger('GridExportTrackLastTs', 0);
         $this->RegisterAttributeFloat('GridExportTrackLastW', 0.0);
+        $this->RegisterAttributeInteger('FeedInStatisticsLastRenderTs', 0);
         $this->RegisterAttributeInteger('ActiveFeedInStartedTs', 0);
         $this->RegisterAttributeFloat('ActiveFeedInPriceCt', 0.0);
         $this->RegisterAttributeString('ActiveFeedInReason', '');
@@ -472,7 +476,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.14';
+        $currentModuleVersion = '1.10.15';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -519,9 +523,9 @@ class SmartBatteryOptimizer extends IPSModule
     public function ExportStoredData(): string
     {
         $stringAttributes = [
-            'ForecastJSON','PVForecastHistoryJSON','PVSourceForecastHistoryJSON','ForecastSolarSurfaceCacheJSON',
+            'ForecastJSON','PVForecastHistoryJSON','PVSourceForecastHistoryJSON','ForecastSolarSurfaceCacheJSON','OpenMeteoSurfaceCacheJSON',
             'PVDebugVisibilityJSON','ProviderDebugLogJSON','ActionHistoryJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
-            'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PVCalibrationExcludedPeriodsJSON','PVCalibrationExclusionActiveReason','PVCalibrationCleanupStatus','PricesJSON','PlanJSON','NightLearningSource',
+            'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PVCalibrationExcludedPeriodsJSON','PVCalibrationExclusionActiveReason','PVCalibrationCleanupStatus','PricesJSON','PriceCacheSignature','PlanJSON','NightLearningSource',
             'ConsumptionProfileJSON','ConsumptionLearningSource','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
             'CompletedFeedInPlanKeysJSON','FeedInStatisticsJSON','ActiveFeedInReason','AlphaTestTrace','ArchiveStorageStatus'
         ];
@@ -529,7 +533,7 @@ class SmartBatteryOptimizer extends IPSModule
             'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
             'PVCalibrationBlockedFromTs','PVCalibrationExclusionActiveFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
-            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion'
+            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','FeedInStatisticsLastRenderTs'
         ];
         $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
         $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized','FeedInPriceLockActive','FeedInFactorOriginalValid'];
@@ -2061,6 +2065,15 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
         $this->WriteAttributeInteger('GridExportTrackLastTs',$now); $this->WriteAttributeFloat('GridExportTrackLastW',$currentW);
+
+        // Den laufenden Tag in der Statistik sichtbar nachführen, ohne Highcharts bei
+        // jedem Messzyklus neu aufzubauen. Maximal einmal pro Minute rendern.
+        $lastRender = $this->ReadAttributeInteger('FeedInStatisticsLastRenderTs');
+        if ($now - $lastRender >= 60) {
+            $statsID = (int)@$this->GetIDForIdent('FeedInStatisticsHTML');
+            if ($statsID > 0) SetValue($statsID, $this->RenderFeedInStatisticsHTML());
+            $this->WriteAttributeInteger('FeedInStatisticsLastRenderTs', $now);
+        }
     }
 
     private function ReadCurrentGridExportW(): float
@@ -2184,6 +2197,8 @@ class SmartBatteryOptimizer extends IPSModule
         $forecastSolarResolved = 0;
         $forecastSolarCache = json_decode($this->ReadAttributeString('ForecastSolarSurfaceCacheJSON'), true);
         if (!is_array($forecastSolarCache)) $forecastSolarCache = [];
+        $openMeteoCache = json_decode($this->ReadAttributeString('OpenMeteoSurfaceCacheJSON'), true);
+        if (!is_array($openMeteoCache)) $openMeteoCache = [];
 
         foreach ($surfaces as $idx => $surface) {
             if (empty($surface['Active']) || (float)($surface['KWp'] ?? 0) <= 0) continue;
@@ -2204,36 +2219,51 @@ class SmartBatteryOptimizer extends IPSModule
             $currentExpectedBaseW = 0.0;
 
             if ($useOpenMeteo) {
-                $url = 'https://api.open-meteo.com/v1/forecast?' . http_build_query([
-                    'latitude' => $lat,
-                    'longitude' => $lon,
-                    'hourly' => 'global_tilted_irradiance',
-                    'tilt' => $tilt,
-                    'azimuth' => $azimuth,
-                    'timezone' => 'Europe/Vienna',
-                    'forecast_days' => 3
-                ]);
-                $this->ForecastDiagnosticStep('Open-Meteo START | ' . $name);
-                $data = $this->HttpGetJson($url, 'Open-Meteo', ['Fläche'=>$name,'kWp'=>$kwp,'Azimut'=>$azimuth,'Neigung'=>$tilt,'AutoFaktor'=>$autoFactor,'Zeitzone'=>'Europe/Vienna']);
-                $this->ForecastDiagnosticStep('Open-Meteo ENDE | ' . $name);
-                if (!isset($data['hourly']['time'], $data['hourly']['global_tilted_irradiance'])) {
-                    throw new Exception('Ungültige Open-Meteo-Antwort für Fläche ' . $name);
+                $openMeteoHours = null;
+                $openMeteoFromCache = false;
+                $cacheSignature = sha1(json_encode([
+                    'lat'=>round($lat,6),'lon'=>round($lon,6),'tilt'=>round($tilt,2),'azimuth'=>round($azimuth,2),
+                    'kwp'=>round($kwp,4),'eff'=>round($this->ReadPropertyFloat('SystemEfficiency'),5),
+                    'manual'=>round($manualFactor,5),'global'=>round($this->ReadPropertyFloat('GlobalPVFactor'),5)
+                ]));
+                $cachedSurface = $openMeteoCache[$key] ?? null;
+                $cacheAge = is_array($cachedSurface) ? (time() - (int)($cachedSurface['savedAt'] ?? 0)) : PHP_INT_MAX;
+                if (!$forceProviders && is_array($cachedSurface) && ($cachedSurface['signature'] ?? '') === $cacheSignature && $cacheAge >= 0 && $cacheAge < 3600 && is_array($cachedSurface['hours'] ?? null)) {
+                    $openMeteoHours = $cachedSurface['hours'];
+                    $openMeteoFromCache = true;
+                    $this->DebugLog('Open-Meteo', $name . ' | Cache ' . round($cacheAge / 60, 1) . ' min | kein API-Aufruf');
+                } else {
+                    $url = 'https://api.open-meteo.com/v1/forecast?' . http_build_query([
+                        'latitude' => $lat,
+                        'longitude' => $lon,
+                        'hourly' => 'global_tilted_irradiance',
+                        'tilt' => $tilt,
+                        'azimuth' => $azimuth,
+                        'timezone' => 'Europe/Vienna',
+                        'forecast_days' => 3
+                    ]);
+                    $this->ForecastDiagnosticStep('Open-Meteo START | ' . $name);
+                    $data = $this->HttpGetJson($url, 'Open-Meteo', ['Fläche'=>$name,'kWp'=>$kwp,'Azimut'=>$azimuth,'Neigung'=>$tilt,'AutoFaktor'=>$autoFactor,'Zeitzone'=>'Europe/Vienna']);
+                    $this->ForecastDiagnosticStep('Open-Meteo ENDE | ' . $name);
+                    if (!isset($data['hourly']['time'], $data['hourly']['global_tilted_irradiance'])) {
+                        throw new Exception('Ungültige Open-Meteo-Antwort für Fläche ' . $name);
+                    }
+                    $openMeteoHours = [];
+                    $openMeteoTimezone = new DateTimeZone('Europe/Vienna');
+                    foreach ($data['hourly']['time'] as $i => $timeStr) {
+                        $dt = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i', (string)$timeStr, $openMeteoTimezone);
+                        if ($dt === false) $dt = new DateTimeImmutable((string)$timeStr, $openMeteoTimezone);
+                        $ts = $dt->getTimestamp() - 3600;
+                        $gti = max(0.0, (float)$data['hourly']['global_tilted_irradiance'][$i]);
+                        $openMeteoHours[(int)$ts] = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
+                    }
+                    $openMeteoCache[$key] = ['savedAt'=>time(),'signature'=>$cacheSignature,'hours'=>$openMeteoHours];
                 }
 
                 $sum = 0.0;
-                $openMeteoTimezone = new DateTimeZone('Europe/Vienna');
-                foreach ($data['hourly']['time'] as $i => $timeStr) {
-                    $dt = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i', (string)$timeStr, $openMeteoTimezone);
-                    if ($dt === false) $dt = new DateTimeImmutable((string)$timeStr, $openMeteoTimezone);
-                    // Open-Meteo kennzeichnet global_tilted_irradiance mit dem ENDE des
-                    // Intervalls: der Stundenwert ist der Mittelwert der vorhergehenden Stunde.
-                    // Intern verwenden alle anderen Provider und die Ist-/Kalibrierungsdaten den
-                    // Beginn des Stundenintervalls. Deshalb hier zentral um eine Stunde nach vorn
-                    // auf den Intervallbeginn normalisieren (z. B. API 13:00 => 12:00-13:00).
-                    $ts = $dt->getTimestamp() - 3600;
-                    $gti = max(0.0, (float)$data['hourly']['global_tilted_irradiance'][$i]);
-                    $basePowerKW = $kwp * ($gti / 1000.0) * $this->ReadPropertyFloat('SystemEfficiency') * $manualFactor * $this->ReadPropertyFloat('GlobalPVFactor');
-                    // Providerlinie bleibt Rohprognose; PV-Auto wird erst nach der Quellengewichtung angewendet.
+                foreach (($openMeteoHours ?? []) as $tsRaw => $basePowerKWRaw) {
+                    $ts = (int)$tsRaw;
+                    $basePowerKW = max(0.0, (float)$basePowerKWRaw);
                     $powerKW = $basePowerKW;
                     if (!isset($sourceHours['openmeteo'][$ts])) $sourceHours['openmeteo'][$ts] = 0.0;
                     $sourceHours['openmeteo'][$ts] += $powerKW;
@@ -2243,7 +2273,7 @@ class SmartBatteryOptimizer extends IPSModule
                     if (date('Y-m-d', $ts) === date('Y-m-d', strtotime('tomorrow'))) $sum += $powerKW;
                 }
                 $surfaceTotalsBySource['openmeteo'][$name] = $sum;
-                $this->DebugLog('Open-Meteo', $name . ' | morgen=' . round($sum, 3) . ' kWh | kWp=' . $kwp . ' | Azimut=' . $azimuth . ' | Neigung=' . $tilt . ' | AutoFaktor=' . round($autoFactor, 3));
+                $this->DebugLog('Open-Meteo', $name . ' | morgen=' . round($sum, 3) . ' kWh | kWp=' . $kwp . ' | Azimut=' . $azimuth . ' | Neigung=' . $tilt . ' | ' . ($openMeteoFromCache ? 'Cache' : 'Live'));
             }
 
             if ($useForecastSolar) {
@@ -2257,9 +2287,9 @@ class SmartBatteryOptimizer extends IPSModule
                     $cachedSurface = $forecastSolarCache[$key] ?? null;
                     $cacheAge = is_array($cachedSurface) ? (time() - (int)($cachedSurface['savedAt'] ?? 0)) : PHP_INT_MAX;
 
-                    // Erfolgreiche Forecast.Solar-Flächendaten mindestens 15 Minuten
-                    // wiederverwenden. Das gilt auch für manuelle Gesamtaktualisierungen.
-                    if (!$forceProviders && is_array($cachedSurface) && $cacheAge >= 0 && $cacheAge < 900 && is_array($cachedSurface['hours'] ?? null)) {
+                    // Erfolgreiche Forecast.Solar-Flächendaten bis zu 60 Minuten wiederverwenden.
+                    // Force-Refresh umgeht diesen Cache weiterhin bewusst.
+                    if (!$forceProviders && is_array($cachedSurface) && $cacheAge >= 0 && $cacheAge < 3600 && is_array($cachedSurface['hours'] ?? null)) {
                         $fsHours = $cachedSurface['hours'];
                         $this->DebugLog('Forecast.Solar', $name . ' | Cache ' . round($cacheAge / 60, 1) . ' min | kein API-Aufruf');
                     } elseif (!$forceProviders && $retryAfterTs > time()) {
@@ -2338,6 +2368,9 @@ class SmartBatteryOptimizer extends IPSModule
             ];
         }
 
+        if ($useOpenMeteo) {
+            $this->WriteAttributeString('OpenMeteoSurfaceCacheJSON', json_encode($openMeteoCache));
+        }
         if ($useForecastSolar) {
             $this->WriteAttributeString('ForecastSolarSurfaceCacheJSON', json_encode($forecastSolarCache));
             if ($forecastSolarRequired > 0 && $forecastSolarResolved === $forecastSolarRequired) {
@@ -3763,24 +3796,32 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function FetchPrices(): array
     {
-        $this->DebugLog('Preise', 'Preisquelle/Tarif Modus=' . $this->ReadPropertyInteger('PriceProvider'));
-        // Ein einziges Auswahlfeld bestimmt Datenquelle und Tariflogik.
-        // 0 = EPEX SPOT AT 60 min, 1 = aWATTar SUNNY Spot,
-        // 2 = eigene JSON-Quelle, 3 = benutzerdefiniert auf EPEX-Basis.
-        switch ($this->ReadPropertyInteger('PriceProvider')) {
-            case 1:
-                return $this->FetchEPEXHourlyPrices(1);
+        $provider = $this->ReadPropertyInteger('PriceProvider');
+        $this->DebugLog('Preise', 'Preisquelle/Tarif Modus=' . $provider);
+        if ($provider === 2) return $this->FetchCustomJSONPrices();
 
-            case 2:
-                return $this->FetchCustomJSONPrices();
-
-            case 3:
-                return $this->FetchEPEXHourlyPrices(3);
-
-            case 0:
-            default:
-                return $this->FetchEPEXHourlyPrices(0);
+        $signature = sha1(json_encode([
+            'provider'=>$provider,
+            'positive'=>$this->ReadPropertyFloat('PositivePriceFactor'),
+            'negative'=>$this->ReadPropertyFloat('NegativePriceFactor'),
+            'adjustment'=>$this->ReadPropertyFloat('PriceAdjustmentCt')
+        ]));
+        $updated = $this->ReadAttributeInteger('PriceCacheUpdatedTs');
+        $cached = json_decode($this->ReadAttributeString('PricesJSON'), true);
+        if ($updated > 0 && (time() - $updated) >= 0 && (time() - $updated) < 3600 && $this->ReadAttributeString('PriceCacheSignature') === $signature && is_array($cached) && count($cached) > 0) {
+            $this->DebugLog('Preise', 'Cache ' . round((time() - $updated) / 60, 1) . ' min | kein externer API-Aufruf');
+            return $cached;
         }
+
+        switch ($provider) {
+            case 1: $prices = $this->FetchEPEXHourlyPrices(1); break;
+            case 3: $prices = $this->FetchEPEXHourlyPrices(3); break;
+            case 0:
+            default: $prices = $this->FetchEPEXHourlyPrices(0); break;
+        }
+        $this->WriteAttributeInteger('PriceCacheUpdatedTs', time());
+        $this->WriteAttributeString('PriceCacheSignature', $signature);
+        return $prices;
     }
 
     private function FetchEPEXHourlyPrices(int $tariffMode): array
@@ -6587,8 +6628,8 @@ class SmartBatteryOptimizer extends IPSModule
         $monday=function(int $ts): int {return strtotime('monday this week',strtotime(date('Y-m-d 12:00:00',$ts)));}; $startWeek=$monday($first); $endWeek=$monday($last); $weeks=[];
         for($w=$startWeek;$w<=$endWeek;$w=strtotime('+7 days',$w)){$rows=[];for($i=0;$i<7;$i++)$rows[]=$makeRow(strtotime('+'.$i.' days',$w));$we=strtotime('+6 days',$w);$weeks[]=['key'=>date('o-W',$w),'label'=>'KW '.date('W',$w).' · '.date('d.m.',$w).' – '.date('d.m.Y',$we),'isCurrent'=>$w===$monday(time()),'rows'=>$rows,'sum'=>$sumRows($rows)];}
         $highchartsJS=$this->GetHighchartsJavaScript();$id='sbo_feed_stats_'.$this->InstanceID;$html='<div style="font-family:Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#fff;width:100%"><b>Einspeise-Statistik</b><br><span style="font-size:11px">Blau: Einspeisung außerhalb der Automatik · Grün: Einspeisung während der Automatik. Gelb transparente Balken zeigen jeweils überlagert den zugehörigen Erlös.</span><br>';if($highchartsJS==='')return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
-        $html.='<div id="'.$id.'" style="width:100%;height:430px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px;flex-wrap:wrap"><button id="'.$id.'_prev" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button><span id="'.$id.'_date" style="min-width:235px;text-align:center;font-weight:bold"></span><button id="'.$id.'_next" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button><button id="'.$id.'_today" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Heute</button><span style="width:8px"></span><button id="'.$id.'_week" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Woche</button><button id="'.$id.'_month" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Monat</button></div><div id="'.$id.'_summary" style="font-size:11px;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
-        $html.='var views={week:'.json_encode($weeks,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',month:'.json_encode($months,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).'},id='.json_encode($id).',store="sbo_feed_stats_view_'.$this->InstanceID.'",mode="month",idx=0;try{var sm=localStorage.getItem(store);if(sm==="week"||sm==="month")mode=sm}catch(x){}function e(s){return document.getElementById(id+s)}function f(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}function currentIndex(){var v=views[mode];for(var i=0;i<v.length;i++)if(v[i].isCurrent)return i;return Math.max(0,v.length-1)}function select(m){mode=m;idx=currentIndex();try{localStorage.setItem(store,mode)}catch(x){}draw()}function draw(){var v=views[mode];if(!v.length)return;idx=Math.max(0,Math.min(idx,v.length-1));var m=v[idx],a=[],o=[],ae=[],oe=[],c=[];m.rows.forEach(function(r){c.push(mode==="week"?r.weekLabel:r.label);a.push({y:r.autoKWh,custom:r});o.push({y:r.otherKWh,custom:r});ae.push({y:r.autoEUR,custom:r});oe.push({y:r.otherEUR,custom:r})});Highcharts.chart(e(""),{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{color:"#fff",fontWeight:"normal",fontSize:"10px"}},xAxis:{categories:c,labels:{style:{color:"#fff",fontSize:"10px"}}},yAxis:[{min:0,title:{text:"kWh",style:{color:"#fff"}},labels:{style:{color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,formatter:function(){var r=this.points&&this.points[0]?this.points[0].point.custom:{};return "<b>"+(r.date||"")+"</b><br><span style=\\"color:#2f7ed8\\">Außerhalb Automatik: <b>"+f(r.otherKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.otherEUR,2)+" €</span><br><span style=\\"color:#38a169\\">Während Automatik: <b>"+f(r.autoKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.autoEUR,2)+" €</span><br>Gesamt: <b>"+f(Number(r.autoKWh)+Number(r.otherKWh),2)+" kWh / "+f(Number(r.autoEUR)+Number(r.otherEUR),2)+" €</b>"+(r.targetKWh>0?"<br>Automatik geplant: "+f(r.targetKWh,2)+" kWh":"")}},plotOptions:{column:{borderWidth:0,grouping:false}},series:[{name:"Außerhalb Automatik kWh",data:o,pointPlacement:-0.22,pointWidth:mode==="week"?54:12,yAxis:0,zIndex:1},{name:"Außerhalb Automatik Erlös",data:oe,color:"rgba(255,213,79,.38)",pointPlacement:-0.22,pointWidth:mode==="week"?30:7,yAxis:1,zIndex:2},{name:"Während Automatik kWh",data:a,color:"#38a169",pointPlacement:0.22,pointWidth:mode==="week"?54:12,yAxis:0,zIndex:1},{name:"Während Automatik Erlös",data:ae,color:"rgba(255,213,79,.38)",pointPlacement:0.22,pointWidth:mode==="week"?30:7,yAxis:1,zIndex:2}]});e("_date").innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=m.sum;e("_summary").innerHTML=(mode==="week"?"Woche":"Monat")+" · Außerhalb Automatik: <b>"+f(s.otherKWh,2)+" kWh / "+f(s.otherEUR,2)+" €</b> &middot; Während Automatik: <b>"+f(s.autoKWh,2)+" kWh / "+f(s.autoEUR,2)+" €</b> &middot; Gesamt: <b>"+f(Number(s.autoKWh)+Number(s.otherKWh),2)+" kWh / "+f(Number(s.autoEUR)+Number(s.otherEUR),2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=v.length-1;e("_week").disabled=mode==="week";e("_month").disabled=mode==="month"}idx=currentIndex();e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<views[mode].length-1){idx++;draw()}};e("_today").onclick=function(){idx=currentIndex();draw()};e("_week").onclick=function(){select("week")};e("_month").onclick=function(){select("month")};draw()})();</script></div>';return $html;
+        $html.='<div id="'.$id.'" style="display:block;width:100%;max-width:none;min-width:0;height:430px;margin-top:8px;box-sizing:border-box"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px;flex-wrap:wrap"><button id="'.$id.'_prev" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button><span id="'.$id.'_date" style="min-width:235px;text-align:center;font-weight:bold"></span><button id="'.$id.'_next" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button><button id="'.$id.'_today" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Heute</button><span style="width:8px"></span><button id="'.$id.'_week" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Woche</button><button id="'.$id.'_month" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Monat</button></div><div id="'.$id.'_summary" style="font-size:11px;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
+        $html.='var views={week:'.json_encode($weeks,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',month:'.json_encode($months,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).'},id='.json_encode($id).',store="sbo_feed_stats_view_'.$this->InstanceID.'",mode="month",idx=0,chart=null,resizeObserver=null;try{var sm=localStorage.getItem(store);if(sm==="week"||sm==="month")mode=sm}catch(x){}function e(s){return document.getElementById(id+s)}function f(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}function currentIndex(){var v=views[mode];for(var i=0;i<v.length;i++)if(v[i].isCurrent)return i;return Math.max(0,v.length-1)}function select(m){mode=m;idx=currentIndex();try{localStorage.setItem(store,mode)}catch(x){}draw()}function draw(){var v=views[mode];if(!v.length)return;idx=Math.max(0,Math.min(idx,v.length-1));var m=v[idx],a=[],o=[],ae=[],oe=[],c=[];m.rows.forEach(function(r){c.push(mode==="week"?r.weekLabel:r.label);a.push({y:r.autoKWh,custom:r});o.push({y:r.otherKWh,custom:r});ae.push({y:r.autoEUR,custom:r});oe.push({y:r.otherEUR,custom:r})});chart=Highcharts.chart(e(""),{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{color:"#fff",fontWeight:"normal",fontSize:"10px"}},xAxis:{categories:c,labels:{style:{color:"#fff",fontSize:"10px"}}},yAxis:[{min:0,title:{text:"kWh",style:{color:"#fff"}},labels:{style:{color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,formatter:function(){var r=this.points&&this.points[0]?this.points[0].point.custom:{};return "<b>"+(r.date||"")+"</b><br><span style=\\"color:#2f7ed8\\">Außerhalb Automatik: <b>"+f(r.otherKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.otherEUR,2)+" €</span><br><span style=\\"color:#38a169\\">Während Automatik: <b>"+f(r.autoKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.autoEUR,2)+" €</span><br>Gesamt: <b>"+f(Number(r.autoKWh)+Number(r.otherKWh),2)+" kWh / "+f(Number(r.autoEUR)+Number(r.otherEUR),2)+" €</b>"+(r.targetKWh>0?"<br>Automatik geplant: "+f(r.targetKWh,2)+" kWh":"")}},plotOptions:{column:{borderWidth:0,grouping:false}},series:[{name:"Außerhalb Automatik kWh",data:o,pointPlacement:-0.22,pointWidth:mode==="week"?54:12,yAxis:0,zIndex:1},{name:"Außerhalb Automatik Erlös",data:oe,color:"rgba(255,213,79,.38)",pointPlacement:-0.22,pointWidth:mode==="week"?30:7,yAxis:1,zIndex:2},{name:"Während Automatik kWh",data:a,color:"#38a169",pointPlacement:0.22,pointWidth:mode==="week"?54:12,yAxis:0,zIndex:1},{name:"Während Automatik Erlös",data:ae,color:"rgba(255,213,79,.38)",pointPlacement:0.22,pointWidth:mode==="week"?30:7,yAxis:1,zIndex:2}]});e("_date").innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=m.sum;e("_summary").innerHTML=(mode==="week"?"Woche":"Monat")+" · Außerhalb Automatik: <b>"+f(s.otherKWh,2)+" kWh / "+f(s.otherEUR,2)+" €</b> &middot; Während Automatik: <b>"+f(s.autoKWh,2)+" kWh / "+f(s.autoEUR,2)+" €</b> &middot; Gesamt: <b>"+f(Number(s.autoKWh)+Number(s.otherKWh),2)+" kWh / "+f(Number(s.autoEUR)+Number(s.otherEUR),2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=v.length-1;e("_week").disabled=mode==="week";e("_month").disabled=mode==="month"}idx=currentIndex();e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<views[mode].length-1){idx++;draw()}};e("_today").onclick=function(){idx=currentIndex();draw()};e("_week").onclick=function(){select("week")};e("_month").onclick=function(){select("month")};draw();var host=e("");if(typeof ResizeObserver!=="undefined"&&host){resizeObserver=new ResizeObserver(function(){if(chart){try{chart.reflow()}catch(x){}}});resizeObserver.observe(host.parentElement||host)}else if(typeof window!=="undefined"){window.addEventListener("resize",function(){if(chart){try{chart.reflow()}catch(x){}}})}})();</script></div>';return $html;
     }
 
     private function RenderConsumptionProfileChartHTML(array $profile): string
