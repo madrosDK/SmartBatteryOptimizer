@@ -15,7 +15,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.11 / Build 182**
+**1.10.12 / Build 183**
 
 ## Neu in 1.2.3
 

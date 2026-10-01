@@ -1,3 +1,8 @@
+## 1.10.12 / Build 183
+- Berechnungssperre wird jetzt garantiert per finally geloest; Fehler in Control() blockieren Prognose-/Preisupdates nicht mehr.
+- Fehler beim PV-Prognoseabruf stoppen die Preis-/Planaktualisierung nicht mehr, sofern ein letzter gueltiger Forecast vorhanden ist.
+- Status zeigt in diesem Fall eine Warnung, waehrend Preise, Planung und Diagramme weiter aktualisiert werden.
+
 ## v1.10.11 / Build 182
 - Update-Erkennung korrigiert: der automatische Vollrefresh nach Modulupdates wird jetzt zuverlässig in `ApplyChanges()` ausgelöst und ist nicht mehr vom Debug-Modus abhängig.
 - Veraltete interne Versionskennung `1.10.06` entfernt; neue Modulversion `1.10.11` wird korrekt erkannt.

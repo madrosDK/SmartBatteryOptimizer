@@ -471,7 +471,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.11';
+        $currentModuleVersion = '1.10.12';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -1192,12 +1192,18 @@ class SmartBatteryOptimizer extends IPSModule
             return;
         }
         $this->WriteAttributeInteger('CalculationLockUntil', $nowCalcLock + 900);
-        // Execute a due saved window before rebuilding or fetching remote data.
-        $this->Control();
         $this->DebugLog('Recalculate', 'Start | PV-Prognose neu abrufen=' . ($refreshPVForecast ? 'ja' : 'nein'));
         $dayNight = $this->GetCurrentDayNightStatus();
         $this->DebugLog('DayNight', ($dayNight['isNight'] ? 'NACHT' : 'TAG') . ' | Fenster ' . date('Y-m-d H:i', (int)$dayNight['start']) . ' -> ' . date('Y-m-d H:i', (int)$dayNight['end']) . ' | Modus=' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell'));
         try {
+            // Ein Fehler in der Steuerpruefung darf die zyklische Prognose-/Preis-
+            // aktualisierung niemals blockieren. Insbesondere muss die Berechnungs-
+            // sperre auch bei einer Exception in Control() wieder freigegeben werden.
+            try {
+                $this->Control();
+            } catch (Throwable $controlError) {
+                $this->DebugLog('Control', 'Steuerpruefung vor Aktualisierung fehlgeschlagen, Aktualisierung laeuft trotzdem weiter: ' . $controlError->getMessage(), 0);
+            }
             $this->ForecastDiagnosticStep('01 Nachtverbrauch START');
             $night = $this->LearnNightConsumptionInternal();
             $this->ForecastDiagnosticStep('02 Nachtverbrauch ENDE');
@@ -1213,16 +1219,30 @@ class SmartBatteryOptimizer extends IPSModule
                     $refreshPVForecast = true;
                 }
             }
+            $forecastWarning = '';
             if ($refreshPVForecast) {
                 // Zuerst Kalibrierung/Faktoren aktualisieren, erst danach Prognose berechnen und Highcharts rendern.
-                $this->ForecastDiagnosticStep('05 PV-Kalibrierung START');
-                $this->UpdatePVCalibrationState(false);
-                $this->ForecastDiagnosticStep('06 PV-Kalibrierung ENDE');
-                $this->ForecastDiagnosticStep('07 FetchPVForecast START');
-                $forecast = $this->FetchPVForecast($forceForecastProviders);
-                $this->ForecastDiagnosticStep('08 FetchPVForecast ENDE');
-                $this->DebugLog('PV-Prognose', ['heuteKWh'=>$forecast['todayKWh'] ?? null,'morgenKWh'=>$forecast['tomorrowKWh'] ?? null,'Quellen'=>$forecast['forecastSources'] ?? [],'Gewichte'=>$forecast['forecastSourceWeights'] ?? []]);
-                $this->StorePVForecastHistory($forecast);
+                // Schlaegt nur der externe Prognoseabruf fehl, wird mit dem letzten gueltigen
+                // Forecast weitergerechnet. Preise, Planung und Anzeigen duerfen deswegen nicht
+                // auf einem alten Stand stehen bleiben.
+                try {
+                    $this->ForecastDiagnosticStep('05 PV-Kalibrierung START');
+                    $this->UpdatePVCalibrationState(false);
+                    $this->ForecastDiagnosticStep('06 PV-Kalibrierung ENDE');
+                    $this->ForecastDiagnosticStep('07 FetchPVForecast START');
+                    $forecast = $this->FetchPVForecast($forceForecastProviders);
+                    $this->ForecastDiagnosticStep('08 FetchPVForecast ENDE');
+                    $this->DebugLog('PV-Prognose', ['heuteKWh'=>$forecast['todayKWh'] ?? null,'morgenKWh'=>$forecast['tomorrowKWh'] ?? null,'Quellen'=>$forecast['forecastSources'] ?? [],'Gewichte'=>$forecast['forecastSourceWeights'] ?? []]);
+                    $this->StorePVForecastHistory($forecast);
+                } catch (Throwable $forecastError) {
+                    $cachedForecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+                    if (!is_array($cachedForecast) || empty($cachedForecast)) {
+                        throw $forecastError;
+                    }
+                    $forecast = $cachedForecast;
+                    $forecastWarning = 'PV-Prognose konnte nicht neu geladen werden: ' . $forecastError->getMessage();
+                    $this->DebugLog('PV-Prognose', $forecastWarning . ' | letzter gueltiger Forecast wird weiterverwendet', 0);
+                }
             }
             $forecast = $this->ApplyConsumptionForecastToPV($forecast, $consumptionProfile, $night);
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
@@ -1279,7 +1299,11 @@ class SmartBatteryOptimizer extends IPSModule
                 SetValue($this->GetIDForIdent('FeedInTargetEnergy'), round($nextPlannedKWh, 3));
                 SetValue($this->GetIDForIdent('FeedInDeliveredEnergy'), 0.0);
             }
-            SetValue($this->GetIDForIdent('StatusText'), $plan['status']);
+            $finalStatus = (string)$plan['status'];
+            if ($forecastWarning !== '') {
+                $finalStatus .= ' | WARNUNG: ' . $forecastWarning;
+            }
+            SetValue($this->GetIDForIdent('StatusText'), $finalStatus);
             SetValue($this->GetIDForIdent('LastUpdate'), date('d.m.Y H:i:s'));
             SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
             SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
@@ -1342,8 +1366,10 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('StatusText'), 'Fehler: ' . $e->getMessage());
             $this->SetStatus(201);
             $this->StopFeedIn();
+        } finally {
+            // Die Sperre MUSS auch nach jeder Exception wieder geloescht werden.
+            $this->WriteAttributeInteger('CalculationLockUntil', 0);
         }
-        $this->WriteAttributeInteger('CalculationLockUntil', 0);
     }
 
     public function LearnNightConsumption()
