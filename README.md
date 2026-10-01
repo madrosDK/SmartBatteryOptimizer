@@ -1,3 +1,11 @@
+## Version 1.10.23 – zyklische Variablenaktualisierung mit Timer-Watchdog
+
+- `Preise / Optimierung aktualisieren` berechnet im eingestellten Intervall auch die abhängigen Modulvariablen, den Einspeiseplan und alle relevanten Anzeigen neu.
+- `PV-Prognose aktualisieren` prüft Provider/Cache und aktualisiert danach Prognose-, Reserve-, Plan- und Anzeigevariablen.
+- `PV-Istwerte / PV-Grafik aktualisieren` aktualisiert Istwerte, abhängige Variablen und Diagramme mit dem gespeicherten Forecast.
+- Der 15-Sekunden-Steuertimer überwacht zusätzlich alle drei Intervalle. Überfällige Läufe werden automatisch nachgeholt, falls ein einzelnes IP-Symcon-Timerereignis nach einem Modulupdate nicht auslöst.
+- Provider-Caches bleiben aktiv; ein Variablen-Refresh erzwingt daher nicht automatisch einen externen API-Abruf.
+
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
 Die PV-Auto-Korrektur verwendet keine Stundenfaktoren mehr. Der Faktor bleibt bis zum vollständigen Lernzeitraum 1,000 und wird danach rollierend aus den neuesten gültigen Lerntagen des IP-Symcon-Archivs berechnet. Änderungen am Lernzeitraum werden aus dem Archiv neu ausgewertet.
@@ -15,7 +23,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.21 / Build 191**
+**1.10.23 / Build 194**
 
 ## Neu in 1.2.3
 

@@ -1,3 +1,15 @@
+## 1.10.23 / Build 194
+- Zyklische Aktualisierung erweitert: Preise/Optimierung, PV-Prognose und PV-Istwerte schreiben jetzt auch die jeweils abhängigen Modulvariablen regelmäßig neu.
+- Die Timerläufe protokollieren im Debug-Log eindeutig ihren Start.
+- Der 15-Sekunden-Steuertimer arbeitet zusätzlich als Watchdog und holt überfällige 5-/30-/5-Minuten-Aktualisierungen automatisch nach.
+- Provider-Caches bleiben unverändert aktiv, damit häufige Variablenaktualisierungen keine unnötigen externen Requests erzeugen.
+
+## 1.10.22 / Build 193
+- Einspeise-Statistikarchiv: Zeitstempelkonflikte mit noch gepufferten Archive-Control-Werten behoben.
+- Interne Statistikdatensätze werden mit Sicherheitsabstand in der Vergangenheit geschrieben; echte Start-/Endzeiten bleiben vollständig erhalten.
+- Archivschreiben nutzt jetzt die gemeinsame chronologische Archiv-Hilfsfunktion.
+- Versionsangaben in README und library.json wieder konsistent.
+
 ## 1.10.21 / Build 192
 
 - Preisfenster-Neuoptimierung vor dem Start fehlertolerant gemacht.

@@ -207,6 +207,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('PVCalibrationPendingForecastJSON', '{}');
         $this->RegisterAttributeString('PVCalibrationCleanupStatus', '');
         $this->RegisterAttributeInteger('CalculationLockUntil', 0);
+        $this->RegisterAttributeInteger('LastScheduledOptimizationTs', 0);
+        $this->RegisterAttributeInteger('LastScheduledPVForecastTs', 0);
+        $this->RegisterAttributeInteger('LastScheduledPVActualTs', 0);
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeInteger('PriceCacheUpdatedTs', 0);
         $this->RegisterAttributeString('PriceCacheSignature', '');
@@ -476,7 +479,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.21';
+        $currentModuleVersion = '1.10.23';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -533,7 +536,7 @@ class SmartBatteryOptimizer extends IPSModule
             'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
             'PVCalibrationBlockedFromTs','PVCalibrationExclusionActiveFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
-            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','FeedInStatisticsLastRenderTs'
+            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','FeedInStatisticsLastRenderTs','LastScheduledOptimizationTs','LastScheduledPVForecastTs','LastScheduledPVActualTs'
         ];
         $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
         $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized','FeedInPriceLockActive','FeedInFactorOriginalValid'];
@@ -1056,7 +1059,11 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function RefreshOptimization()
     {
+        $this->DebugLog('RefreshTimer', 'Timer Preise/Optimierung gestartet – Variablen, Plan und Anzeigen werden aktualisiert');
         $this->RecalculateInternal(false);
+        $now = time();
+        $this->WriteAttributeInteger('LastScheduledOptimizationTs', $now);
+        $this->WriteAttributeInteger('LastScheduledPVActualTs', $now);
     }
 
     public function RefreshPVForecast()
@@ -1071,8 +1078,12 @@ class SmartBatteryOptimizer extends IPSModule
             return;
         }
         $this->SetTimerInterval('PVForecastRetryTimer', 0);
-        $this->DebugLog('PVForecastTimer', 'Automatische PV-Prognose startet direkt');
+        $this->DebugLog('PVForecastTimer', 'Timer PV-Prognose gestartet – Provider/Cache, abhängige Variablen, Plan und Anzeigen werden aktualisiert');
         $this->RecalculateInternal(true);
+        $now = time();
+        $this->WriteAttributeInteger('LastScheduledPVForecastTs', $now);
+        $this->WriteAttributeInteger('LastScheduledOptimizationTs', $now);
+        $this->WriteAttributeInteger('LastScheduledPVActualTs', $now);
     }
 
     public function RefreshPVForecastRetry()
@@ -1085,14 +1096,21 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $this->DebugLog('PVForecastRetry', 'Nachgeholte automatische PV-Prognose startet');
         $this->RecalculateInternal(true);
+        $now = time();
+        $this->WriteAttributeInteger('LastScheduledPVForecastTs', $now);
+        $this->WriteAttributeInteger('LastScheduledOptimizationTs', $now);
+        $this->WriteAttributeInteger('LastScheduledPVActualTs', $now);
     }
 
     public function RefreshPVActual()
     {
         // PV-Ist und Planung aktualisieren, die gespeicherte PV-Prognose verwenden.
         // Die Prognose besitzt wieder ihr eigenes konfigurierbares Intervall.
-        $this->DebugLog('PVActual', 'PV-Ist + Planung aktualisieren; gespeicherte PV-Prognose verwenden');
+        $this->DebugLog('PVActualTimer', 'Timer PV-Istwerte gestartet – Istwerte, abhängige Variablen und Grafiken werden aktualisiert');
         $this->RecalculateInternal(false);
+        $now = time();
+        $this->WriteAttributeInteger('LastScheduledPVActualTs', $now);
+        $this->WriteAttributeInteger('LastScheduledOptimizationTs', $now);
 
         // Diagramme bewusst nochmals direkt aus Archiv + gespeichertem Forecast/Profile
         // aufbauen. Dadurch werden die Istwerte auch dann im konfigurierten
@@ -1976,6 +1994,64 @@ class SmartBatteryOptimizer extends IPSModule
             try { $this->StopFeedIn(); } catch (Throwable $ignored) {}
         } finally {
             IPS_SemaphoreLeave($lock);
+            // Der 15-s-Steuertimer dient zusaetzlich als Watchdog fuer die drei
+            // konfigurierbaren Aktualisierungsintervalle. Dadurch werden Variablen
+            // und Diagramme auch dann weiter aktualisiert, wenn ein einzelnes
+            // IP-Symcon-Timerereignis nach einem Modulupdate nicht sauber feuert.
+            try {
+                $this->RunScheduledRefreshWatchdog();
+            } catch (Throwable $watchdogError) {
+                $this->DebugLog('TimerWatchdog', 'Fehler: ' . $watchdogError->getMessage(), 0);
+            }
+        }
+    }
+
+    private function RunScheduledRefreshWatchdog(): void
+    {
+        $now = time();
+        // Wird Control() aus einer laufenden RecalculateInternal()-Berechnung heraus
+        // aufgerufen, darf der Watchdog keinen rekursiven zweiten Lauf starten.
+        if ($this->ReadAttributeInteger('CalculationLockUntil') > $now) return;
+
+        $optimizationSeconds = max(5, $this->ReadPropertyInteger('RefreshMinutes')) * 60;
+        $forecastSeconds = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes')) * 60;
+        $actualSeconds = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes')) * 60;
+
+        $lastOptimization = $this->ReadAttributeInteger('LastScheduledOptimizationTs');
+        $lastForecast = $this->ReadAttributeInteger('LastScheduledPVForecastTs');
+        $lastActual = $this->ReadAttributeInteger('LastScheduledPVActualTs');
+
+        $forecastDue = ($lastForecast <= 0 || $now - $lastForecast >= $forecastSeconds);
+        $optimizationDue = ($lastOptimization <= 0 || $now - $lastOptimization >= $optimizationSeconds);
+        $actualDue = ($lastActual <= 0 || $now - $lastActual >= $actualSeconds);
+
+        // Der umfangreichste faellige Lauf gewinnt. Ein PV-Prognoselauf aktualisiert
+        // zugleich alle abhaengigen Variablen, Planung und Grafiken.
+        if ($forecastDue) {
+            $this->DebugLog('TimerWatchdog', 'PV-Prognose ueberfaellig – automatischer Nachhol-Lauf');
+            $this->RecalculateInternal(true);
+            $done = time();
+            $this->WriteAttributeInteger('LastScheduledPVForecastTs', $done);
+            $this->WriteAttributeInteger('LastScheduledOptimizationTs', $done);
+            $this->WriteAttributeInteger('LastScheduledPVActualTs', $done);
+            return;
+        }
+
+        if ($optimizationDue) {
+            $this->DebugLog('TimerWatchdog', 'Preise/Optimierung ueberfaellig – Variablen und Plan werden nachgeholt');
+            $this->RecalculateInternal(false);
+            $done = time();
+            $this->WriteAttributeInteger('LastScheduledOptimizationTs', $done);
+            $this->WriteAttributeInteger('LastScheduledPVActualTs', $done);
+            return;
+        }
+
+        if ($actualDue) {
+            $this->DebugLog('TimerWatchdog', 'PV-Istwerte/Grafik ueberfaellig – Aktualisierung wird nachgeholt');
+            $this->RecalculateInternal(false);
+            $done = time();
+            $this->WriteAttributeInteger('LastScheduledPVActualTs', $done);
+            $this->WriteAttributeInteger('LastScheduledOptimizationTs', $done);
         }
     }
 
@@ -6247,10 +6323,21 @@ class SmartBatteryOptimizer extends IPSModule
     private function StoreFeedInStatisticArchive(float $delivered, float $revenue, float $target, int $startTs, int $endTs): void
     {
         $archiveID = $this->FindArchive(); if ($archiveID <= 0 || $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return;
-        $ts=$endTs; $map = ['FeedInArchiveKWh'=>$delivered,'FeedInArchiveEUR'=>$revenue,'FeedInArchiveTargetKWh'=>$target,'FeedInArchiveWindow'=>1.0,'FeedInArchiveStartTs'=>(float)$startTs,'FeedInArchiveEndTs'=>(float)$endTs];
+        // Interne Statistikwerte nicht direkt am aktuellen Live-Zeitpunkt in das Archiv
+        // schreiben. Der Archive Control kann dort noch gepufferte Werte besitzen und lehnt
+        // dann AC_AddLoggedValues() mit einem Zeitstempel-Konflikt ab. Start und Ende des
+        // echten Einspeisefensters werden separat als Werte gespeichert; der gemeinsame
+        // Archiv-Zeitstempel dient nur als Datensatz-Schluessel.
+        $safeNow = max(1, time() - 120);
+        $ts = max(1, min($endTs, $safeNow));
+        $map = ['FeedInArchiveKWh'=>$delivered,'FeedInArchiveEUR'=>$revenue,'FeedInArchiveTargetKWh'=>$target,'FeedInArchiveWindow'=>1.0,'FeedInArchiveStartTs'=>(float)$startTs,'FeedInArchiveEndTs'=>(float)$endTs];
         foreach ($map as $ident=>$value) {
             $id=(int)@$this->GetIDForIdent($ident); if($id<=0) continue;
-            try { AC_AddLoggedValues($archiveID,$id,[['TimeStamp'=>$ts,'Value'=>(float)$value]]); } catch(Throwable $e){ $this->DebugLog('FeedInArchive',$e->getMessage(),0); }
+            try {
+                $this->AddArchiveLoggedValues($archiveID, $id, [$ts => (float)$value]);
+            } catch(Throwable $e){
+                $this->DebugLog('FeedInArchive',$e->getMessage(),0);
+            }
         }
     }
 
