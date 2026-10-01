@@ -476,7 +476,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.15';
+        $currentModuleVersion = '1.10.16';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -990,9 +990,12 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function RefreshAll()
     {
-        $this->SetActionFeedback('Alles aktualisieren: Auftrag angenommen ...');
-        $this->SetTimerInterval('FullRefreshWorker', 1000);
-        echo "Aktualisierung aller Anzeigen und Diagramme wurde gestartet. Der Fortschritt steht in „Letzte manuelle Aktion“.";
+        // Direkter Vollrefresh. Der fruehere 1-s-One-Shot-Worker konnte in
+        // IP-Symcon ausbleiben und bei "Auftrag angenommen ..." stehen bleiben.
+        $this->SetTimerInterval('FullRefreshWorker', 0);
+        $this->SetActionFeedback('Alles aktualisieren: Berechnung läuft ...');
+        $this->RunFullRefresh();
+        echo "Alle Anzeigen und Diagramme wurden aktualisiert.";
     }
 
     public function RunFullRefresh()
@@ -2070,6 +2073,9 @@ class SmartBatteryOptimizer extends IPSModule
         // jedem Messzyklus neu aufzubauen. Maximal einmal pro Minute rendern.
         $lastRender = $this->ReadAttributeInteger('FeedInStatisticsLastRenderTs');
         if ($now - $lastRender >= 60) {
+            // Den heutigen Tageswert aus dem Archiv rekonstruieren. So gehen bei
+            // Modulupdates, Neustarts oder Timerpausen keine Einspeise-Zeiträume verloren.
+            $this->RebuildTodayGridExportFromArchive();
             $statsID = (int)@$this->GetIDForIdent('FeedInStatisticsHTML');
             if ($statsID > 0) SetValue($statsID, $this->RenderFeedInStatisticsHTML());
             $this->WriteAttributeInteger('FeedInStatisticsLastRenderTs', $now);
@@ -2088,6 +2094,47 @@ class SmartBatteryOptimizer extends IPSModule
         $raw = (float)GetValue($id);
         $exportW = $this->ReadPropertyBoolean('PVCalibrationFeedInInvert') ? -$raw : $raw;
         return max(0.0, $exportW);
+    }
+
+    private function RebuildTodayGridExportFromArchive(): void
+    {
+        $archiveID = $this->FindArchive();
+        $varID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
+        if ($archiveID <= 0 || $varID <= 0 || !@IPS_VariableExists($varID)) return;
+
+        $start = strtotime('today 00:00:00');
+        $end = time();
+        if ($end <= $start) return;
+
+        $values = @AC_GetLoggedValues($archiveID, $varID, $start, $end, 0);
+        if (!is_array($values) || count($values) === 0) return;
+        $values = array_reverse($values);
+
+        $prev = @AC_GetLoggedValues($archiveID, $varID, 0, $start - 1, 1);
+        if (is_array($prev) && count($prev) > 0) {
+            array_unshift($values, ['TimeStamp' => $start, 'Value' => $prev[0]['Value']]);
+        } elseif ((int)$values[0]['TimeStamp'] > $start) {
+            array_unshift($values, ['TimeStamp' => $start, 'Value' => $values[0]['Value']]);
+        }
+
+        $invert = $this->ReadPropertyBoolean('PVCalibrationFeedInInvert');
+        $wh = 0.0;
+        for ($i = 0; $i < count($values); $i++) {
+            $t1 = max($start, (int)$values[$i]['TimeStamp']);
+            $t2 = ($i + 1 < count($values)) ? min($end, (int)$values[$i + 1]['TimeStamp']) : $end;
+            if ($t2 <= $t1) continue;
+            $raw = (float)$values[$i]['Value'];
+            $exportW = $invert ? -$raw : $raw;
+            $exportW = max(0.0, $exportW);
+            $wh += $exportW * (($t2 - $t1) / 3600.0);
+        }
+
+        $days = json_decode($this->ReadAttributeString('GridExportDailyJSON'), true);
+        if (!is_array($days)) $days = [];
+        $day = date('Y-m-d', $start);
+        if (!isset($days[$day]) || !is_array($days[$day])) $days[$day] = ['kWh' => 0.0, 'eur' => 0.0];
+        $days[$day]['kWh'] = max(0.0, $wh / 1000.0);
+        $this->WriteAttributeString('GridExportDailyJSON', json_encode($days));
     }
 
     private function FinishMeasuredFeedInRun(bool $completed, string $reason): void
@@ -6629,7 +6676,7 @@ class SmartBatteryOptimizer extends IPSModule
         for($w=$startWeek;$w<=$endWeek;$w=strtotime('+7 days',$w)){$rows=[];for($i=0;$i<7;$i++)$rows[]=$makeRow(strtotime('+'.$i.' days',$w));$we=strtotime('+6 days',$w);$weeks[]=['key'=>date('o-W',$w),'label'=>'KW '.date('W',$w).' · '.date('d.m.',$w).' – '.date('d.m.Y',$we),'isCurrent'=>$w===$monday(time()),'rows'=>$rows,'sum'=>$sumRows($rows)];}
         $highchartsJS=$this->GetHighchartsJavaScript();$id='sbo_feed_stats_'.$this->InstanceID;$html='<div style="font-family:Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#fff;width:100%"><b>Einspeise-Statistik</b><br><span style="font-size:11px">Blau: Einspeisung außerhalb der Automatik · Grün: Einspeisung während der Automatik. Gelb transparente Balken zeigen jeweils überlagert den zugehörigen Erlös.</span><br>';if($highchartsJS==='')return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
         $html.='<div id="'.$id.'" style="display:block;width:100%;max-width:none;min-width:0;height:430px;margin-top:8px;box-sizing:border-box"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px;flex-wrap:wrap"><button id="'.$id.'_prev" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button><span id="'.$id.'_date" style="min-width:235px;text-align:center;font-weight:bold"></span><button id="'.$id.'_next" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button><button id="'.$id.'_today" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Heute</button><span style="width:8px"></span><button id="'.$id.'_week" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Woche</button><button id="'.$id.'_month" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Monat</button></div><div id="'.$id.'_summary" style="font-size:11px;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
-        $html.='var views={week:'.json_encode($weeks,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',month:'.json_encode($months,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).'},id='.json_encode($id).',store="sbo_feed_stats_view_'.$this->InstanceID.'",mode="month",idx=0,chart=null,resizeObserver=null;try{var sm=localStorage.getItem(store);if(sm==="week"||sm==="month")mode=sm}catch(x){}function e(s){return document.getElementById(id+s)}function f(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}function currentIndex(){var v=views[mode];for(var i=0;i<v.length;i++)if(v[i].isCurrent)return i;return Math.max(0,v.length-1)}function select(m){mode=m;idx=currentIndex();try{localStorage.setItem(store,mode)}catch(x){}draw()}function draw(){var v=views[mode];if(!v.length)return;idx=Math.max(0,Math.min(idx,v.length-1));var m=v[idx],a=[],o=[],ae=[],oe=[],c=[];m.rows.forEach(function(r){c.push(mode==="week"?r.weekLabel:r.label);a.push({y:r.autoKWh,custom:r});o.push({y:r.otherKWh,custom:r});ae.push({y:r.autoEUR,custom:r});oe.push({y:r.otherEUR,custom:r})});chart=Highcharts.chart(e(""),{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{color:"#fff",fontWeight:"normal",fontSize:"10px"}},xAxis:{categories:c,labels:{style:{color:"#fff",fontSize:"10px"}}},yAxis:[{min:0,title:{text:"kWh",style:{color:"#fff"}},labels:{style:{color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,formatter:function(){var r=this.points&&this.points[0]?this.points[0].point.custom:{};return "<b>"+(r.date||"")+"</b><br><span style=\\"color:#2f7ed8\\">Außerhalb Automatik: <b>"+f(r.otherKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.otherEUR,2)+" €</span><br><span style=\\"color:#38a169\\">Während Automatik: <b>"+f(r.autoKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.autoEUR,2)+" €</span><br>Gesamt: <b>"+f(Number(r.autoKWh)+Number(r.otherKWh),2)+" kWh / "+f(Number(r.autoEUR)+Number(r.otherEUR),2)+" €</b>"+(r.targetKWh>0?"<br>Automatik geplant: "+f(r.targetKWh,2)+" kWh":"")}},plotOptions:{column:{borderWidth:0,grouping:false}},series:[{name:"Außerhalb Automatik kWh",data:o,pointPlacement:-0.22,pointWidth:mode==="week"?54:12,yAxis:0,zIndex:1},{name:"Außerhalb Automatik Erlös",data:oe,color:"rgba(255,213,79,.38)",pointPlacement:-0.22,pointWidth:mode==="week"?30:7,yAxis:1,zIndex:2},{name:"Während Automatik kWh",data:a,color:"#38a169",pointPlacement:0.22,pointWidth:mode==="week"?54:12,yAxis:0,zIndex:1},{name:"Während Automatik Erlös",data:ae,color:"rgba(255,213,79,.38)",pointPlacement:0.22,pointWidth:mode==="week"?30:7,yAxis:1,zIndex:2}]});e("_date").innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=m.sum;e("_summary").innerHTML=(mode==="week"?"Woche":"Monat")+" · Außerhalb Automatik: <b>"+f(s.otherKWh,2)+" kWh / "+f(s.otherEUR,2)+" €</b> &middot; Während Automatik: <b>"+f(s.autoKWh,2)+" kWh / "+f(s.autoEUR,2)+" €</b> &middot; Gesamt: <b>"+f(Number(s.autoKWh)+Number(s.otherKWh),2)+" kWh / "+f(Number(s.autoEUR)+Number(s.otherEUR),2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=v.length-1;e("_week").disabled=mode==="week";e("_month").disabled=mode==="month"}idx=currentIndex();e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<views[mode].length-1){idx++;draw()}};e("_today").onclick=function(){idx=currentIndex();draw()};e("_week").onclick=function(){select("week")};e("_month").onclick=function(){select("month")};draw();var host=e("");if(typeof ResizeObserver!=="undefined"&&host){resizeObserver=new ResizeObserver(function(){if(chart){try{chart.reflow()}catch(x){}}});resizeObserver.observe(host.parentElement||host)}else if(typeof window!=="undefined"){window.addEventListener("resize",function(){if(chart){try{chart.reflow()}catch(x){}}})}})();</script></div>';return $html;
+        $html.='var views={week:'.json_encode($weeks,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',month:'.json_encode($months,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).'},id='.json_encode($id).',store="sbo_feed_stats_view_'.$this->InstanceID.'",mode="month",idx=0,chart=null,resizeObserver=null;try{var sm=localStorage.getItem(store);if(sm==="week"||sm==="month")mode=sm}catch(x){}function e(s){return document.getElementById(id+s)}function f(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}function currentIndex(){var v=views[mode];for(var i=0;i<v.length;i++)if(v[i].isCurrent)return i;return Math.max(0,v.length-1)}function select(m){mode=m;idx=currentIndex();try{localStorage.setItem(store,mode)}catch(x){}draw()}function draw(){var v=views[mode];if(!v.length)return;idx=Math.max(0,Math.min(idx,v.length-1));var m=v[idx],a=[],o=[],ae=[],oe=[],c=[];m.rows.forEach(function(r){c.push(mode==="week"?r.weekLabel:r.label);a.push({y:r.autoKWh,custom:r});o.push({y:r.otherKWh,custom:r});ae.push({y:r.autoEUR,custom:r});oe.push({y:r.otherEUR,custom:r})});chart=Highcharts.chart(e(""),{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{color:"#fff",fontWeight:"normal",fontSize:"10px"}},xAxis:{categories:c,labels:{style:{color:"#fff",fontSize:"10px"}}},yAxis:[{min:0,title:{text:"kWh",style:{color:"#fff"}},labels:{style:{color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,formatter:function(){var r=this.points&&this.points[0]?this.points[0].point.custom:{};return "<b>"+(r.date||"")+"</b><br><span style=\\"color:#2f7ed8\\">Außerhalb Automatik: <b>"+f(r.otherKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.otherEUR,2)+" €</span><br><span style=\\"color:#38a169\\">Während Automatik: <b>"+f(r.autoKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.autoEUR,2)+" €</span><br>Gesamt: <b>"+f(Number(r.autoKWh)+Number(r.otherKWh),2)+" kWh / "+f(Number(r.autoEUR)+Number(r.otherEUR),2)+" €</b>"+(r.targetKWh>0?"<br>Automatik geplant: "+f(r.targetKWh,2)+" kWh":"")}},plotOptions:{column:{borderWidth:0,grouping:false}},series:[{name:"Außerhalb Automatik kWh",data:o,pointPlacement:-0.22,pointPadding:0.08,yAxis:0,zIndex:1},{name:"Außerhalb Automatik Erlös",data:oe,color:"rgba(255,213,79,.38)",pointPlacement:-0.22,pointPadding:0.30,yAxis:1,zIndex:2},{name:"Während Automatik kWh",data:a,color:"#38a169",pointPlacement:0.22,pointPadding:0.08,yAxis:0,zIndex:1},{name:"Während Automatik Erlös",data:ae,color:"rgba(255,213,79,.38)",pointPlacement:0.22,pointPadding:0.30,yAxis:1,zIndex:2}]});e("_date").innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=m.sum;e("_summary").innerHTML=(mode==="week"?"Woche":"Monat")+" · Außerhalb Automatik: <b>"+f(s.otherKWh,2)+" kWh / "+f(s.otherEUR,2)+" €</b> &middot; Während Automatik: <b>"+f(s.autoKWh,2)+" kWh / "+f(s.autoEUR,2)+" €</b> &middot; Gesamt: <b>"+f(Number(s.autoKWh)+Number(s.otherKWh),2)+" kWh / "+f(Number(s.autoEUR)+Number(s.otherEUR),2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=v.length-1;e("_week").disabled=mode==="week";e("_month").disabled=mode==="month"}idx=currentIndex();e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<views[mode].length-1){idx++;draw()}};e("_today").onclick=function(){idx=currentIndex();draw()};e("_week").onclick=function(){select("week")};e("_month").onclick=function(){select("month")};draw();var host=e("");function rf(){if(!chart||!host)return;try{chart.setSize(host.clientWidth||null,null,false);chart.reflow()}catch(x){}}if(typeof ResizeObserver!=="undefined"&&host){resizeObserver=new ResizeObserver(function(){setTimeout(rf,0)});resizeObserver.observe(host);if(host.parentElement)resizeObserver.observe(host.parentElement);setTimeout(rf,50);setTimeout(rf,300)}else if(typeof window!=="undefined"){window.addEventListener("resize",function(){setTimeout(rf,0)});setTimeout(rf,100)}})();</script></div>';return $html;
     }
 
     private function RenderConsumptionProfileChartHTML(array $profile): string

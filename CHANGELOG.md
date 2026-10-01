@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.10.15 (Build 186)
+## 1.10.16 (Build 187)
 - Provider-Caching optimiert: Open-Meteo und Forecast.Solar werden im Normalbetrieb maximal einmal pro Stunde je PV-Fläche extern abgefragt.
 - EPEX/smartENERGY-Preise werden eine Stunde gecacht; interne Planberechnungen können weiterhin beliebig oft laufen.
 - pvnode behält die bestehende Tageslimit-/Cache-Logik (typisch ein Live-Abruf pro Tag).
