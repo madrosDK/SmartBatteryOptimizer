@@ -1,3 +1,11 @@
+## 1.10.26 (Build 197)
+- Zentraler Scheduler bereinigt: ein periodischer 15-s-Taktgeber (`ControlTimer`) und ein One-Shot-Worker fuer langsame Aufgaben.
+- Scheduler-Diagnose: `Scheduler letzter Lauf`, `Scheduler Zähler` und `Scheduler Status` mit den naechsten Faelligkeiten.
+- Scheduler-Faelligkeitspruefung wird auch bei Bestandsinstanzen mit altem `SBO_Control()`-Timer-Callback ausgefuehrt.
+- Falsche Manipulation von Modul-Timern ueber `IPS_SetEventScript()` entfernt; Modul-Timer werden nur noch ueber `RegisterTimer()`/`SetTimerInterval()` behandelt.
+- Alte Watchdog-Statusvariablen werden entfernt.
+- Das veraltete externe PHP-Skript `SmartBatteryOptimizer Scheduler` wird, sofern eindeutig zu dieser Instanz gehoerig, deaktiviert und in den IP-Symcon-deleted-Bereich verschoben.
+
 ## 1.10.25 (Build 196)
 - Ein zentraler interner Scheduler laeuft alle 15 Sekunden und prueft Steuerung, Preise/Plan, PV-Prognose, PV-Ist und PV-Kalibrierung.
 - Der Scheduler bleibt kurz; langsame Prognose-/Preisarbeiten laufen ueber einen einmaligen internen Worker, damit Start/Stop weiterhin alle 15 Sekunden geprueft werden kann.

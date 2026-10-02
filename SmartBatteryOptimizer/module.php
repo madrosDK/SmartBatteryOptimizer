@@ -152,6 +152,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('NextFeedInWindow', 'Nächstes Einspeisefenster', '', 80);
         $this->RegisterVariableFloat('ExpectedRevenue', 'Erwarteter Erlös', '', 90);
         $this->RegisterVariableString('LastUpdate', 'Letzte Aktualisierung', '', 100);
+        $this->RegisterVariableString('SchedulerLastRun', 'Scheduler letzter Lauf', '', 101);
+        $this->RegisterVariableInteger('SchedulerCounter', 'Scheduler Zähler', '', 102);
+        $this->RegisterVariableString('SchedulerStatus', 'Scheduler Status', '', 103);
         $this->RegisterVariableString('StatusText', 'Optimierungsstatus', '', 110);
         $this->RegisterVariableString('OverviewHTML', 'Übersicht', '~HTMLBox', 120);
         $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 150);
@@ -460,18 +463,10 @@ class SmartBatteryOptimizer extends IPSModule
         $this->SetTimerInterval('DeferredDebugRebuildTimer', 0);
         $this->SetTimerInterval('ControlTimer', 15 * 1000);
 
-        // Bestehende Instanzen besitzen bereits ein Timer-Objekt aus Create(). Deshalb
-        // wird der Scripttext bei jedem ApplyChanges explizit auf den zentralen Scheduler
-        // gesetzt. Das macht Updates unabhaengig davon, welcher Callback in einer alten
-        // Version im Ereignis gespeichert war.
-        $controlTimerID = @($this->GetIDForIdent('ControlTimer'));
-        if ($controlTimerID > 0 && @IPS_EventExists($controlTimerID)) {
-            @IPS_SetEventScript($controlTimerID, 'SBO_SchedulerTick($_IPS[\'TARGET\']);');
-        }
-        $workerTimerID = @($this->GetIDForIdent('FullRefreshWorker'));
-        if ($workerTimerID > 0 && @IPS_EventExists($workerTimerID)) {
-            @IPS_SetEventScript($workerTimerID, 'SBO_RunScheduledTask($_IPS[\'TARGET\']);');
-        }
+        // Alte Diagnose-/Hilfsartefakte aus frueheren Zwischenversionen entfernen.
+        // Modul-Timer sind keine normalen Ereignisse; ihre Skripte werden nicht ueber
+        // IPS_SetEventScript manipuliert.
+        $this->CleanupLegacySchedulerArtifacts();
         $this->SetBuffer('SchedulerState', '{}');
         $this->SetBuffer('SchedulerTask', '');
         $this->DebugLog('ApplyChanges', 'Zentraler Scheduler aktiv: 15 s | Preise/Plan=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min | PV-Kalibrierung=' . $pvCalibrationPollSeconds . ' s');
@@ -498,12 +493,41 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetBuffer('SchedulerForceRefresh', '1');
         }
 
-        $currentModuleVersion = '1.10.25';
+        $currentModuleVersion = '1.10.26';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – zentraler Scheduler aktualisiert beim nächsten Tick ...');
             $this->SetBuffer('SchedulerForceRefresh', '1');
         }
+    }
+
+    private function CleanupLegacySchedulerArtifacts(): void
+    {
+        foreach (['WatchdogLastRun', 'WatchdogCounter', 'WatchdogBusySkips'] as $ident) {
+            try {
+                $id = (int)@$this->GetIDForIdent($ident);
+                if ($id > 0 && @IPS_VariableExists($id)) {
+                    $this->UnregisterVariable($ident);
+                }
+            } catch (Throwable $ignored) {}
+        }
+
+        // Das frueher extern angelegte PHP-Skript wird nicht mehr benoetigt. Nur ein
+        // eindeutig zu dieser Instanz gehoerendes Skript mit dem bekannten Namen und
+        // dem alten Scheduler-Aufruf wird entfernt. Die Datei wird dabei nicht endgueltig
+        // geloescht, sondern von IP-Symcon in den deleted-Bereich verschoben.
+        try {
+            foreach (@IPS_GetChildrenIDs($this->InstanceID) ?: [] as $childID) {
+                $obj = @IPS_GetObject($childID);
+                if (!is_array($obj) || (int)($obj['ObjectType'] ?? -1) !== 3) continue;
+                if ((string)($obj['ObjectName'] ?? '') !== 'SmartBatteryOptimizer Scheduler') continue;
+                $content = (string)@IPS_GetScriptContent($childID);
+                if (strpos($content, 'SBO_SchedulerTick') === false && strpos($content, 'SBO_Control') === false) continue;
+                @IPS_SetScriptTimer($childID, 0);
+                @IPS_DeleteScript($childID, false);
+                $this->DebugLog('Scheduler', 'Altes externes Scheduler-Skript entfernt.');
+            }
+        } catch (Throwable $ignored) {}
     }
 
     public function DeferredDebugRebuild()
@@ -594,7 +618,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.25',
+            'moduleVersion' => '1.10.26',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1079,23 +1103,23 @@ class SmartBatteryOptimizer extends IPSModule
     public function SchedulerTick()
     {
         $now = time();
+        $lastRunID = (int)@$this->GetIDForIdent('SchedulerLastRun');
+        if ($lastRunID > 0) SetValue($lastRunID, date('d.m.Y H:i:s', $now));
+        $counterID = (int)@$this->GetIDForIdent('SchedulerCounter');
+        if ($counterID > 0) SetValue($counterID, ((int)GetValue($counterID)) + 1);
 
-        // Der zentrale Scheduler selbst bleibt bewusst kurz. Die Start-/Stop-Steuerung
-        // wird alle 15 Sekunden direkt geprueft. Langsame Provider-/Archivarbeiten
-        // werden dagegen an einen einmaligen Worker uebergeben, damit dieser Watchdog
-        // auch waehrend eines langen HTTP-Abrufs weiterlaufen kann.
-        try {
-            $this->Control();
-        } catch (Throwable $e) {
-            $this->DebugLog('Scheduler', 'Control fehlgeschlagen: ' . $e->getMessage(), 0);
-        }
+        // Der periodische Timer bleibt bewusst kurz. Die eigentliche Steuerpruefung
+        // laeuft synchron; lange Provider-/Archivarbeiten werden nur als One-Shot-
+        // Worker eingereiht.
+        $this->Control();
+    }
 
+    private function EvaluateSchedulerTasks(): void
+    {
+        $now = time();
         $state = json_decode($this->GetBuffer('SchedulerState'), true);
         if (!is_array($state)) $state = [];
 
-        // Falls bereits ein Workerauftrag existiert, keinen zweiten Lauf parallel
-        // einreihen. Ein nur "queued" gebliebener Auftrag wird nach 30 Sekunden
-        // nochmals angestossen; ein "running"-Auftrag bleibt unberuehrt.
         $job = json_decode($this->GetBuffer('SchedulerTask'), true);
         if (is_array($job) && !empty($job['type'])) {
             if (($job['status'] ?? '') === 'queued' && $now - (int)($job['ts'] ?? 0) >= 30) {
@@ -1103,6 +1127,8 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->SetBuffer('SchedulerTask', json_encode($job));
                 $this->SetTimerInterval('FullRefreshWorker', 250);
             }
+            $statusID = (int)@$this->GetIDForIdent('SchedulerStatus');
+            if ($statusID > 0) SetValue($statusID, 'Aktiv · 15 s | Worker: ' . (string)($job['type'] ?? '-') . ' (' . (string)($job['status'] ?? 'queued') . ')');
             return;
         }
 
@@ -1134,6 +1160,21 @@ class SmartBatteryOptimizer extends IPSModule
         if ($task !== '') {
             $this->SetBuffer('SchedulerTask', json_encode(['type'=>$task, 'status'=>'queued', 'ts'=>$now]));
             $this->SetTimerInterval('FullRefreshWorker', 250);
+        }
+
+        $fmtNext = static function (int $last, int $interval, int $now): string {
+            if ($last <= 0) return 'jetzt';
+            $ts = $last + $interval;
+            return $ts <= $now ? 'jetzt' : date('H:i:s', $ts);
+        };
+        $statusID = (int)@$this->GetIDForIdent('SchedulerStatus');
+        if ($statusID > 0) {
+            SetValue($statusID,
+                'Aktiv · 15 s | Plan ' . $fmtNext($lastOptimization, $refreshSec, $now)
+                . ' | PV-Prognose ' . $fmtNext($lastPVForecast, $pvForecastSec, $now)
+                . ' | PV-Ist ' . $fmtNext($lastPVActual, $pvActualSec, $now)
+                . ' | Kalibrierung ' . $fmtNext($lastPVCalibration, $pvCalibrationSec, $now)
+            );
         }
     }
 
@@ -2059,6 +2100,10 @@ class SmartBatteryOptimizer extends IPSModule
             try { $this->StopFeedIn(); } catch (Throwable $ignored) {}
         } finally {
             IPS_SemaphoreLeave($lock);
+            // Auch wenn eine Bestandsinstanz noch den alten SBO_Control()-Callback
+            // besitzt, bleibt die zentrale Zeitplanung aktiv. SchedulerTick() selbst
+            // ruft ebenfalls Control() auf und landet damit genau hier.
+            try { $this->EvaluateSchedulerTasks(); } catch (Throwable $ignored) {}
         }
     }
 
