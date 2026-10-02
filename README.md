@@ -1,6 +1,4 @@
-> Version 1.10.28 / Build 199: Zentraler 15-s-Scheduler updatefest ueber den bestehenden ControlTimer/SBO_Control; Worker ebenfalls bestandskompatibel.
-> Version 1.10.25 / Build 196: Zentraler 15-s-Scheduler prueft alle Aufgaben; langsame Abrufe laufen separat als One-Shot-Worker.
-> Version 1.10.24 / Build 195: ControlTimer-Callback bei Updates auf bewaehrten v1.10.18-Stand repariert.
+> Version 1.10.29 / Build 200: Timerstruktur wieder wie in v1.10.10/v1.10.18 mit unabhängigen internen Modul-Timern; kein zentraler Scheduler.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -19,7 +17,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.23 / Build 194**
+**1.10.29 / Build 200**
 
 ## Neu in 1.2.3
 

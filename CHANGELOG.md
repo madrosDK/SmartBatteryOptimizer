@@ -1,9 +1,11 @@
-## 1.10.28 (Build 199)
+## 1.10.29 (Build 200)
+- Timerstruktur vollständig auf den bewährten Stand aus v1.10.10/v1.10.18 zurückgestellt.
+- `ControlTimer` läuft wieder unabhängig alle 15 Sekunden.
+- `RefreshTimer`, `PVForecastTimer`, `PVActualTimer` und `PVCalibrationTimer` arbeiten wieder mit ihren eigenen konfigurierten Intervallen.
+- Zentralen Scheduler aus den Zwischenversionen entfernt; Scheduler-Statusvariablen und Scheduler-Buffer werden beim Update bereinigt.
+- Neuere fachliche Korrekturen (Provider-Caches, Forecast.Solar-Plausibilisierung, Einspeise-Statistik, Archivierung und Planlogik) bleiben erhalten.
 
-- Zentrale Scheduler-Architektur updatefest gemacht: Der seit fruehen Versionen vorhandene `ControlTimer` mit `SBO_Control()` ist wieder der einzige periodische 15-s-Taktgeber.
-- Scheduler-Heartbeat und Faelligkeitspruefung laufen direkt ueber `Control()`, daher ist keine Migration eines bestehenden Timer-Callbacks mehr noetig.
-- `FullRefreshWorker` bleibt kompatibel mit dem bestehenden Callback `SBO_RunFullRefresh()` und verarbeitet bei Bedarf interne Scheduler-Auftraege.
-- `SchedulerTick()` bleibt nur noch als Kompatibilitaets-Alias erhalten.
+## 1.10.28 (Build 199)
 
 ## 1.10.26 (Build 197)
 - Zentraler Scheduler bereinigt: ein periodischer 15-s-Taktgeber (`ControlTimer`) und ein One-Shot-Worker fuer langsame Aufgaben.
