@@ -1,4 +1,4 @@
-## 1.10.27 (Build 198)
+## 1.10.28 (Build 199)
 
 - Zentrale Scheduler-Architektur updatefest gemacht: Der seit fruehen Versionen vorhandene `ControlTimer` mit `SBO_Control()` ist wieder der einzige periodische 15-s-Taktgeber.
 - Scheduler-Heartbeat und Faelligkeitspruefung laufen direkt ueber `Control()`, daher ist keine Migration eines bestehenden Timer-Callbacks mehr noetig.

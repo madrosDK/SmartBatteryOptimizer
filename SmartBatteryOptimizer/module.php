@@ -457,11 +457,14 @@ class SmartBatteryOptimizer extends IPSModule
         $this->SetTimerInterval('PVForecastTimer', 0);
         $this->SetTimerInterval('PVForecastRetryTimer', 0);
         $this->SetTimerInterval('PVActualTimer', 0);
-        $this->SetTimerInterval('PVCalibrationTimer', 0);
+        // Zentraler Scheduler-Taktgeber: Dieser Timer besitzt seit der funktionierenden
+        // v1.10.18 unveraendert den Callback SBO_RefreshPVCalibration(). Dadurch ist
+        // keine Callback-Migration bei bestehenden Instanzen notwendig.
+        $this->SetTimerInterval('PVCalibrationTimer', 15 * 1000);
+        $this->SetTimerInterval('ControlTimer', 0);
         $this->SetTimerInterval('ManualRecalculateWorker', 0);
         $this->SetTimerInterval('FullRefreshWorker', 0);
         $this->SetTimerInterval('DeferredDebugRebuildTimer', 0);
-        $this->SetTimerInterval('ControlTimer', 15 * 1000);
 
         // Alte Diagnose-/Hilfsartefakte aus frueheren Zwischenversionen entfernen.
         // Modul-Timer sind keine normalen Ereignisse; ihre Skripte werden nicht ueber
@@ -493,7 +496,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetBuffer('SchedulerForceRefresh', '1');
         }
 
-        $currentModuleVersion = '1.10.27';
+        $currentModuleVersion = '1.10.28';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – zentraler Scheduler aktualisiert beim nächsten Tick ...');
@@ -1113,10 +1116,28 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function SchedulerTick()
     {
-        // Kompatibilitaets-Alias fuer eventuell noch vorhandene alte Aufrufe.
-        // Der zentrale 15-s-Taktgeber ist wieder der seit fruehen Versionen
-        // vorhandene ControlTimer mit SBO_Control().
-        $this->Control();
+        // Kompatibilitaets-Alias. Der reale 15-s-Taktgeber ist PVCalibrationTimer
+        // mit dem seit v1.10.18 unveraenderten Callback SBO_RefreshPVCalibration().
+        $this->RunCentralSchedulerPulse();
+    }
+
+    private function RunCentralSchedulerPulse(): void
+    {
+        $now = time();
+        $lastRunID = (int)@$this->GetIDForIdent('SchedulerLastRun');
+        if ($lastRunID > 0) SetValue($lastRunID, date('d.m.Y H:i:s', $now));
+        $counterID = (int)@$this->GetIDForIdent('SchedulerCounter');
+        if ($counterID > 0) SetValue($counterID, ((int)GetValue($counterID)) + 1);
+
+        // Der Scheduler selbst bleibt kurz: zuerst Steuerung pruefen, danach nur
+        // feststellen, ob ein Worker-Auftrag faellig ist. Lange HTTP-Aufrufe laufen
+        // weiterhin ausschliesslich ueber den bestehenden FullRefreshWorker.
+        try { $this->Control(); } catch (Throwable $e) {
+            $this->DebugLog('Scheduler', 'Control fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
+        try { $this->EvaluateSchedulerTasks(); } catch (Throwable $e) {
+            $this->DebugLog('Scheduler', 'Faelligkeitspruefung fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
     }
 
     private function EvaluateSchedulerTasks(): void
@@ -1218,7 +1239,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->DebugLog('Scheduler', 'Worker: PV-Ist/Optimierung mit gespeichertem Forecast');
                 $this->RecalculateInternal(false);
             } elseif ($task === 'calibration') {
-                $this->RefreshPVCalibration();
+                $this->RunPVCalibrationUpdate();
             }
             $success = true;
         } catch (Throwable $e) {
@@ -1417,6 +1438,14 @@ class SmartBatteryOptimizer extends IPSModule
     }
 
     public function RefreshPVCalibration()
+    {
+        // Dieser Callback ist seit v1.10.18 stabil und dient ab v1.10.28 als
+        // zentraler 15-s-Scheduler. Die eigentliche Kalibrierung wird nur dann
+        // ausgefuehrt, wenn EvaluateSchedulerTasks sie als faellig einplant.
+        $this->RunCentralSchedulerPulse();
+    }
+
+    private function RunPVCalibrationUpdate(): void
     {
         try {
             $this->UpdatePVCalibrationState(true);
@@ -1914,16 +1943,6 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function Control()
     {
-        // Zentraler Scheduler-Heartbeat. Der seit fruehen Versionen vorhandene
-        // ControlTimer ruft SBO_Control() alle 15 Sekunden auf. Dadurch bleibt
-        // diese Architektur auch bei bestehenden Instanzen updatefest, weil kein
-        // Timer-Callback migriert werden muss.
-        $schedulerNow = time();
-        $lastRunID = (int)@$this->GetIDForIdent('SchedulerLastRun');
-        if ($lastRunID > 0) SetValue($lastRunID, date('d.m.Y H:i:s', $schedulerNow));
-        $counterID = (int)@$this->GetIDForIdent('SchedulerCounter');
-        if ($counterID > 0) SetValue($counterID, ((int)GetValue($counterID)) + 1);
-
         // Timer and recalculation must not interleave AlphaESS command sequences.
         $lock = 'SBO_Control_' . $this->InstanceID;
         if (!IPS_SemaphoreEnter($lock, 1)) {
@@ -2115,10 +2134,6 @@ class SmartBatteryOptimizer extends IPSModule
             try { $this->StopFeedIn(); } catch (Throwable $ignored) {}
         } finally {
             IPS_SemaphoreLeave($lock);
-            // Auch wenn eine Bestandsinstanz noch den alten SBO_Control()-Callback
-            // besitzt, bleibt die zentrale Zeitplanung aktiv. SchedulerTick() selbst
-            // ruft ebenfalls Control() auf und landet damit genau hier.
-            try { $this->EvaluateSchedulerTasks(); } catch (Throwable $ignored) {}
         }
     }
 
