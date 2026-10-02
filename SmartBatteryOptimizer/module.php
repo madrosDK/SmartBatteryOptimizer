@@ -253,9 +253,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('PVForecastRetryTimer', 0, 'SBO_RefreshPVForecastRetry($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVCalibrationTimer', 0, 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('ControlTimer', 0, 'SBO_SchedulerTick($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ManualRecalculateWorker', 0, 'SBO_RunManualRecalculate($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('FullRefreshWorker', 0, 'SBO_RunFullRefresh($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('FullRefreshWorker', 0, 'SBO_RunScheduledTask($_IPS[\'TARGET\']);');
         $this->RegisterTimer('DeferredDebugRebuildTimer', 0, 'SBO_DeferredDebugRebuild($_IPS[\'TARGET\']);');
     }
 
@@ -443,22 +443,38 @@ class SmartBatteryOptimizer extends IPSModule
         $refresh = max(5, $this->ReadPropertyInteger('RefreshMinutes'));
         $pvForecastRefresh = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes'));
         $pvActualRefresh = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes'));
-        $this->SetTimerInterval('RefreshTimer', $refresh * 60 * 1000);
-        $this->SetTimerInterval('PVForecastTimer', $pvForecastRefresh * 60 * 1000);
-        $this->SetTimerInterval('PVActualTimer', $pvActualRefresh * 60 * 1000);
         $pvCalibrationPollSeconds = max(10, min(120, $this->ReadPropertyInteger('PVCalibrationPollSeconds')));
-        $this->SetTimerInterval('PVCalibrationTimer', $pvCalibrationPollSeconds * 1000);
+
+        // Zentrale Zeitsteuerung: Nur der ControlTimer laeuft periodisch. Er fungiert
+        // als Scheduler/Watchdog und entscheidet alle 15 Sekunden, welche Aufgabe
+        // tatsaechlich faellig ist. Die bisherigen periodischen Einzel-Timer bleiben
+        // registriert, werden aber als Zeitgeber deaktiviert, damit keine konkurrierenden
+        // Berechnungen mehr entstehen.
+        $this->SetTimerInterval('RefreshTimer', 0);
+        $this->SetTimerInterval('PVForecastTimer', 0);
+        $this->SetTimerInterval('PVForecastRetryTimer', 0);
+        $this->SetTimerInterval('PVActualTimer', 0);
+        $this->SetTimerInterval('PVCalibrationTimer', 0);
+        $this->SetTimerInterval('ManualRecalculateWorker', 0);
+        $this->SetTimerInterval('FullRefreshWorker', 0);
+        $this->SetTimerInterval('DeferredDebugRebuildTimer', 0);
         $this->SetTimerInterval('ControlTimer', 15 * 1000);
 
-        // Bestehende Instanzen behalten den beim urspruenglichen Create() angelegten
-        // Timer-Scripttext. Da dieser in Zwischenversionen geaendert wurde, wird der
-        // ControlTimer hier bewusst auf den bewaehrten Stand aus v1.10.18 repariert.
-        // So gilt fuer Neuinstallation UND Update derselbe Callback.
+        // Bestehende Instanzen besitzen bereits ein Timer-Objekt aus Create(). Deshalb
+        // wird der Scripttext bei jedem ApplyChanges explizit auf den zentralen Scheduler
+        // gesetzt. Das macht Updates unabhaengig davon, welcher Callback in einer alten
+        // Version im Ereignis gespeichert war.
         $controlTimerID = @($this->GetIDForIdent('ControlTimer'));
         if ($controlTimerID > 0 && @IPS_EventExists($controlTimerID)) {
-            @IPS_SetEventScript($controlTimerID, 'SBO_Control($_IPS[\'TARGET\']);');
+            @IPS_SetEventScript($controlTimerID, 'SBO_SchedulerTick($_IPS[\'TARGET\']);');
         }
-        $this->DebugLog('ApplyChanges', 'Debug=' . ($this->ReadPropertyBoolean('DebugMode') ? 'AN' : 'AUS') . ' | Timer Preise=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min | Steuerprüfung=15 s');
+        $workerTimerID = @($this->GetIDForIdent('FullRefreshWorker'));
+        if ($workerTimerID > 0 && @IPS_EventExists($workerTimerID)) {
+            @IPS_SetEventScript($workerTimerID, 'SBO_RunScheduledTask($_IPS[\'TARGET\']);');
+        }
+        $this->SetBuffer('SchedulerState', '{}');
+        $this->SetBuffer('SchedulerTask', '');
+        $this->DebugLog('ApplyChanges', 'Zentraler Scheduler aktiv: 15 s | Preise/Plan=' . $refresh . ' min | PV-Prognose=' . $pvForecastRefresh . ' min | PV-Ist=' . $pvActualRefresh . ' min | PV-Kalibrierung=' . $pvCalibrationPollSeconds . ' s');
 
         if ($this->ReadPropertyInteger('SOCVariable') <= 0 || $this->ReadPropertyInteger('HousePowerVariable') <= 0) {
             $this->SetStatus(200);
@@ -472,24 +488,21 @@ class SmartBatteryOptimizer extends IPSModule
             $this->StopFeedIn();
         }
 
-        // Externe API-Abfragen dürfen ApplyChanges nicht blockieren.
-        // Beim Umschalten des Debug-Modus wird nur ein kurzer One-Shot-Timer
-        // gestartet. Der Neuaufbau erfolgt direkt danach außerhalb von ApplyChanges.
+        // Auch Neuaufbau nach Debug-Umschaltung und Modulupdate wird vom zentralen
+        // Scheduler abgearbeitet. ApplyChanges setzt nur ein Flag und bleibt dadurch
+        // frei von externen API-Abfragen und zusaetzlichen One-Shot-Timern.
         if ($debugModeChanged) {
             if ($debugMode) {
-                $this->DebugLog('ApplyChanges', 'Debug-Modus geändert -> asynchroner Neuaufbau wird gestartet.');
+                $this->DebugLog('ApplyChanges', 'Debug-Modus geändert -> zentraler Scheduler aktualisiert beim nächsten Tick.');
             }
-            $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
+            $this->SetBuffer('SchedulerForceRefresh', '1');
         }
 
-        // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
-        // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
-        // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.24';
+        $currentModuleVersion = '1.10.25';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
-            $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
-            $this->SetTimerInterval('FullRefreshWorker', 1500);
+            $this->SetActionFeedback('Modulupdate erkannt – zentraler Scheduler aktualisiert beim nächsten Tick ...');
+            $this->SetBuffer('SchedulerForceRefresh', '1');
         }
     }
 
@@ -581,7 +594,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.24',
+            'moduleVersion' => '1.10.25',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1060,6 +1073,130 @@ class SmartBatteryOptimizer extends IPSModule
             $text = 'Prognose & Plan FEHLER: ' . $e->getMessage();
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
+        }
+    }
+
+    public function SchedulerTick()
+    {
+        $now = time();
+
+        // Der zentrale Scheduler selbst bleibt bewusst kurz. Die Start-/Stop-Steuerung
+        // wird alle 15 Sekunden direkt geprueft. Langsame Provider-/Archivarbeiten
+        // werden dagegen an einen einmaligen Worker uebergeben, damit dieser Watchdog
+        // auch waehrend eines langen HTTP-Abrufs weiterlaufen kann.
+        try {
+            $this->Control();
+        } catch (Throwable $e) {
+            $this->DebugLog('Scheduler', 'Control fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
+
+        $state = json_decode($this->GetBuffer('SchedulerState'), true);
+        if (!is_array($state)) $state = [];
+
+        // Falls bereits ein Workerauftrag existiert, keinen zweiten Lauf parallel
+        // einreihen. Ein nur "queued" gebliebener Auftrag wird nach 30 Sekunden
+        // nochmals angestossen; ein "running"-Auftrag bleibt unberuehrt.
+        $job = json_decode($this->GetBuffer('SchedulerTask'), true);
+        if (is_array($job) && !empty($job['type'])) {
+            if (($job['status'] ?? '') === 'queued' && $now - (int)($job['ts'] ?? 0) >= 30) {
+                $job['ts'] = $now;
+                $this->SetBuffer('SchedulerTask', json_encode($job));
+                $this->SetTimerInterval('FullRefreshWorker', 250);
+            }
+            return;
+        }
+
+        $refreshSec = max(5, $this->ReadPropertyInteger('RefreshMinutes')) * 60;
+        $pvForecastSec = max(5, $this->ReadPropertyInteger('PVForecastRefreshMinutes')) * 60;
+        $pvActualSec = max(1, $this->ReadPropertyInteger('PVActualRefreshMinutes')) * 60;
+        $pvCalibrationSec = max(10, min(120, $this->ReadPropertyInteger('PVCalibrationPollSeconds')));
+
+        $lastOptimization = (int)($state['optimization'] ?? 0);
+        $lastPVForecast = (int)($state['pvForecast'] ?? 0);
+        $lastPVActual = (int)($state['pvActual'] ?? 0);
+        $lastPVCalibration = (int)($state['pvCalibration'] ?? 0);
+
+        $forceRefresh = ($this->GetBuffer('SchedulerForceRefresh') === '1');
+        $duePVForecast = $forceRefresh || $lastPVForecast <= 0 || ($now - $lastPVForecast) >= $pvForecastSec;
+        $duePVActual = $lastPVActual <= 0 || ($now - $lastPVActual) >= $pvActualSec;
+        $dueOptimization = $lastOptimization <= 0 || ($now - $lastOptimization) >= $refreshSec;
+        $duePVCalibration = $lastPVCalibration <= 0 || ($now - $lastPVCalibration) >= $pvCalibrationSec;
+
+        $task = '';
+        if ($duePVForecast) {
+            $task = 'forecast';
+        } elseif ($duePVActual || $dueOptimization) {
+            $task = 'recalculate';
+        } elseif ($duePVCalibration) {
+            $task = 'calibration';
+        }
+
+        if ($task !== '') {
+            $this->SetBuffer('SchedulerTask', json_encode(['type'=>$task, 'status'=>'queued', 'ts'=>$now]));
+            $this->SetTimerInterval('FullRefreshWorker', 250);
+        }
+    }
+
+    public function RunScheduledTask()
+    {
+        // One-Shot sofort wieder deaktivieren. Der zentrale Scheduler kann ihn bei
+        // Bedarf jederzeit erneut setzen.
+        $this->SetTimerInterval('FullRefreshWorker', 0);
+
+        $job = json_decode($this->GetBuffer('SchedulerTask'), true);
+        if (!is_array($job) || empty($job['type'])) {
+            return;
+        }
+
+        $task = (string)$job['type'];
+        $job['status'] = 'running';
+        $job['ts'] = time();
+        $this->SetBuffer('SchedulerTask', json_encode($job));
+
+        // Laeuft gerade ein manueller Rechenlauf, wird der Auftrag nicht verworfen,
+        // sondern spaeter erneut versucht.
+        if ($task !== 'calibration' && $this->ReadAttributeInteger('CalculationLockUntil') > time()) {
+            $job['status'] = 'queued';
+            $job['ts'] = time();
+            $this->SetBuffer('SchedulerTask', json_encode($job));
+            $this->SetTimerInterval('FullRefreshWorker', 15000);
+            return;
+        }
+
+        $success = false;
+        try {
+            if ($task === 'forecast') {
+                $this->DebugLog('Scheduler', 'Worker: PV-Prognose + Preise + Plan');
+                $this->RecalculateInternal(true);
+            } elseif ($task === 'recalculate') {
+                $this->DebugLog('Scheduler', 'Worker: PV-Ist/Optimierung mit gespeichertem Forecast');
+                $this->RecalculateInternal(false);
+            } elseif ($task === 'calibration') {
+                $this->RefreshPVCalibration();
+            }
+            $success = true;
+        } catch (Throwable $e) {
+            $this->DebugLog('Scheduler', 'Worker ' . $task . ' fehlgeschlagen: ' . $e->getMessage(), 0);
+        } finally {
+            if ($success) {
+                $state = json_decode($this->GetBuffer('SchedulerState'), true);
+                if (!is_array($state)) $state = [];
+                $done = time();
+                if ($task === 'forecast') {
+                    $state['pvForecast'] = $done;
+                    $state['optimization'] = $done;
+                    $state['pvActual'] = $done;
+                    $state['pvCalibration'] = $done;
+                    $this->SetBuffer('SchedulerForceRefresh', '0');
+                } elseif ($task === 'recalculate') {
+                    $state['optimization'] = $done;
+                    $state['pvActual'] = $done;
+                } elseif ($task === 'calibration') {
+                    $state['pvCalibration'] = $done;
+                }
+                $this->SetBuffer('SchedulerState', json_encode($state));
+            }
+            $this->SetBuffer('SchedulerTask', '');
         }
     }
 

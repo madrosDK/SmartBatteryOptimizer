@@ -1,3 +1,4 @@
+> Version 1.10.25 / Build 196: Zentraler 15-s-Scheduler prueft alle Aufgaben; langsame Abrufe laufen separat als One-Shot-Worker.
 > Version 1.10.24 / Build 195: ControlTimer-Callback bei Updates auf bewaehrten v1.10.18-Stand repariert.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung

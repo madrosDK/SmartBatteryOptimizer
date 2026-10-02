@@ -1,3 +1,9 @@
+## 1.10.25 (Build 196)
+- Ein zentraler interner Scheduler laeuft alle 15 Sekunden und prueft Steuerung, Preise/Plan, PV-Prognose, PV-Ist und PV-Kalibrierung.
+- Der Scheduler bleibt kurz; langsame Prognose-/Preisarbeiten laufen ueber einen einmaligen internen Worker, damit Start/Stop weiterhin alle 15 Sekunden geprueft werden kann.
+- Die bisherigen periodischen Einzel-Timer sind als Zeitgeber deaktiviert, um konkurrierende Laeufe zu vermeiden.
+- Bestehende Instanzen bekommen Scheduler- und Worker-Callback bei ApplyChanges explizit gesetzt.
+
 ## 1.10.24 (Build 195)
 - ControlTimer-Updatefix: bestehende Instanzen erhalten in ApplyChanges explizit wieder den bewaehrten Callback `SBO_Control($_IPS['TARGET']);` aus v1.10.18.
 - ControlTimer bleibt fest auf 15 Sekunden.
