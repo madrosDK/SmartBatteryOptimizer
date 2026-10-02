@@ -1,3 +1,5 @@
+> Version 1.10.24 / Build 195: ControlTimer-Callback bei Updates auf bewaehrten v1.10.18-Stand repariert.
+
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
 Die PV-Auto-Korrektur verwendet keine Stundenfaktoren mehr. Der Faktor bleibt bis zum vollständigen Lernzeitraum 1,000 und wird danach rollierend aus den neuesten gültigen Lerntagen des IP-Symcon-Archivs berechnet. Änderungen am Lernzeitraum werden aus dem Archiv neu ausgewertet.

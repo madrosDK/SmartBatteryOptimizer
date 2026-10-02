@@ -1,3 +1,9 @@
+## 1.10.24 (Build 195)
+- ControlTimer-Updatefix: bestehende Instanzen erhalten in ApplyChanges explizit wieder den bewaehrten Callback `SBO_Control($_IPS['TARGET']);` aus v1.10.18.
+- ControlTimer bleibt fest auf 15 Sekunden.
+- Irrefuehrende Watchdog-Diagnose entfernt; sie konnte manuelle Control()-Aufrufe nicht von echten Timer-Ticks unterscheiden.
+- Alle fachlichen Aenderungen der neueren Versionen bleiben erhalten.
+
 # SmartBatteryOptimizer v1.10.23
 
 - ControlTimer-Callback auf den bewährten Aufruf `SBO_Control()` zurückgestellt. Bestehende IP-Symcon-Instanzen behalten ihren bereits registrierten Timer-Callback bei Updates; dadurch konnte die in v1.10.22 neu eingeführte `ControlTimerTick()`-Diagnose bei Bestandsinstanzen nicht greifen.
