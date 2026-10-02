@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.21 (Build 192)
+
+- Watchdog-Diagnose ergänzt: sichtbare Variablen **Watchdog letzter Lauf** und **Watchdog Zähler** werden bei jedem `ControlTimer`-Durchlauf aktualisiert.
+- Bei aktiviertem Debug-Modus wird maximal einmal pro Minute ein Heartbeat `Watchdog aktiv – ControlTimer läuft (15 s).` in **Letzte Aktionen** protokolliert.
+- Der bestehende `ControlTimer` bleibt unverändert auf 15 Sekunden.
+
 ## 1.10.20 (Build 191)
 
 - Forecast.Solar: Cache-Zeitstempel wird nur noch nach echtem Live-Abruf erneuert; Cache-Lesen verlängert die Gültigkeit nicht mehr künstlich.

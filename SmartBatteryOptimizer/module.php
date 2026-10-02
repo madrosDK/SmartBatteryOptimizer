@@ -152,6 +152,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('NextFeedInWindow', 'Nächstes Einspeisefenster', '', 80);
         $this->RegisterVariableFloat('ExpectedRevenue', 'Erwarteter Erlös', '', 90);
         $this->RegisterVariableString('LastUpdate', 'Letzte Aktualisierung', '', 100);
+        $this->RegisterVariableString('WatchdogLastRun', 'Watchdog letzter Lauf', '', 101);
+        $this->RegisterVariableInteger('WatchdogCounter', 'Watchdog Zähler', '', 102);
         $this->RegisterVariableString('StatusText', 'Optimierungsstatus', '', 110);
         $this->RegisterVariableString('OverviewHTML', 'Übersicht', '~HTMLBox', 120);
         $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 150);
@@ -173,6 +175,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('PVForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('PVSourceForecastHistoryJSON', '{}');
         $this->RegisterAttributeString('ForecastSolarSurfaceCacheJSON', '{}');
+        $this->RegisterAttributeInteger('WatchdogLastLogTs', 0);
         $this->RegisterAttributeString('OpenMeteoSurfaceCacheJSON', '{}');
         $this->RegisterAttributeInteger('ForecastSolarRetryAfterTs', 0);
         $this->RegisterAttributeString('PVDebugVisibilityJSON', '{}');
@@ -476,7 +479,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.20';
+        $currentModuleVersion = '1.10.21';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -1727,6 +1730,21 @@ class SmartBatteryOptimizer extends IPSModule
         if (!IPS_SemaphoreEnter($lock, 1)) return;
         try {
             $now = time();
+
+            // Sichtbare Watchdog-Diagnose: wird bei jedem ControlTimer-Durchlauf aktualisiert.
+            SetValue($this->GetIDForIdent('WatchdogLastRun'), date('d.m.Y H:i:s', $now));
+            $watchdogCounterID = $this->GetIDForIdent('WatchdogCounter');
+            SetValue($watchdogCounterID, GetValueInteger($watchdogCounterID) + 1);
+
+            // Im Debug-Modus maximal einmal pro Minute einen Heartbeat in die Aktionsliste schreiben.
+            if ($this->ReadPropertyBoolean('DebugMode')) {
+                $lastWatchdogLogTs = $this->ReadAttributeInteger('WatchdogLastLogTs');
+                if (($now - $lastWatchdogLogTs) >= 60) {
+                    $this->WriteAttributeInteger('WatchdogLastLogTs', $now);
+                    $this->SetActionFeedback('Watchdog aktiv – ControlTimer läuft (15 s).');
+                }
+            }
+
             $this->TrackTotalGridExport();
             $priceLock = $this->UpdateFeedInPriceLock();
             if (!empty($priceLock['blocked'])) {
