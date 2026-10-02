@@ -1,4 +1,4 @@
-> Version 1.10.30 / Build 201: Timerstruktur unverändert; automatische Timerläufe auf kurze Cache-/Istwert-Pfade optimiert, damit die 15-Sekunden-Steuerung nicht durch Archiv- oder Providerarbeit blockiert wird.
+> Version 1.10.31 / Build 202: Vollständige Aktualisierungspfade aus v1.10.29 wiederhergestellt; nur ergebnisneutrale RAM-Caches für abgeschlossene Archivtage bleiben als Performance-Optimierung.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 

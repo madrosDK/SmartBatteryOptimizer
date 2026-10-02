@@ -491,7 +491,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.30';
+        $currentModuleVersion = '1.10.31';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -616,7 +616,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.30',
+            'moduleVersion' => '1.10.31',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1092,108 +1092,11 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetActionFeedback($text);
         }
     }
-public function RefreshOptimization()
-{
-    // Der 5-Minuten-Optimierungslauf darf die 15-Sekunden-Steuerung nicht
-    // durch Archivlernen oder Diagrammaufbau blockieren. Er arbeitet deshalb
-    // ausschließlich mit bereits gelernten/gecacheten Daten und aktualisiert
-    // nur Preis/Plan sowie die planrelevanten Anzeigen.
-    $this->RecalculatePlanFromCache();
-}
 
-private function RecalculatePlanFromCache(): void
-{
-    $started = microtime(true);
-    $now = time();
-    if ($this->ReadAttributeInteger('CalculationLockUntil') > $now) {
-        $this->DebugLog('RefreshTimer', 'Schnelllauf übersprungen: anderer Berechnungslauf aktiv');
-        return;
+    public function RefreshOptimization()
+    {
+        $this->RecalculateInternal(false);
     }
-    $this->WriteAttributeInteger('CalculationLockUntil', $now + 120);
-
-    try {
-        $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
-        if (!is_array($forecast) || empty($forecast)) {
-            // Nur bei einer wirklich leeren Installation einmal auf den normalen
-            // Komplettlauf zurückfallen. Danach arbeitet der RefreshTimer cachebasiert.
-            $this->WriteAttributeInteger('CalculationLockUntil', 0);
-            $this->DebugLog('RefreshTimer', 'Kein Forecast-Cache vorhanden -> einmaliger Komplettlauf');
-            $this->RecalculateInternal(true);
-            return;
-        }
-
-        $profile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
-        if (!is_array($profile) || !isset($profile['hourlyKWh']) || !is_array($profile['hourlyKWh']) || count($profile['hourlyKWh']) !== 24) {
-            $profile = $this->LearnConsumptionProfileInternal(false);
-        }
-
-        $night = 0.0;
-        $nightID = (int)@$this->GetIDForIdent('NightConsumptionForecast');
-        if ($nightID > 0) $night = max(0.0, (float)GetValue($nightID));
-        if ($night <= 0.0) $night = max(0.0, $this->ReadAttributeFloat('LearnedNightKWh'));
-        if ($night <= 0.0) $night = max(0.0, $this->ReadPropertyFloat('FallbackNightConsumptionKWh'));
-
-        $forecast = $this->ApplyConsumptionForecastToPV($forecast, $profile, $night);
-
-        // Der normale 5-Minuten-Lauf führt selbst keinen externen Preisabruf aus.
-        // Der Stunden-Cache wird im PV-Prognose-/Vollrefresh aktualisiert.
-        $prices = $this->FetchPrices(false);
-
-        $this->CleanupStaleActiveFeedInState();
-        $previousPlan = json_decode($this->ReadAttributeString('PlanJSON'), true);
-        if (!is_array($previousPlan)) $previousPlan = [];
-        $nightForPlan = (float)($forecast['nightConsumptionTomorrowKWh'] ?? $night);
-        $plan = $this->BuildPlan($forecast, $prices, $nightForPlan, $profile);
-        $plan = $this->PreserveCommittedFeedInPlan($plan, $previousPlan);
-
-        $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
-        $this->WriteAttributeString('PricesJSON', json_encode($prices));
-        $this->WriteAttributeString('PlanJSON', json_encode($plan));
-
-        SetValue($this->GetIDForIdent('PVForecastToday'), round((float)($forecast['todayKWh'] ?? 0.0), 3));
-        SetValue($this->GetIDForIdent('PVForecastTomorrow'), round((float)($forecast['tomorrowKWh'] ?? 0.0), 3));
-        SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($nightForPlan, 3));
-        SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)($forecast['consumptionTomorrowKWh'] ?? 0.0), 3));
-        SetValue($this->GetIDForIdent('ExpectedPVSurplusTomorrow'), round((float)($forecast['pvSurplusTomorrowKWh'] ?? 0.0), 3));
-        SetValue($this->GetIDForIdent('PVPeakPowerTomorrow'), round((float)($plan['pvPeakPowerTomorrowW'] ?? 0.0), 0));
-        SetValue($this->GetIDForIdent('PredictedMaxGridExportTomorrow'), round((float)($plan['predictedMaxGridExportTomorrowW'] ?? 0.0), 0));
-        SetValue($this->GetIDForIdent('GridLimitHeadroomRequired'), round((float)($plan['gridLimitSpaceRequiredKWh'] ?? 0.0), 3));
-        SetValue($this->GetIDForIdent('AvailableFeedInEnergy'), round((float)($plan['availableKWh'] ?? 0.0), 3));
-        SetValue($this->GetIDForIdent('PVSpaceRequiredEnergy'), round((float)($plan['pvSpaceRequiredKWh'] ?? 0.0), 3));
-        SetValue($this->GetIDForIdent('HighestPrice'), round((float)($plan['highestPriceCt'] ?? 0.0), 3));
-        SetValue($this->GetIDForIdent('ExpectedRevenue'), round((float)($plan['expectedRevenueEUR'] ?? 0.0), 3));
-        SetValue($this->GetIDForIdent('NextFeedInWindow'), (string)($plan['nextWindow'] ?? '-'));
-
-        if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
-            $nextPlannedKWh = 0.0;
-            foreach (($plan['slots'] ?? []) as $slot) {
-                if ((int)($slot['end'] ?? 0) <= $now) continue;
-                $nextPlannedKWh = max(0.0, (float)($slot['energyKWh'] ?? 0.0));
-                break;
-            }
-            SetValue($this->GetIDForIdent('FeedInTargetEnergy'), round($nextPlannedKWh, 3));
-        }
-
-        $gate = $this->GetAutomaticLearningGateStatus();
-        SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
-        SetValue($this->GetIDForIdent('StatusText'), (string)($plan['status'] ?? 'Plan aktualisiert'));
-        SetValue($this->GetIDForIdent('LastUpdate'), date('d.m.Y H:i:s'));
-
-        // Nur planrelevante HTML-Boxen neu aufbauen. PV-, Verbrauchs- und
-        // Statistikdiagramme gehören zum PVActualTimer und blockieren diesen Lauf nicht.
-        SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
-        SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
-        SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
-
-        $this->SetStatus(($this->IsAutomaticEnabled() && !$gate['ready']) ? 202 : 102);
-        $this->DebugLog('RefreshTimer', 'Schnelllauf fertig in ' . round((microtime(true) - $started) * 1000) . ' ms | keine Lern-/Provider-/Statistikabfrage');
-    } catch (Throwable $e) {
-        $this->DebugLog('RefreshTimer', 'Schnelllauf fehlgeschlagen: ' . $e->getMessage(), 0);
-    } finally {
-        $this->WriteAttributeInteger('CalculationLockUntil', 0);
-    }
-}
-
 
     public function RefreshPVForecast()
     {
@@ -1222,37 +1125,33 @@ private function RecalculatePlanFromCache(): void
         $this->DebugLog('PVForecastRetry', 'Nachgeholte automatische PV-Prognose startet');
         $this->RecalculateInternal(true);
     }
-public function RefreshPVActual()
-{
-    // Der PV-Ist-Timer ist bewusst ein reiner Anzeige-/Istwert-Lauf.
-    // Keine Planberechnung, kein Anbieterabruf und kein Verbrauchslernen.
-    $started = microtime(true);
-    try {
-        // Nur einmal pro Stunde die letzten beiden Tage aus dem Netzarchiv
-        // nachziehen. Dazwischen genügt die laufende 15-s-Integration.
-        $this->SyncRecentGridExportArchiveIfDue(false);
 
-        $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
-        if (is_array($forecast) && !empty($forecast)) {
-            SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+    public function RefreshPVActual()
+    {
+        // PV-Ist und Planung aktualisieren, die gespeicherte PV-Prognose verwenden.
+        // Die Prognose besitzt wieder ihr eigenes konfigurierbares Intervall.
+        $this->DebugLog('PVActual', 'PV-Ist + Planung aktualisieren; gespeicherte PV-Prognose verwenden');
+        $this->RecalculateInternal(false);
+
+        // Diagramme bewusst nochmals direkt aus Archiv + gespeichertem Forecast/Profile
+        // aufbauen. Dadurch werden die Istwerte auch dann im konfigurierten
+        // PV-Ist-Intervall aktualisiert, wenn ein paralleler Rechenlauf durch die
+        // Berechnungssperre uebersprungen wurde.
+        try {
+            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+            if (is_array($forecast) && !empty($forecast)) {
+                SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
+            }
+            $profile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
+            if (is_array($profile) && !empty($profile)) {
+                SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($profile));
+                SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
+                SetValue($this->GetIDForIdent('FeedInDebugHTML'), $this->RenderFeedInDebugHTML());
+            }
+        } catch (Throwable $e) {
+            $this->DebugLog('PVActual', 'Diagramm-Istwerte konnten nicht aktualisiert werden: ' . $e->getMessage(), 0);
         }
-
-        $profile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
-        if (is_array($profile) && isset($profile['hourlyKWh']) && is_array($profile['hourlyKWh'])) {
-            SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($profile));
-        }
-
-        // Schnelle Statistikdarstellung ausschließlich aus den bereits gepflegten
-        // Tages-/Lauf-Caches. Keine Vollabfrage des gesamten Netzarchivs.
-        SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML(false));
-        SetValue($this->GetIDForIdent('FeedInDebugHTML'), $this->RenderFeedInDebugHTML());
-
-        $this->DebugLog('PVActualTimer', 'Ist-/Diagrammlauf fertig in ' . round((microtime(true) - $started) * 1000) . ' ms');
-    } catch (Throwable $e) {
-        $this->DebugLog('PVActual', 'Ist-/Diagrammlauf fehlgeschlagen: ' . $e->getMessage(), 0);
     }
-}
-
 
     private function UpdatePVCalibrationState(bool $renderDiagnosis = true): void
     {
@@ -1272,15 +1171,11 @@ public function RefreshPVActual()
         $this->ForecastDiagnosticStep('05.03 PV-Kalibrierung PVCalibrationJSON lesen START');
         $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
         if (!is_array($calibration)) $calibration = [];
-        $archiveMode = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1;
-        $lastHeavyTs = (int)$this->GetBuffer('PVCalibrationArchiveRefreshTs');
-        $heavyArchiveDue = $archiveMode && ($renderDiagnosis || $lastHeavyTs <= 0 || (time() - $lastHeavyTs) >= 60);
-        if ($heavyArchiveDue) {
+        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1) {
             $this->FinalizePVCalibrationCompletedHours();
             $calibration = $this->BuildPVCalibrationFromArchive($calibration);
-            $this->SetBuffer('PVCalibrationArchiveRefreshTs', (string)time());
         }
-        $this->ForecastDiagnosticStep('05.04 PV-Kalibrierung Datenspeicher lesen ENDE | Modus=' . ($archiveMode ? ($heavyArchiveDue ? 'IP-Symcon Archiv neu' : 'JSON-Cache') : 'JSON') . ' | Oberflächen=' . count($calibration));
+        $this->ForecastDiagnosticStep('05.04 PV-Kalibrierung Datenspeicher lesen ENDE | Modus=' . ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1 ? 'IP-Symcon Archiv' : 'JSON') . ' | Oberflächen=' . count($calibration));
 
         $this->ForecastDiagnosticStep('05.05 PV-Kalibrierung PVSurfaces lesen START');
         $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
@@ -1367,21 +1262,15 @@ public function RefreshPVActual()
             $this->WriteAttributeInteger('PVCalibrationLockUntil', 0);
         }
     }
-public function RefreshPVCalibration()
-{
-    try {
-        // Messpunkte weiterhin im eingestellten Intervall erfassen, die teure
-        // Archivverdichtung und Diagnose aber höchstens einmal pro Minute ausführen.
-        $now = time();
-        $lastHeavy = (int)$this->GetBuffer('PVCalibrationHeavyTs');
-        $heavyDue = ($lastHeavy <= 0 || ($now - $lastHeavy) >= 60);
-        $this->UpdatePVCalibrationState($heavyDue);
-        if ($heavyDue) $this->SetBuffer('PVCalibrationHeavyTs', (string)$now);
-    } catch (Throwable $e) {
-        $this->DebugLog('PVCalibration', 'Kalibrierungs-Aktualisierung fehlgeschlagen: ' . $e->getMessage(), 0);
-    }
-}
 
+    public function RefreshPVCalibration()
+    {
+        try {
+            $this->UpdatePVCalibrationState(true);
+        } catch (Throwable $e) {
+            $this->DebugLog('PVCalibration', 'Kalibrierungs-Aktualisierung fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
+    }
 
     private function RecalculateInternal(bool $refreshPVForecast, bool $forceForecastProviders = false)
     {
@@ -1509,7 +1398,7 @@ public function RefreshPVCalibration()
             SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
             SetValue($this->GetIDForIdent('ForecastSolarStatus'), $this->RenderProviderForecastStatusHTML($forecast));
             SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($consumptionProfile));
-            SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML(false));
+            SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
             SetValue($this->GetIDForIdent('FeedInDebugHTML'), $this->RenderFeedInDebugHTML());
             SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
             SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
@@ -1576,7 +1465,7 @@ public function RefreshPVCalibration()
     {
         $this->SetActionFeedback('Nachtverbrauch wird neu gelernt ...');
         try {
-            $value = $this->LearnNightConsumptionInternal(true);
+            $value = $this->LearnNightConsumptionInternal();
             SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($value, 3));
             SetValue($this->GetIDForIdent('NightConsumptionSource'), $this->ReadAttributeString('NightLearningSource'));
             SetValue($this->GetIDForIdent('ValidNightSamples'), $this->ReadAttributeInteger('NightSampleCount'));
@@ -2204,67 +2093,36 @@ public function RefreshPVCalibration()
         }
         return $html.'</div></details></div>';
     }
-private function TrackTotalGridExport(): void
-{
-    // Dieser Pfad läuft im 15-Sekunden-ControlTimer und muss extrem kurz bleiben:
-    // nur Momentanwert integrieren und Cache fortschreiben. Keine Archivabfrage,
-    // kein Highcharts-Rendering und keine historische Statistikberechnung.
-    try {
-        $currentW = $this->ReadCurrentGridExportW();
-    } catch (Throwable $e) {
-        return;
-    }
 
-    $now = time();
-    $lastTs = $this->ReadAttributeInteger('GridExportTrackLastTs');
-    $lastW = max(0.0, $this->ReadAttributeFloat('GridExportTrackLastW'));
-
-    if ($lastTs > 0 && $now > $lastTs) {
-        $seconds = min(180, $now - $lastTs);
-        $kWh = (($lastW + $currentW) / 2.0) * ($seconds / 3600.0) / 1000.0;
-        if ($kWh > 0.0) {
-            $priceID = (int)@$this->GetIDForIdent('CurrentPrice');
-            $priceCt = $priceID > 0 ? (float)GetValue($priceID) : 0.0;
-            $day = date('Y-m-d', $now);
-            $days = json_decode($this->ReadAttributeString('GridExportDailyJSON'), true);
-            if (!is_array($days)) $days = [];
-            if (!isset($days[$day]) || !is_array($days[$day])) $days[$day] = ['kWh'=>0.0,'eur'=>0.0];
-            $days[$day]['kWh'] = (float)$days[$day]['kWh'] + $kWh;
-            $days[$day]['eur'] = (float)$days[$day]['eur'] + $kWh * $priceCt / 100.0;
-
-            $cut = strtotime('-400 days 00:00:00');
-            foreach (array_keys($days) as $d) {
-                $t = strtotime($d . ' 00:00:00');
-                if ($t !== false && $t < $cut) unset($days[$d]);
+    private function TrackTotalGridExport(): void
+    {
+        try { $currentW = $this->ReadCurrentGridExportW(); } catch(Throwable $e) { return; }
+        $now=time(); $lastTs=$this->ReadAttributeInteger('GridExportTrackLastTs'); $lastW=max(0.0,$this->ReadAttributeFloat('GridExportTrackLastW'));
+        if($lastTs>0 && $now>$lastTs){
+            $seconds=min(180,$now-$lastTs); $kWh=(($lastW+$currentW)/2.0)*($seconds/3600.0)/1000.0;
+            if($kWh>0){
+                $priceID=(int)@$this->GetIDForIdent('CurrentPrice'); $priceCt=$priceID>0?(float)GetValue($priceID):0.0;
+                $day=date('Y-m-d',$now); $days=json_decode($this->ReadAttributeString('GridExportDailyJSON'),true); if(!is_array($days))$days=[];
+                if(!isset($days[$day])||!is_array($days[$day]))$days[$day]=['kWh'=>0.0,'eur'=>0.0];
+                $days[$day]['kWh']=(float)$days[$day]['kWh']+$kWh; $days[$day]['eur']=(float)$days[$day]['eur']+$kWh*$priceCt/100.0;
+                $cut=strtotime('-400 days 00:00:00'); foreach(array_keys($days) as $d){$t=strtotime($d.' 00:00:00');if($t!==false&&$t<$cut)unset($days[$d]);}
+                $this->WriteAttributeString('GridExportDailyJSON',json_encode($days));
             }
-            $this->WriteAttributeString('GridExportDailyJSON', json_encode($days));
+        }
+        $this->WriteAttributeInteger('GridExportTrackLastTs',$now); $this->WriteAttributeFloat('GridExportTrackLastW',$currentW);
+
+        // Den laufenden Tag in der Statistik sichtbar nachführen, ohne Highcharts bei
+        // jedem Messzyklus neu aufzubauen. Maximal einmal pro Minute rendern.
+        $lastRender = $this->ReadAttributeInteger('FeedInStatisticsLastRenderTs');
+        if ($now - $lastRender >= 60) {
+            // Den heutigen Tageswert aus dem Archiv rekonstruieren. So gehen bei
+            // Modulupdates, Neustarts oder Timerpausen keine Einspeise-Zeiträume verloren.
+            $this->RebuildTodayGridExportFromArchive();
+            $statsID = (int)@$this->GetIDForIdent('FeedInStatisticsHTML');
+            if ($statsID > 0) SetValue($statsID, $this->RenderFeedInStatisticsHTML());
+            $this->WriteAttributeInteger('FeedInStatisticsLastRenderTs', $now);
         }
     }
-
-    $this->WriteAttributeInteger('GridExportTrackLastTs', $now);
-    $this->WriteAttributeFloat('GridExportTrackLastW', $currentW);
-}
-
-private function SyncRecentGridExportArchiveIfDue(bool $force = false): void
-{
-    $now = time();
-    $last = (int)$this->GetBuffer('GridExportRecentSyncTs');
-    if (!$force && $last > 0 && ($now - $last) < 3600) return;
-
-    $start = strtotime('yesterday 00:00:00', $now);
-    $daily = $this->GetGridExportDailyFromArchive($start, $now);
-    if (count($daily) > 0) {
-        $days = json_decode($this->ReadAttributeString('GridExportDailyJSON'), true);
-        if (!is_array($days)) $days = [];
-        foreach ($daily as $day => $kWh) {
-            if (!isset($days[$day]) || !is_array($days[$day])) $days[$day] = ['kWh'=>0.0,'eur'=>0.0];
-            $days[$day]['kWh'] = max(0.0, (float)$kWh);
-        }
-        $this->WriteAttributeString('GridExportDailyJSON', json_encode($days));
-    }
-    $this->SetBuffer('GridExportRecentSyncTs', (string)$now);
-}
-
 
     private function ReadCurrentGridExportW(): float
     {
@@ -2388,7 +2246,7 @@ private function SyncRecentGridExportArchiveIfDue(bool $force = false): void
         }
         // Anzeige nach jedem Abschluss aktualisieren. Dadurch verschwindet ein eventuell
         // laufender Status sofort, auch wenn das Fenster nicht statistikrelevant war.
-        SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML(false));
+        SetValue($this->GetIDForIdent('FeedInStatisticsHTML'), $this->RenderFeedInStatisticsHTML());
         if ($completed && $key !== '') {
             $done = json_decode($this->ReadAttributeString('CompletedFeedInPlanKeysJSON'), true);
             if (!is_array($done)) $done = [];
@@ -4103,7 +3961,7 @@ private function SyncRecentGridExportArchiveIfDue(bool $force = false): void
         return count($days);
     }
 
-    private function FetchPrices(bool $allowLive = true): array
+    private function FetchPrices(): array
     {
         $provider = $this->ReadPropertyInteger('PriceProvider');
         $this->DebugLog('Preise', 'Preisquelle/Tarif Modus=' . $provider);
@@ -4119,14 +3977,6 @@ private function SyncRecentGridExportArchiveIfDue(bool $force = false): void
         $cached = json_decode($this->ReadAttributeString('PricesJSON'), true);
         if ($updated > 0 && (time() - $updated) >= 0 && (time() - $updated) < 3600 && $this->ReadAttributeString('PriceCacheSignature') === $signature && is_array($cached) && count($cached) > 0) {
             $this->DebugLog('Preise', 'Cache ' . round((time() - $updated) / 60, 1) . ' min | kein externer API-Aufruf');
-            return $cached;
-        }
-
-        // Automatische Kurzläufe dürfen nie auf eine externe Preis-API warten.
-        // Ein vorhandener Cache wird dann auch nach 60 Minuten noch benutzt; der
-        // nächste PV-Prognose-/Vollrefresh erneuert ihn mit allowLive=true.
-        if (!$allowLive && is_array($cached) && count($cached) > 0 && $this->ReadAttributeString('PriceCacheSignature') === $signature) {
-            $this->DebugLog('Preise', 'Schnelllauf: vorhandener Preis-Cache wird weiterverwendet (' . ($updated > 0 ? round((time() - $updated) / 60, 1) . ' min alt' : 'Alter unbekannt') . ')');
             return $cached;
         }
 
@@ -5496,22 +5346,9 @@ private function SyncRecentGridExportArchiveIfDue(bool $force = false): void
         return max(0, min($endA, $endB) - max($startA, $startB));
     }
 
-    private function LearnNightConsumptionInternal(bool $force = false): float
+    private function LearnNightConsumptionInternal(): float
     {
         $fallback = max(0.0, $this->ReadPropertyFloat('FallbackNightConsumptionKWh'));
-
-        // Das vollständige Lernen über alle Archivnächte ist vergleichsweise teuer.
-        // Im Automatikbetrieb maximal alle 6 Stunden neu lernen; manuelles
-        // "Nachtverbrauch neu lernen" verwendet $force=true und umgeht den Cache.
-        if (!$force) {
-            $cachedTs = (int)$this->GetBuffer('NightConsumptionLearnTs');
-            $learned = max(0.0, $this->ReadAttributeFloat('LearnedNightKWh'));
-            if ($cachedTs > 0 && (time() - $cachedTs) < 21600 && $learned > 0.05) {
-                $this->DebugLog('Nachtverbrauch', 'Cache ' . round((time() - $cachedTs) / 60) . ' min | ' . round($learned, 3) . ' kWh');
-                return $learned;
-            }
-        }
-
         $varID = $this->ReadPropertyInteger('HousePowerVariable');
 
         if ($varID <= 0 || !@IPS_VariableExists($varID)) {
@@ -5568,7 +5405,6 @@ private function SyncRecentGridExportArchiveIfDue(bool $force = false): void
             if ($learned > 0.05) {
                 $source = 'Letzter Lernwert – nur ' . count($samples) . '/' . $minimumSamples . ' gültige Nächte';
                 $this->WriteAttributeString('NightLearningSource', $source);
-                $this->SetBuffer('NightConsumptionLearnTs', (string)time());
                 $this->DebugLog('NightConsumption', $source, 0);
                 return $learned;
             }
@@ -5605,7 +5441,6 @@ private function SyncRecentGridExportArchiveIfDue(bool $force = false): void
         $learned = 0.75 * $weightedAvg + 0.25 * $median;
 
         $this->WriteAttributeFloat('LearnedNightKWh', $learned);
-        $this->SetBuffer('NightConsumptionLearnTs', (string)time());
         $this->WriteAttributeInteger('NightSampleCount', count($filtered));
         $source = 'Archiv gelernt – ' . count($filtered) . ' gültige Nächte';
         $this->WriteAttributeString('NightLearningSource', $source);
@@ -5617,7 +5452,6 @@ private function SyncRecentGridExportArchiveIfDue(bool $force = false): void
     {
         $this->WriteAttributeString('NightLearningSource', $source);
         $this->WriteAttributeInteger('NightSampleCount', $samples);
-        $this->SetBuffer('NightConsumptionLearnTs', (string)time());
         $this->DebugLog('NightConsumption', $source . ', Wert ' . round($fallback, 3) . ' kWh', 0);
         return $fallback;
     }
@@ -6971,17 +6805,14 @@ private function SyncRecentGridExportArchiveIfDue(bool $force = false): void
     }
 
 
-    private function RenderFeedInStatisticsHTML(bool $refreshArchive = true): string
+    private function RenderFeedInStatisticsHTML(): string
     {
         // Archiv und detaillierte Laufhistorie zusammenführen. FeedInStatisticsJSON enthält
         // Start/Ende/PlanKey der realen Automatikläufe und darf nicht ignoriert werden, nur
         // weil bereits einzelne Archivpunkte existieren. Detaillierte JSON-Läufe haben
         // Vorrang; Archivdaten ergänzen nur ältere, noch nicht enthaltene Fenster.
-        $archiveStats = [];
-        if ($refreshArchive && $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1) {
-            $archiveStats = $this->ReadFeedInStatisticsFromArchive();
-            if (!is_array($archiveStats)) $archiveStats = [];
-        }
+        $archiveStats = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1 ? $this->ReadFeedInStatisticsFromArchive() : [];
+        if (!is_array($archiveStats)) $archiveStats = [];
         $jsonStats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
         if (!is_array($jsonStats)) $jsonStats = [];
         $stats = []; $seenRuns = [];
@@ -7014,13 +6845,10 @@ private function SyncRecentGridExportArchiveIfDue(bool $force = false): void
         // Statistikzeitraum direkt aus dem Archiv der konfigurierten Netzvariable
         // rekonstruiert. Dadurch verschwinden alte, fehlerhafte JSON-Tageswerte
         // automatisch und Gesamt/Automatik basieren auf derselben Netz-Messgröße.
-        if ($refreshArchive) {
-            $archiveDaily = $this->GetGridExportDailyFromArchive($first, min(time(), strtotime('+1 day', $last)));
-            foreach ($archiveDaily as $day => $kWh) {
-                if (!isset($totalDaily[$day]) || !is_array($totalDaily[$day])) $totalDaily[$day] = ['kWh'=>0.0,'eur'=>0.0];
-                $totalDaily[$day]['kWh'] = max(0.0, (float)$kWh);
-            }
-            $this->WriteAttributeString('GridExportDailyJSON', json_encode($totalDaily));
+        $archiveDaily = $this->GetGridExportDailyFromArchive($first, min(time(), strtotime('+1 day', $last)));
+        foreach ($archiveDaily as $day => $kWh) {
+            if (!isset($totalDaily[$day]) || !is_array($totalDaily[$day])) $totalDaily[$day] = ['kWh'=>0.0,'eur'=>0.0];
+            $totalDaily[$day]['kWh'] = max(0.0, (float)$kWh);
         }
 
         $makeRow=function(int $ts) use($autoByDay,$totalDaily): array {$key=date('Y-m-d',$ts);$a=$autoByDay[$key]??['kWh'=>0,'eur'=>0,'target'=>0,'windows'=>0];$t=$totalDaily[$key]??['kWh'=>0,'eur'=>0];$otherK=max(0.0,(float)$t['kWh']-(float)$a['kWh']);$otherE=max(0.0,(float)$t['eur']-(float)$a['eur']);return ['label'=>date('d',$ts),'weekLabel'=>['So','Mo','Di','Mi','Do','Fr','Sa'][(int)date('w',$ts)].' '.date('d.m.',$ts),'date'=>date('d.m.Y',$ts),'autoKWh'=>round((float)$a['kWh'],3),'autoEUR'=>round((float)$a['eur'],3),'otherKWh'=>round($otherK,3),'otherEUR'=>round($otherE,3),'targetKWh'=>round((float)$a['target'],3),'windows'=>(int)$a['windows']];};
