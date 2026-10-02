@@ -154,6 +154,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('LastUpdate', 'Letzte Aktualisierung', '', 100);
         $this->RegisterVariableString('WatchdogLastRun', 'Watchdog letzter Lauf', '', 101);
         $this->RegisterVariableInteger('WatchdogCounter', 'Watchdog Zähler', '', 102);
+        $this->RegisterVariableInteger('WatchdogBusySkips', 'Watchdog übersprungen', '', 103);
         $this->RegisterVariableString('StatusText', 'Optimierungsstatus', '', 110);
         $this->RegisterVariableString('OverviewHTML', 'Übersicht', '~HTMLBox', 120);
         $this->RegisterVariableString('PVForecastChartHTML', 'PV-Prognose Diagramm', '~HTMLBox', 150);
@@ -256,7 +257,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('PVForecastRetryTimer', 0, 'SBO_RefreshPVForecastRetry($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVCalibrationTimer', 0, 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('ControlTimer', 0, 'SBO_ControlTimerTick($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ManualRecalculateWorker', 0, 'SBO_RunManualRecalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('FullRefreshWorker', 0, 'SBO_RunFullRefresh($_IPS[\'TARGET\']);');
         $this->RegisterTimer('DeferredDebugRebuildTimer', 0, 'SBO_DeferredDebugRebuild($_IPS[\'TARGET\']);');
@@ -1723,27 +1724,37 @@ class SmartBatteryOptimizer extends IPSModule
         }
     }
 
+    public function ControlTimerTick()
+    {
+        // Dieser Heartbeat liegt bewusst VOR dem Control-Semaphore. Damit zeigt er
+        // echte Timer-Ausloesungen und nicht nur erfolgreich gestartete Control-Laeufe.
+        $now = time();
+        SetValue($this->GetIDForIdent('WatchdogLastRun'), date('d.m.Y H:i:s', $now));
+        $watchdogCounterID = $this->GetIDForIdent('WatchdogCounter');
+        SetValue($watchdogCounterID, GetValueInteger($watchdogCounterID) + 1);
+
+        if ($this->ReadPropertyBoolean('DebugMode')) {
+            $lastWatchdogLogTs = $this->ReadAttributeInteger('WatchdogLastLogTs');
+            if (($now - $lastWatchdogLogTs) >= 60) {
+                $this->WriteAttributeInteger('WatchdogLastLogTs', $now);
+                $this->SetActionFeedback('Watchdog Tick – ControlTimer ausgeloest (15 s).');
+            }
+        }
+
+        $this->Control();
+    }
+
     public function Control()
     {
         // Timer and recalculation must not interleave AlphaESS command sequences.
         $lock = 'SBO_Control_' . $this->InstanceID;
-        if (!IPS_SemaphoreEnter($lock, 1)) return;
+        if (!IPS_SemaphoreEnter($lock, 1)) {
+            $skipID = $this->GetIDForIdent('WatchdogBusySkips');
+            SetValue($skipID, GetValueInteger($skipID) + 1);
+            return;
+        }
         try {
             $now = time();
-
-            // Sichtbare Watchdog-Diagnose: wird bei jedem ControlTimer-Durchlauf aktualisiert.
-            SetValue($this->GetIDForIdent('WatchdogLastRun'), date('d.m.Y H:i:s', $now));
-            $watchdogCounterID = $this->GetIDForIdent('WatchdogCounter');
-            SetValue($watchdogCounterID, GetValueInteger($watchdogCounterID) + 1);
-
-            // Im Debug-Modus maximal einmal pro Minute einen Heartbeat in die Aktionsliste schreiben.
-            if ($this->ReadPropertyBoolean('DebugMode')) {
-                $lastWatchdogLogTs = $this->ReadAttributeInteger('WatchdogLastLogTs');
-                if (($now - $lastWatchdogLogTs) >= 60) {
-                    $this->WriteAttributeInteger('WatchdogLastLogTs', $now);
-                    $this->SetActionFeedback('Watchdog aktiv – ControlTimer läuft (15 s).');
-                }
-            }
 
             $this->TrackTotalGridExport();
             $priceLock = $this->UpdateFeedInPriceLock();

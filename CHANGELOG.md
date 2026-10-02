@@ -1,3 +1,9 @@
+# SmartBatteryOptimizer v1.10.22
+
+- Watchdog-Diagnose getrennt: `Watchdog Zähler` zählt jetzt echte 15-s-Timer-Ticks vor dem Control-Lock.
+- Neue Variable `Watchdog übersprungen` zählt Timer-Ticks, bei denen `Control()` wegen eines laufenden vorherigen Durchgangs nicht starten konnte.
+- ControlTimer ruft jetzt `ControlTimerTick()` auf; damit lässt sich Timerstillstand von blockierter Steuerlogik eindeutig unterscheiden.
+
 # Changelog
 
 ## 1.10.21 (Build 192)
