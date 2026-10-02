@@ -1,3 +1,10 @@
+## 1.10.27 (Build 198)
+
+- Zentrale Scheduler-Architektur updatefest gemacht: Der seit fruehen Versionen vorhandene `ControlTimer` mit `SBO_Control()` ist wieder der einzige periodische 15-s-Taktgeber.
+- Scheduler-Heartbeat und Faelligkeitspruefung laufen direkt ueber `Control()`, daher ist keine Migration eines bestehenden Timer-Callbacks mehr noetig.
+- `FullRefreshWorker` bleibt kompatibel mit dem bestehenden Callback `SBO_RunFullRefresh()` und verarbeitet bei Bedarf interne Scheduler-Auftraege.
+- `SchedulerTick()` bleibt nur noch als Kompatibilitaets-Alias erhalten.
+
 ## 1.10.26 (Build 197)
 - Zentraler Scheduler bereinigt: ein periodischer 15-s-Taktgeber (`ControlTimer`) und ein One-Shot-Worker fuer langsame Aufgaben.
 - Scheduler-Diagnose: `Scheduler letzter Lauf`, `Scheduler Zähler` und `Scheduler Status` mit den naechsten Faelligkeiten.

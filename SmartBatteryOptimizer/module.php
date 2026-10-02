@@ -256,9 +256,9 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('PVForecastRetryTimer', 0, 'SBO_RefreshPVForecastRetry($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVCalibrationTimer', 0, 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('ControlTimer', 0, 'SBO_SchedulerTick($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ManualRecalculateWorker', 0, 'SBO_RunManualRecalculate($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('FullRefreshWorker', 0, 'SBO_RunScheduledTask($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('FullRefreshWorker', 0, 'SBO_RunFullRefresh($_IPS[\'TARGET\']);');
         $this->RegisterTimer('DeferredDebugRebuildTimer', 0, 'SBO_DeferredDebugRebuild($_IPS[\'TARGET\']);');
     }
 
@@ -493,7 +493,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetBuffer('SchedulerForceRefresh', '1');
         }
 
-        $currentModuleVersion = '1.10.26';
+        $currentModuleVersion = '1.10.27';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – zentraler Scheduler aktualisiert beim nächsten Tick ...');
@@ -618,7 +618,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.26',
+            'moduleVersion' => '1.10.27',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1047,6 +1047,17 @@ class SmartBatteryOptimizer extends IPSModule
     public function RunFullRefresh()
     {
         $this->SetTimerInterval('FullRefreshWorker', 0);
+
+        // Bestandskompatibilitaet: Dieser Worker besitzt in bereits vorhandenen
+        // Instanzen seit fruehen Versionen den Callback SBO_RunFullRefresh().
+        // Liegt ein Scheduler-Auftrag vor, wird er hier abgearbeitet. Dadurch
+        // muessen vorhandene Timer-Skripte bei Modulupdates nicht migriert werden.
+        $schedulerJob = json_decode($this->GetBuffer('SchedulerTask'), true);
+        if (is_array($schedulerJob) && !empty($schedulerJob['type'])) {
+            $this->RunScheduledTask();
+            return;
+        }
+
         $this->SetActionFeedback('Alles aktualisieren: Anzeigen, Prognosen und Diagramme werden aktualisiert ...');
         try {
             // Bewusst KEIN erneutes Lernen aus dem Archiv. Vorhandene Lernwerte und
@@ -1102,15 +1113,9 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function SchedulerTick()
     {
-        $now = time();
-        $lastRunID = (int)@$this->GetIDForIdent('SchedulerLastRun');
-        if ($lastRunID > 0) SetValue($lastRunID, date('d.m.Y H:i:s', $now));
-        $counterID = (int)@$this->GetIDForIdent('SchedulerCounter');
-        if ($counterID > 0) SetValue($counterID, ((int)GetValue($counterID)) + 1);
-
-        // Der periodische Timer bleibt bewusst kurz. Die eigentliche Steuerpruefung
-        // laeuft synchron; lange Provider-/Archivarbeiten werden nur als One-Shot-
-        // Worker eingereiht.
+        // Kompatibilitaets-Alias fuer eventuell noch vorhandene alte Aufrufe.
+        // Der zentrale 15-s-Taktgeber ist wieder der seit fruehen Versionen
+        // vorhandene ControlTimer mit SBO_Control().
         $this->Control();
     }
 
@@ -1909,6 +1914,16 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function Control()
     {
+        // Zentraler Scheduler-Heartbeat. Der seit fruehen Versionen vorhandene
+        // ControlTimer ruft SBO_Control() alle 15 Sekunden auf. Dadurch bleibt
+        // diese Architektur auch bei bestehenden Instanzen updatefest, weil kein
+        // Timer-Callback migriert werden muss.
+        $schedulerNow = time();
+        $lastRunID = (int)@$this->GetIDForIdent('SchedulerLastRun');
+        if ($lastRunID > 0) SetValue($lastRunID, date('d.m.Y H:i:s', $schedulerNow));
+        $counterID = (int)@$this->GetIDForIdent('SchedulerCounter');
+        if ($counterID > 0) SetValue($counterID, ((int)GetValue($counterID)) + 1);
+
         // Timer and recalculation must not interleave AlphaESS command sequences.
         $lock = 'SBO_Control_' . $this->InstanceID;
         if (!IPS_SemaphoreEnter($lock, 1)) {

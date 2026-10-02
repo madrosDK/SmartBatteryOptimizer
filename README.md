@@ -1,4 +1,4 @@
-> Version 1.10.26 / Build 197: Scheduler auf einen zentralen 15-s-Taktgeber bereinigt; alte Watchdog-Diagnose und externes Scheduler-Skript werden entfernt.
+> Version 1.10.27 / Build 198: Zentraler 15-s-Scheduler updatefest ueber den bestehenden ControlTimer/SBO_Control; Worker ebenfalls bestandskompatibel.
 > Version 1.10.25 / Build 196: Zentraler 15-s-Scheduler prueft alle Aufgaben; langsame Abrufe laufen separat als One-Shot-Worker.
 > Version 1.10.24 / Build 195: ControlTimer-Callback bei Updates auf bewaehrten v1.10.18-Stand repariert.
 
