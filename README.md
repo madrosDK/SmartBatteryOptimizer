@@ -1,4 +1,4 @@
-> Version 1.10.29 / Build 200: Timerstruktur wieder wie in v1.10.10/v1.10.18 mit unabhängigen internen Modul-Timern; kein zentraler Scheduler.
+> Version 1.10.30 / Build 201: Timerstruktur unverändert; automatische Timerläufe auf kurze Cache-/Istwert-Pfade optimiert, damit die 15-Sekunden-Steuerung nicht durch Archiv- oder Providerarbeit blockiert wird.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 

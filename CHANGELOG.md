@@ -1,3 +1,14 @@
+## 1.10.30 (Build 201)
+- Timerstruktur aus v1.10.29 unverändert beibehalten; Optimierung ausschließlich an den Laufzeiten der Timerfunktionen.
+- `ControlTimer` bleibt alle 15 Sekunden extrem kurz: keine Archivabfragen, keine Statistik-/Highcharts-Neuberechnung mehr im Steuerpfad.
+- `RefreshTimer` arbeitet als schneller Cache-Lauf: kein Nachtverbrauchslernen, keine Provider-Abfrage und keine Statistikberechnung; nur Preis-/Planlogik und planrelevante Anzeigen.
+- Nachtverbrauch wird im Automatikbetrieb maximal alle 6 Stunden vollständig aus dem Archiv neu gelernt; manuelles Neulernen umgeht den Cache.
+- `PVActualTimer` aktualisiert nur Ist-/Diagrammdaten und verwendet für historische Tage RAM-Caches; keine Plan- oder Providerberechnung mehr.
+- Netzarchiv für die Statistik wird nur noch stündlich für gestern/heute synchronisiert; dazwischen werden die laufend gemessenen Tageswerte verwendet.
+- `PVCalibrationTimer` behält das konfigurierbare Messintervall, führt Archivverdichtung und Diagnose aber höchstens einmal pro Minute aus.
+- Abgeschlossene PV- und Verbrauchstage werden im RAM gecacht, damit ihre Archivwerte nicht bei jedem Diagrammaufbau erneut gelesen werden.
+- Debug protokolliert Laufzeiten von `RefreshTimer` und `PVActualTimer`, damit Blockierer leichter erkennbar sind.
+
 ## 1.10.29 (Build 200)
 - Timerstruktur vollständig auf den bewährten Stand aus v1.10.10/v1.10.18 zurückgestellt.
 - `ControlTimer` läuft wieder unabhängig alle 15 Sekunden.
