@@ -257,7 +257,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('PVForecastRetryTimer', 0, 'SBO_RefreshPVForecastRetry($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVActualTimer', 0, 'SBO_RefreshPVActual($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PVCalibrationTimer', 0, 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
-        $this->RegisterTimer('ControlTimer', 0, 'SBO_ControlTimerTick($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ManualRecalculateWorker', 0, 'SBO_RunManualRecalculate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('FullRefreshWorker', 0, 'SBO_RunFullRefresh($_IPS[\'TARGET\']);');
         $this->RegisterTimer('DeferredDebugRebuildTimer', 0, 'SBO_DeferredDebugRebuild($_IPS[\'TARGET\']);');
@@ -480,7 +480,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.21';
+        $currentModuleVersion = '1.10.23';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -576,7 +576,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.06',
+            'moduleVersion' => '1.10.23',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1724,28 +1724,24 @@ class SmartBatteryOptimizer extends IPSModule
         }
     }
 
-    public function ControlTimerTick()
+    public function Control()
     {
-        // Dieser Heartbeat liegt bewusst VOR dem Control-Semaphore. Damit zeigt er
-        // echte Timer-Ausloesungen und nicht nur erfolgreich gestartete Control-Laeufe.
-        $now = time();
-        SetValue($this->GetIDForIdent('WatchdogLastRun'), date('d.m.Y H:i:s', $now));
+        // Heartbeat bewusst VOR dem Semaphore: bestehende Instanzen besitzen
+        // weiterhin den historischen Timer-Callback SBO_Control(). Dadurch zeigt
+        // diese Diagnose echte ControlTimer-Ausloesungen auch nach Modulupdates.
+        $nowHeartbeat = time();
+        SetValue($this->GetIDForIdent('WatchdogLastRun'), date('d.m.Y H:i:s', $nowHeartbeat));
         $watchdogCounterID = $this->GetIDForIdent('WatchdogCounter');
         SetValue($watchdogCounterID, GetValueInteger($watchdogCounterID) + 1);
 
         if ($this->ReadPropertyBoolean('DebugMode')) {
             $lastWatchdogLogTs = $this->ReadAttributeInteger('WatchdogLastLogTs');
-            if (($now - $lastWatchdogLogTs) >= 60) {
-                $this->WriteAttributeInteger('WatchdogLastLogTs', $now);
-                $this->SetActionFeedback('Watchdog Tick – ControlTimer ausgeloest (15 s).');
+            if (($nowHeartbeat - $lastWatchdogLogTs) >= 60) {
+                $this->WriteAttributeInteger('WatchdogLastLogTs', $nowHeartbeat);
+                $this->SetActionFeedback('Watchdog aktiv – ControlTimer/Control() wurde aufgerufen.');
             }
         }
 
-        $this->Control();
-    }
-
-    public function Control()
-    {
         // Timer and recalculation must not interleave AlphaESS command sequences.
         $lock = 'SBO_Control_' . $this->InstanceID;
         if (!IPS_SemaphoreEnter($lock, 1)) {

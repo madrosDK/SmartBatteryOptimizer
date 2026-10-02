@@ -1,3 +1,10 @@
+# SmartBatteryOptimizer v1.10.23
+
+- ControlTimer-Callback auf den bewährten Aufruf `SBO_Control()` zurückgestellt. Bestehende IP-Symcon-Instanzen behalten ihren bereits registrierten Timer-Callback bei Updates; dadurch konnte die in v1.10.22 neu eingeführte `ControlTimerTick()`-Diagnose bei Bestandsinstanzen nicht greifen.
+- Watchdog-Zeitstempel und Watchdog-Zähler werden jetzt direkt am Anfang von `Control()` und damit vor dem Semaphore aktualisiert. So misst die Diagnose echte Timer-/Control-Aufrufe auch auf bestehenden Instanzen.
+- **Watchdog übersprungen** zählt weiterhin nur Aufrufe, die am Control-Semaphore scheitern.
+- Interne Versionsstände `AppliedModuleVersion` und Datenexport auf 1.10.23 vereinheitlicht.
+
 # SmartBatteryOptimizer v1.10.22
 
 - Watchdog-Diagnose getrennt: `Watchdog Zähler` zählt jetzt echte 15-s-Timer-Ticks vor dem Control-Lock.
