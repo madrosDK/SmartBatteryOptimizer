@@ -476,7 +476,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Nach Installation bzw. jedem Modulupdate genau einmal einen vollständigen
         // Refresh außerhalb von ApplyChanges anstoßen. Die Versionsprüfung gehört
         // hierher, damit sie unabhängig vom Debug-Modus zuverlässig ausgeführt wird.
-        $currentModuleVersion = '1.10.18';
+        $currentModuleVersion = '1.10.20';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -2137,6 +2137,51 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeString('GridExportDailyJSON', json_encode($days));
     }
 
+    private function GetGridExportDailyFromArchive(int $startTs, int $endTs): array
+    {
+        $archiveID = $this->FindArchive();
+        $varID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
+        if ($archiveID <= 0 || $varID <= 0 || !@IPS_VariableExists($varID) || $endTs <= $startTs) return [];
+
+        $values = @AC_GetLoggedValues($archiveID, $varID, $startTs, $endTs, 0);
+        if (!is_array($values) || count($values) === 0) return [];
+        $values = array_reverse($values);
+
+        $prev = @AC_GetLoggedValues($archiveID, $varID, 0, $startTs - 1, 1);
+        if (is_array($prev) && count($prev) > 0) {
+            array_unshift($values, ['TimeStamp' => $startTs, 'Value' => $prev[0]['Value']]);
+        } elseif ((int)$values[0]['TimeStamp'] > $startTs) {
+            array_unshift($values, ['TimeStamp' => $startTs, 'Value' => $values[0]['Value']]);
+        }
+
+        $invert = $this->ReadPropertyBoolean('PVCalibrationFeedInInvert');
+        $dailyWh = [];
+        $count = count($values);
+        for ($i = 0; $i < $count; $i++) {
+            $segStart = max($startTs, (int)$values[$i]['TimeStamp']);
+            $segEnd = ($i + 1 < $count) ? min($endTs, (int)$values[$i + 1]['TimeStamp']) : $endTs;
+            if ($segEnd <= $segStart) continue;
+            $raw = (float)$values[$i]['Value'];
+            $exportW = max(0.0, $invert ? -$raw : $raw);
+            if ($exportW <= 0.0) continue;
+
+            // Segmente über Mitternacht sauber auf die einzelnen Kalendertage verteilen.
+            $cursor = $segStart;
+            while ($cursor < $segEnd) {
+                $nextMidnight = strtotime('tomorrow 00:00:00', $cursor);
+                $pieceEnd = min($segEnd, $nextMidnight);
+                $day = date('Y-m-d', $cursor);
+                if (!isset($dailyWh[$day])) $dailyWh[$day] = 0.0;
+                $dailyWh[$day] += $exportW * (($pieceEnd - $cursor) / 3600.0);
+                $cursor = $pieceEnd;
+            }
+        }
+
+        $result = [];
+        foreach ($dailyWh as $day => $wh) $result[$day] = max(0.0, $wh / 1000.0);
+        return $result;
+    }
+
     private function FinishMeasuredFeedInRun(bool $completed, string $reason): void
     {
         $key = $this->ReadAttributeString('ActiveFeedInPlanKey');
@@ -2338,10 +2383,12 @@ class SmartBatteryOptimizer extends IPSModule
                     // Force-Refresh umgeht diesen Cache weiterhin bewusst.
                     if (!$forceProviders && is_array($cachedSurface) && $cacheAge >= 0 && $cacheAge < 3600 && is_array($cachedSurface['hours'] ?? null)) {
                         $fsHours = $cachedSurface['hours'];
+                        $fromCache = true;
                         $this->DebugLog('Forecast.Solar', $name . ' | Cache ' . round($cacheAge / 60, 1) . ' min | kein API-Aufruf');
                     } elseif (!$forceProviders && $retryAfterTs > time()) {
                         if (is_array($cachedSurface) && is_array($cachedSurface['hours'] ?? null)) {
                             $fsHours = $cachedSurface['hours'];
+                            $fromCache = true;
                             $this->DebugLog('Forecast.Solar', $name . ' | Rate-Limit bis ' . date('H:i:s', $retryAfterTs) . ' | Cache verwendet');
                         } else {
                             throw new Exception('Forecast.Solar Rate-Limit aktiv bis ' . date('d.m.Y H:i:s', $retryAfterTs) . '; kein Flächen-Cache vorhanden.');
@@ -2351,14 +2398,19 @@ class SmartBatteryOptimizer extends IPSModule
                             $fsHours = $this->FetchForecastSolarSurface($lat, $lon, $tilt, $azimuth, $kwp, $name);
                             $this->ForecastDiagnosticStep('Forecast.Solar ENDE | ' . $name);
                     }
-                    $forecastSolarCache[$key] = [
-                        'savedAt' => time(),
-                        'name' => $name,
-                        'kwp' => $kwp,
-                        'tilt' => $tilt,
-                        'azimuth' => $azimuth,
-                        'hours' => $fsHours
-                    ];
+                    // Den Cache-Zeitstempel nur nach einem echten Live-Abruf erneuern.
+                    // Beim Lesen aus dem Cache muss savedAt unverändert bleiben, sonst
+                    // wird der Eintrag bei jedem Rechenlauf künstlich wieder "frisch".
+                    if (!$fromCache && is_array($fsHours)) {
+                        $forecastSolarCache[$key] = [
+                            'savedAt' => time(),
+                            'name' => $name,
+                            'kwp' => $kwp,
+                            'tilt' => $tilt,
+                            'azimuth' => $azimuth,
+                            'hours' => $fsHours
+                        ];
+                    }
                 } catch (Throwable $e) {
                     // Bei Rate-Limit/temporärem Fehler niemals nur die andere Fläche verwenden.
                     // Eine vorhandene, höchstens 6 h alte Flächenprognose darf als Ersatz dienen.
@@ -2512,6 +2564,32 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         $this->WriteAttributeString('PVCalibrationJSON', json_encode($calibration));
+
+        // Forecast.Solar-Plausibilitätsprüfung: liefert die Quelle für morgen
+        // praktisch 0 kWh, während mindestens eine andere aktive Quelle klar positive
+        // Energie prognostiziert, darf Forecast.Solar für diesen Prognosetag nicht in
+        // die Gewichtung eingehen. Die Quelle bleibt konfiguriert und wird beim nächsten
+        // Abruf automatisch wieder berücksichtigt, sobald plausible Daten vorliegen.
+        if ($useForecastSolar && count($sourceHours['forecastsolar']) > 0) {
+            $tomorrowKey = date('Y-m-d', strtotime('tomorrow'));
+            $sumTomorrow = static function(array $hours) use ($tomorrowKey): float {
+                $sum = 0.0;
+                foreach ($hours as $ts => $value) {
+                    if (date('Y-m-d', (int)$ts) === $tomorrowKey) $sum += max(0.0, (float)$value);
+                }
+                return $sum;
+            };
+            $fsTomorrow = $sumTomorrow($sourceHours['forecastsolar']);
+            $otherTomorrow = 0.0;
+            if ($useOpenMeteo && count($sourceHours['openmeteo']) > 0) $otherTomorrow = max($otherTomorrow, $sumTomorrow($sourceHours['openmeteo']));
+            if ($usePVNode && count($sourceHours['pvnode']) > 0) $otherTomorrow = max($otherTomorrow, $sumTomorrow($sourceHours['pvnode']));
+            if ($fsTomorrow <= 0.01 && $otherTomorrow > 0.5) {
+                $sourceHours['forecastsolar'] = [];
+                $forecastSolarSurfaceStatus[] = 'Forecast.Solar verworfen: morgen 0,00 kWh unplausibel, andere Quelle liefert ' . number_format($otherTomorrow, 2, ',', '.') . ' kWh.';
+                $this->SetActionFeedback('Prognose: Forecast.Solar verworfen – morgen 0,00 kWh unplausibel.');
+                $this->DebugLog('Forecast.Solar', 'Für morgen verworfen: 0,00 kWh bei gleichzeitig ' . round($otherTomorrow, 3) . ' kWh aus anderer Quelle.', 0);
+            }
+        }
 
         $availableSources = [];
         if ($useOpenMeteo && count($sourceHours['openmeteo']) > 0) $availableSources[] = 'openmeteo';
@@ -5722,6 +5800,17 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
 
+        // Netzbezug / Netzeinspeisung für reale Einspeisestatistik sicher archivieren.
+        $gridVarID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
+        if ($gridVarID > 0 && @IPS_VariableExists($gridVarID)) {
+            try {
+                if (!AC_GetLoggingStatus($archiveID, $gridVarID)) AC_SetLoggingStatus($archiveID, $gridVarID, true);
+                if (AC_GetAggregationType($archiveID, $gridVarID) !== 0) AC_SetAggregationType($archiveID, $gridVarID, 0);
+            } catch (Throwable $e) {
+                $this->DebugLog('ArchiveStorage', 'Netzbezug/Netzeinspeisung ' . $gridVarID . ': ' . $e->getMessage(), 0);
+            }
+        }
+
         // Ab v1.10.01 werden vorhandene Kalibrierarchive bei Updates niemals pauschal gelöscht.
 
         $feedVars = [
@@ -6672,6 +6761,17 @@ class SmartBatteryOptimizer extends IPSModule
         $autoByDay=[];
         foreach($stats as $r){$ts=(int)($r['start']??$r['end']??0);if($ts<=0)continue;$d=date('Y-m-d',$ts);if(!isset($autoByDay[$d]))$autoByDay[$d]=['kWh'=>0.0,'eur'=>0.0,'target'=>0.0,'windows'=>0];$autoByDay[$d]['kWh']+=max(0.0,(float)($r['deliveredKWh']??0));$autoByDay[$d]['eur']+=(float)($r['revenueEUR']??0);$autoByDay[$d]['target']+=max(0.0,(float)($r['targetKWh']??0));$autoByDay[$d]['windows']++;}
         $dates=array_unique(array_merge(array_keys($autoByDay),array_keys($totalDaily),[date('Y-m-d')])); sort($dates); $first=strtotime($dates[0].' 00:00:00'); $last=strtotime(end($dates).' 00:00:00');
+
+        // Die kWh der Tages-Gesamteinspeisung werden für den gesamten sichtbaren
+        // Statistikzeitraum direkt aus dem Archiv der konfigurierten Netzvariable
+        // rekonstruiert. Dadurch verschwinden alte, fehlerhafte JSON-Tageswerte
+        // automatisch und Gesamt/Automatik basieren auf derselben Netz-Messgröße.
+        $archiveDaily = $this->GetGridExportDailyFromArchive($first, min(time(), strtotime('+1 day', $last)));
+        foreach ($archiveDaily as $day => $kWh) {
+            if (!isset($totalDaily[$day]) || !is_array($totalDaily[$day])) $totalDaily[$day] = ['kWh'=>0.0,'eur'=>0.0];
+            $totalDaily[$day]['kWh'] = max(0.0, (float)$kWh);
+        }
+
         $makeRow=function(int $ts) use($autoByDay,$totalDaily): array {$key=date('Y-m-d',$ts);$a=$autoByDay[$key]??['kWh'=>0,'eur'=>0,'target'=>0,'windows'=>0];$t=$totalDaily[$key]??['kWh'=>0,'eur'=>0];$otherK=max(0.0,(float)$t['kWh']-(float)$a['kWh']);$otherE=max(0.0,(float)$t['eur']-(float)$a['eur']);return ['label'=>date('d',$ts),'weekLabel'=>['So','Mo','Di','Mi','Do','Fr','Sa'][(int)date('w',$ts)].' '.date('d.m.',$ts),'date'=>date('d.m.Y',$ts),'autoKWh'=>round((float)$a['kWh'],3),'autoEUR'=>round((float)$a['eur'],3),'otherKWh'=>round($otherK,3),'otherEUR'=>round($otherE,3),'targetKWh'=>round((float)$a['target'],3),'windows'=>(int)$a['windows']];};
         $sumRows=function(array $rows): array {$sum=['autoKWh'=>0.0,'autoEUR'=>0.0,'otherKWh'=>0.0,'otherEUR'=>0.0];foreach($rows as $row)foreach($sum as $k=>$_)$sum[$k]+=(float)$row[$k];return $sum;};
         $monthNames=[1=>'Januar',2=>'Februar',3=>'März',4=>'April',5=>'Mai',6=>'Juni',7=>'Juli',8=>'August',9=>'September',10=>'Oktober',11=>'November',12=>'Dezember']; $months=[];

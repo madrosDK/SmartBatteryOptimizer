@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.20 (Build 191)
+
+- Forecast.Solar: Cache-Zeitstempel wird nur noch nach echtem Live-Abruf erneuert; Cache-Lesen verlängert die Gültigkeit nicht mehr künstlich.
+- Forecast.Solar: 0,00-kWh-Prognosen für morgen werden verworfen, wenn eine andere aktive Quelle gleichzeitig eine plausible positive Prognose liefert. Die verbleibenden Quellen werden automatisch neu gewichtet.
+- Einspeise-Statistik: Tages-Gesamteinspeisung wird für alle angezeigten Tage direkt aus dem Archiv der konfigurierten Netzbezug-/Netzeinspeisungsvariable rekonstruiert. Alte fehlerhafte Tages-kWh werden dadurch beim Rendern ersetzt.
+- Die konfigurierte Vorzeichen-Invertierung der Netzvariable wird auch bei der historischen Archivberechnung berücksichtigt.
+
+## 1.10.19 (Build 190)
+- Netzbezug-/Netzeinspeisungsvariable wird beim ApplyChanges automatisch im IP-Symcon Archive Control aktiviert, falls Logging noch aus ist.
+- Aggregation der Netzvariable wird für die Einspeise-Statistik auf Standard/Rohwertbasis gesetzt, damit die Tagesintegration zuverlässig aus dem Archiv berechnet werden kann.
+
 ## 1.10.18 (Build 189)
 - Verbindliche Einspeisepläne: Innerhalb der +/-10-%-Toleranz bleibt der komplette Plan unverändert, einschließlich geplanter Energiemenge und Zeitfenster.
 - Erst bei einer Abweichung von mehr als 10 % zur aktuell freigegebenen Energiemenge wird der verbindliche Plan angepasst.
