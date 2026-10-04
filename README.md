@@ -1,18 +1,3 @@
-
-### v1.10.26 / Build 197
-- Zyklische Aktualisierung auf einen zentralen versteckten IP-Symcon ScriptTimer umgestellt.
-- Der Scheduler läuft alle 15 Sekunden und steuert Preise/Optimierung, PV-Prognose, PV-Istwerte/Grafiken, PV-Kalibrierung und Control nach den konfigurierten Intervallen.
-- Die bisherigen periodischen Modul-Timer werden deaktiviert, damit alte/defekte Timerzustände bestehender Instanzen die Aktualisierung nicht mehr blockieren.
-- Provider-Caches bleiben unverändert bestehen; häufige Variablenaktualisierungen verursachen daher keine unnötigen API-Abfragen.
-
-## Version 1.10.26 / Build 197 – stabile direkte Timeraktualisierung
-
-- `Preise / Optimierung aktualisieren` berechnet im eingestellten Intervall auch die abhängigen Modulvariablen, den Einspeiseplan und alle relevanten Anzeigen neu.
-- `PV-Prognose aktualisieren` prüft Provider/Cache und aktualisiert danach Prognose-, Reserve-, Plan- und Anzeigevariablen.
-- `PV-Istwerte / PV-Grafik aktualisieren` aktualisiert Istwerte, abhängige Variablen und Diagramme mit dem gespeicherten Forecast.
-- Der 15-Sekunden-Steuertimer überwacht zusätzlich alle drei Intervalle. Überfällige Läufe werden automatisch nachgeholt, falls ein einzelnes IP-Symcon-Timerereignis nach einem Modulupdate nicht auslöst.
-- Provider-Caches bleiben aktiv; ein Variablen-Refresh erzwingt daher nicht automatisch einen externen API-Abruf.
-
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
 Die PV-Auto-Korrektur verwendet keine Stundenfaktoren mehr. Der Faktor bleibt bis zum vollständigen Lernzeitraum 1,000 und wird danach rollierend aus den neuesten gültigen Lerntagen des IP-Symcon-Archivs berechnet. Änderungen am Lernzeitraum werden aus dem Archiv neu ausgewertet.
@@ -30,7 +15,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.24 / Build 197**
+**1.10.04 / Build 175**
 
 ## Neu in 1.2.3
 
@@ -453,7 +438,7 @@ Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig sc
 
 ## Einspeiseplanung mit Lastprofil (v1.9.48)
 
-Bei der Preis-Einspeisung wird der AlphaESS-Dispatch immer mit der konfigurierten **Max. Einspeise-/Entladeleistung** ausgeführt. Für die rechnerisch erwartete Netzeinspeisung wird davon ausschließlich der prognostizierte Eigenverbrauch aus dem stündlichen Lastprofil abgezogen. Das separate Netzeinspeiselimit samt Sicherheitsabstand begrenzt die nächtliche Preis-Einspeiseplanung nicht.
+Bei der Preis-Einspeisung wird die theoretische Batterie-/Wechselrichterleistung nicht mehr 1:1 als mögliche Netzeinspeisung angesetzt. Für den jeweiligen Zeitpunkt wird das gelernte stündliche Lastprofil abgezogen. Zusätzlich werden die konfigurierte maximale Entladeleistung und die effektive Netzeinspeisegrenze berücksichtigt.
 
 Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und dem Lastprofil eine neue Restlaufzeit berechnet. Die AlphaESS Dispatch Time wird auf diese Restlaufzeit zuzüglich 30 % Sicherheitsreserve gesetzt.
 
