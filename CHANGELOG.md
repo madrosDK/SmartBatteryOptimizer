@@ -1,5 +1,12 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.07 / Build 178
+- Ausschließlich die Balkenbreitenlogik der Einspeise-Statistik angepasst.
+- Hauptbalken sind jetzt relativ zur Kategoriebreite begrenzt und dadurch optisch ähnlich schlank wie im Diagramm „Verbrauch / gelerntes Lastprofil“.
+- Gelbe Erlös-Overlays bleiben schmaler als die Hauptbalken.
+- Die Breiten bleiben responsive und schrumpfen bei kleinerer Diagrammbreite automatisch mit.
+- Farben, Tooltip, Achsen, Serieninhalte und Statistikberechnung unverändert.
+
 ## v1.10.06 / Build 177
 - Einspeise-Statistik übernimmt ausschließlich die responsive Balkenbreitenlogik aus „Verbrauch / Gelerntes Lastprofil“.
 - Feste/maximale Pixelbreiten entfernt; Balkenbreite folgt jetzt `groupPadding`/`pointPadding` des Referenzdiagramms.
