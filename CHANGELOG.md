@@ -1,5 +1,11 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.06 / Build 177
+- Einspeise-Statistik übernimmt ausschließlich die responsive Balkenbreitenlogik aus „Verbrauch / Gelerntes Lastprofil“.
+- Feste/maximale Pixelbreiten entfernt; Balkenbreite folgt jetzt `groupPadding`/`pointPadding` des Referenzdiagramms.
+- Gelbe Erlös-Overlays verwenden wie das Ist-Overlay des Referenzdiagramms `pointPadding: 0.20`.
+- Farben, Serienzuordnung, Tooltip, Achsen und Statistikberechnung unverändert.
+
 ## v1.10.05 / Build 176
 - Einspeise-Statistik: Balkenbreiten wieder an die frühere Wochen-/Monatsdarstellung angepasst.
 - Hauptbalken: Woche maximal 54 px, Monat maximal 12 px.
