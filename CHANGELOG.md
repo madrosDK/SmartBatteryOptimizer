@@ -1,5 +1,12 @@
 # SmartBatteryOptimizer Changelog
 
+## v1.10.05 / Build 176
+- Einspeise-Statistik: Balkenbreiten wieder an die frühere Wochen-/Monatsdarstellung angepasst.
+- Hauptbalken: Woche maximal 54 px, Monat maximal 12 px.
+- Gelbe Erlös-Overlays verbreitert: Woche maximal 40 px, Monat maximal 9 px.
+- Breiten sind nicht mehr starr (`pointWidth`), sondern responsive (`maxPointWidth`): bei schmalerem Diagramm werden die Balken automatisch schmäler.
+- Keine Änderung an Statistikberechnung, Archivdaten oder Einspeiseplanung.
+
 ## v1.10.04 / Build 175
 - Einspeise-Statistik: Tages-Gesamteinspeisung wird direkt aus dem Archiv der Netzleistungsvariable zeitintegriert.
 - Der alte fortgeschriebene `GridExportDailyJSON`-Zähler wird für die kWh-Auswertung nicht mehr bevorzugt und dient nur noch als Fallback, wenn für einen Tag keine Archivdaten vorhanden sind.
