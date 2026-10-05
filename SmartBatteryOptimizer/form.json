@@ -851,8 +851,29 @@
         },
         {
             "type": "Button",
-            "caption": "Verbrauchsprofil neu lernen",
-            "onClick": "SBO_LearnConsumptionProfile($id);"
+            "caption": "Lastprofil neu berechnen (inkl. Archiv)",
+            "onClick": "SBO_RebuildConsumptionProfileFromArchive($id);"
+        },
+        {
+            "type": "PopupButton",
+            "name": "ConsumptionProfileResetPopup",
+            "caption": "Lastprofil zurücksetzen",
+            "popup": {
+                "caption": "Lastprofil zurücksetzen",
+                "closeCaption": "Abbrechen",
+                "items": [
+                    {
+                        "type": "Label",
+                        "caption": "Nur die intern gelernten Lastprofilwerte werden zurückgesetzt. Archivierte Verbrauchsdaten und alle anderen Modul-Daten bleiben unverändert."
+                    }
+                ],
+                "buttons": [
+                    {
+                        "caption": "Zurücksetzen",
+                        "onClick": "SBO_ResetConsumptionProfile($id);"
+                    }
+                ]
+            }
         },
         {
             "type": "Button",

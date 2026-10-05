@@ -1,4 +1,4 @@
-> Version 1.10.42 / Build 213: Ergänzt die Einspeise-Statistik um eine persistente Tagesansicht mit stündlicher Einspeisung und stündlichem Erlös; keine automatischen Statistik-Resets bei Updates.
+> Version 1.10.43 / Build 214: Lastprofil mit eigenem 24-h-Profil je Wochentag, sanfter saisonaler Interpolation, Archiv-Neuberechnung, Autolade-Erkennung und manuellem Lastprofil-Reset.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -17,7 +17,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.42 / Build 213**
+**1.10.43 / Build 214**
 
 ## Neu in 1.2.3
 
@@ -99,11 +99,17 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 
 ## Verbrauchsprofil lernen
 
-Ab Version 1.4.3 lernt das Modul aus der archivierten Variable **Hausverbrauch Leistung (W)** zusätzlich zum Nachtverbrauch ein stündliches Lastprofil. Neuere Tage werden stärker gewichtet; Werktage und Wochenenden werden passend zum Folgetag unterschiedlich gewichtet. Auf die gelernte Prognose kann ein Sicherheitsaufschlag gesetzt werden.
+Das Modul lernt aus der archivierten Variable **Hausverbrauch Leistung (W)** zusätzlich zum Nachtverbrauch ein stündliches Lastprofil.
+
+Ab Version **1.10.43** gibt es für **jeden Wochentag ein eigenes 24-Stunden-Profil**. Zusätzlich werden vier saisonale Stützprofile (Winter, Frühling, Sommer, Herbst) geführt. Zwischen diesen Stützpunkten wird mit einem sanften Verlauf interpoliert, sodass es an Saisonwechseln keine sprunghaften Verbrauchsprognosen gibt. Neuere Vergleichstage werden stärker gewichtet als sehr alte Archivtage.
+
+Plötzliche Zusatzlasten ab etwa **6,5 kW**, die mindestens fünf Minuten bestehen und energetisch zu einem Ladevorgang der bekannten 14,4-kWh-Fahrzeugbatterie passen, werden als Autoladung erkannt. Diese Zusatzenergie wird beim Lernen aus dem Grundlastprofil herausgerechnet; der tatsächliche Verbrauch im Archiv und im Ist-Diagramm bleibt unverändert.
 
 Für die Einspeiseentscheidung wird die PV-Prognose des nächsten Tages zeitgleich mit dem erwarteten Eigenverbrauch verrechnet. Nur der erwartete PV-Überschuss kann zum Wiederaufladen des Speichers verwendet werden. Die Einspeisung wird deshalb so begrenzt, dass der konfigurierte **Ziel-SoC nach dem nächsten PV-Tag** erreichbar bleibt und der Nacht-/Eigenverbrauch berücksichtigt ist.
 
-Das Verbrauchsprofil wird höchstens alle sechs Stunden neu aus dem Archiv aufgebaut. Über **Verbrauchsprofil neu lernen** kann die Berechnung jederzeit manuell erzwungen werden.
+Der normale Lernlauf aktualisiert nur die vorhandenen aktuellen Saison-/Wochentag-Slots. Über **Lastprofil neu berechnen (inkl. Archiv)** kann das komplette vorhandene Verbrauchsarchiv rückwirkend ausgewertet werden. Der Wiederaufbau läuft in kleinen Blöcken über den bestehenden Modul-Worker, damit die übrigen Modul-Timer nicht durch einen langen Archivlauf blockiert werden.
+
+**Lastprofil zurücksetzen** entfernt ausschließlich die intern gelernten Lastprofilwerte. Verbrauchsarchive und alle anderen Modul-Daten bleiben erhalten. Es erfolgt niemals ein automatischer Lastprofil-Reset bei einem Modulupdate.
 
 ## Preisdiagramm über 24 Stunden
 
@@ -405,7 +411,7 @@ Bei einem echten Versionswechsel des Moduls wird nach `ApplyChanges()` automatis
 Im Konfigurationsformular gibt es zusätzlich den Button `ALLES AKTUALISIEREN`. Er startet denselben vollständigen Ablauf jederzeit manuell und läuft über einen Worker-Timer, damit der Button nicht auf externe Provider warten muss. Der Fortschritt und der Abschluss werden in `Letzte manuelle Aktion` angezeigt.
 
 ### 1.9.14 – Aktualisieren ohne erneutes Archiv-Lernen
-Der automatische Lauf nach einem Modulupdate und der Button `ALLES AKTUALISIEREN` lernen Nachtverbrauch und Verbrauchsprofil nicht mehr neu aus dem Archiv. Die bereits gespeicherten Lernwerte bleiben unverändert. Aktualisiert werden die aktuellen externen Daten/Preise, die daraus abhängige aktuelle Planung sowie alle Werte, HTMLBoxen und Highcharts-Anzeigen. Die separaten Buttons `Nur Nachtverbrauch neu lernen` und `Verbrauchsprofil neu lernen` bleiben die einzigen manuellen Funktionen, die diese Lernwerte gezielt neu aus dem Archiv bestimmen.
+Der automatische Lauf nach einem Modulupdate und der Button `ALLES AKTUALISIEREN` lernen Nachtverbrauch und Verbrauchsprofil nicht mehr neu aus dem Archiv. Die bereits gespeicherten Lernwerte bleiben unverändert. Aktualisiert werden die aktuellen externen Daten/Preise, die daraus abhängige aktuelle Planung sowie alle Werte, HTMLBoxen und Highcharts-Anzeigen. Die separaten Funktionen `Nur Nachtverbrauch neu lernen` und `Lastprofil neu berechnen (inkl. Archiv)` bleiben die manuellen Funktionen, die diese Lernwerte gezielt neu aus dem Archiv bestimmen.
 
 ### 1.9.15 – PV-Reset setzt auch Prognoseanbieter-Gewichtung zurück
 `PV-Kalibrierung / Auto-Faktoren zurücksetzen` löscht jetzt zusätzlich die gelernte Anbietergewichtung und deren Fehlerhistorie. Alle aktuell aktivierten Prognosequellen erhalten unmittelbar eine neutrale Gleichgewichtung (bei drei Quellen je 33,3 %). Die Historie muss ebenfalls gelöscht werden, da die Gewichte sonst bei der nächsten Berechnung sofort wieder aus den alten Prognosefehlern rekonstruiert würden.

@@ -1,3 +1,12 @@
+## 1.10.43 (Build 214)
+- **Lastprofil erweitert:** Eigenes 24-Stunden-Profil für jeden Wochentag statt nur eines gemeinsamen Stundenprofils.
+- **Saisonabhängiges Lernen mit sanftem Verlauf:** Winter, Frühling, Sommer und Herbst werden als Stützprofile gelernt und per Cosinus-Interpolation weich ineinander überführt.
+- **Archiv-Neuberechnung:** Neuer Button `Lastprofil neu berechnen (inkl. Archiv)` wertet alle verfügbaren abgeschlossenen Verbrauchstage rückwirkend aus. Die Verarbeitung erfolgt blockweise über den bestehenden Modul-Worker.
+- **Autolade-Erkennung:** Plötzliche Zusatzlasten ab 6,5 kW mit mindestens fünf Minuten Dauer und plausibler Energie für die bekannte 14,4-kWh-Fahrzeugbatterie werden aus dem Grundlastprofil herausgerechnet. Archiv- und Istwerte bleiben unverändert.
+- **Lastprofil zurücksetzen:** Neuer bestätigter Reset löscht ausschließlich intern gelernte Lastprofilwerte. Verbrauchsarchive und andere Modul-Daten werden nicht verändert.
+- Das Lastprofil-Diagramm verwendet beim Blättern für jeden Tag das passende Wochentags-/Saisonprofil.
+- Keine sonstigen Funktionsbereiche wurden geändert; insbesondere werden keine Daten bei Updates automatisch zurückgesetzt oder entfernt.
+
 ## 1.10.42 (Build 213)
 - **Einspeise-Statistik um Tagesansicht erweitert:** Neben Woche und Monat steht jetzt `Tag` zur Verfügung.
 - Die Tagesansicht zeigt 24 Stunden mit Einspeisung und Erlös je Stunde; Blau = außerhalb Automatik, Grün = während Automatik, gelbe Überlagerung = jeweiliger Erlös.
