@@ -1,4 +1,4 @@
-> Version 1.10.32 / Build 203: Einspeise-Statistik korrigiert – Tages-Gesamteinspeisung ausschließlich zeitintegriert aus dem Archiv der Netzleistungsvariable; Automatikanteil einmalig abgezogen; historische Erlöse auf die korrigierten kWh umgerechnet.
+> Version 1.10.33 / Build 204: Nacht-Einspeisung korrigiert – „Maximale Netzeinspeisung“ ist das Netz-Ziel; der gelernte Eigenverbrauch wird beim WR-Dispatch berücksichtigt, begrenzt durch „Max. Einspeise-/Entladeleistung“. Der Sicherheitsabstand zur PV-Netzgrenze beeinflusst die Preis-Einspeisung nicht.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -438,11 +438,17 @@ Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig sc
 Über **Gespeicherte Modul-Daten als JSON exportieren** werden alle internen Lern-, Kalibrierungs-, Prognose-, Cache-, Preis-, Plan- und Statusattribute sowie die aktuellen Modulvariablen in eine JSON-Datei geschrieben. Die Datei liegt unter `user/SmartBatteryOptimizer/` im IP-Symcon-Kernelverzeichnis. API-Schlüssel werden nicht exportiert. Historische Rohwerte der referenzierten IP-Symcon-Variablen bleiben im normalen IP-Symcon-Archiv und werden nicht dupliziert.
 
 
-## Einspeiseplanung mit Lastprofil (v1.9.48)
+## Einspeiseplanung mit Lastprofil (v1.10.33)
 
-Bei der Preis-Einspeisung wird der AlphaESS-Dispatch immer mit der konfigurierten **Max. Einspeise-/Entladeleistung** ausgeführt. Für die rechnerisch erwartete Netzeinspeisung wird davon ausschließlich der prognostizierte Eigenverbrauch aus dem stündlichen Lastprofil abgezogen. Das separate Netzeinspeiselimit samt Sicherheitsabstand begrenzt die nächtliche Preis-Einspeiseplanung nicht.
+Bei der Preis-Einspeisung ist **Maximale Netzeinspeisung** das gewünschte Netz-Ziel. **Max. Einspeise-/Entladeleistung** ist dagegen die physische Obergrenze für den Batterie-/Wechselrichter-Dispatch. Der prognostizierte Eigenverbrauch aus dem stündlich gelernten Lastprofil wird zum benötigten Dispatch addiert, damit das Netz-Ziel trotz Eigenverbrauch erreicht werden kann. Der Dispatch wird dabei niemals über die konfigurierte Max. Einspeise-/Entladeleistung angehoben.
 
-Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und dem Lastprofil eine neue Restlaufzeit berechnet. Die AlphaESS Dispatch Time wird auf diese Restlaufzeit zuzüglich 30 % Sicherheitsreserve gesetzt.
+Beispiele:
+- Netz-Ziel 10 kW, erwarteter Eigenverbrauch 5 kW, WR-Maximum 20 kW: 15 kW Dispatch, rechnerisch 10 kW Netzeinspeisung.
+- Netz-Ziel 20 kW, erwarteter Eigenverbrauch 5 kW, WR-Maximum 20 kW: 20 kW Dispatch, rechnerisch 15 kW Netzeinspeisung.
+
+Der **Sicherheitsabstand zur Einspeisegrenze** gehört ausschließlich zum PV-/Netzlimit-Schutz. Er wird bei der nächtlichen Preis-Einspeisung nicht vom Netz-Ziel abgezogen.
+
+Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und dem Lastprofil eine neue Restlaufzeit berechnet. Gleichzeitig wird der Dispatch anhand von Netz-Ziel, erwartetem Eigenverbrauch und WR-Maximalleistung neu bestimmt. Die AlphaESS Dispatch Time wird auf diese Restlaufzeit zuzüglich 30 % Sicherheitsreserve gesetzt.
 
 ### PV-Kalibrierung bei Einspeisefaktor 0 % – 1.9.77
 Sobald die konfigurierte **Variable Einspeisefaktor (%)** auf `0 %` steht, wird die PV-Autokalibrierung pausiert. Das gilt sowohl fuer die automatische Preissperre durch **Mindestpreis Einspeisung** als auch fuer eine manuell auf 0 % gesetzte Einspeisefreigabe. Der Sperrzeitraum wird protokolliert; ab Sperrbeginn werden keine PV-Lernintervalle verwendet. Beim Wiederfreigeben beginnt die Integration mit einem neuen Messpunkt, damit kein Intervall ueber die Sperrgrenze hinweg entsteht.

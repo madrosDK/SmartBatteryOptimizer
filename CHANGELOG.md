@@ -1,3 +1,13 @@
+## 1.10.33 (Build 204)
+
+- Nacht-Einspeiseplanung trennt jetzt sauber zwischen **Netz-Ziel** und physischer **Max. Einspeise-/Entladeleistung**.
+- `Maximale Netzeinspeisung` ist das gewünschte Netz-Ziel; der 500-W-Sicherheitsabstand wird bei der Preis-Einspeisung nicht abgezogen.
+- Der erwartete Eigenverbrauch aus dem stündlichen Lastprofil wird zum benötigten Batterie-Dispatch addiert, solange die WR-/Batterie-Maximalleistung dies zulässt.
+- Beispiel: 10 kW Netz-Ziel + 5 kW Last + 20 kW WR-Maximum => 15 kW Dispatch und 10 kW rechnerische Netzeinspeisung.
+- Beispiel: 20 kW Netz-Ziel + 5 kW Last + 20 kW WR-Maximum => 20 kW Dispatch und 15 kW rechnerische Netzeinspeisung.
+- Börsenpreis-Tooltip zeigt Netz-Ziel, WR-Dispatch, erwarteten Eigenverbrauch und rechnerische Netzeinspeisung getrennt.
+- Alte zukünftige Einspeisepläne werden einmalig verworfen und mit der neuen Leistungslogik neu aufgebaut; laufende Einspeisungen bleiben unangetastet.
+
 ## 1.10.32 (Build 203)
 
 - Einspeise-Statistik: Tages-Gesamteinspeisung wird ausschließlich aus dem Archiv der konfigurierten Netzleistungsvariable zeitintegriert.

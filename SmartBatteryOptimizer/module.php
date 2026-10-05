@@ -420,6 +420,24 @@ class SmartBatteryOptimizer extends IPSModule
             }
             $this->WriteAttributeInteger('FeedInPlannerVersion', 4);
         }
+
+        // v1.10.33: Nachtplanung unterscheidet nun sauber zwischen Netz-Ziel und
+        // physischer WR-/Batterie-Maximalleistung. Alte Zukunftsplaene einmalig
+        // verwerfen, damit kein 9,5-kW-/Altplan erhalten bleibt. Laufende
+        // Einspeisungen werden nicht angefasst.
+        if ($this->ReadAttributeInteger('FeedInPlannerVersion') < 5) {
+            if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
+                $this->WriteAttributeString('PlanJSON', '[]');
+                $targetVar = (int)@$this->GetIDForIdent('FeedInTargetEnergy');
+                $deliveredVar = (int)@$this->GetIDForIdent('FeedInDeliveredEnergy');
+                $windowVar = (int)@$this->GetIDForIdent('NextFeedInWindow');
+                if ($targetVar > 0) SetValue($targetVar, 0.0);
+                if ($deliveredVar > 0) SetValue($deliveredVar, 0.0);
+                if ($windowVar > 0) SetValue($windowVar, '-');
+                $this->DebugLog('Einspeiseplan', 'v1.10.33: alten Zukunftsplan verworfen; Netz-Ziel + Lastprofil werden jetzt gegen die WR-Maximalleistung begrenzt.');
+            }
+            $this->WriteAttributeInteger('FeedInPlannerVersion', 5);
+        }
         // Zeitreihen ab 1.9.79 im IP-Symcon Archive Control verwalten.
         // Bestehende JSON-Lerndaten/Statistiken werden beim ersten Lauf einmalig uebernommen.
         $this->EnsureArchiveStorageAndMigration();
@@ -491,7 +509,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.32';
+        $currentModuleVersion = '1.10.33';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -616,7 +634,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.32',
+            'moduleVersion' => '1.10.33',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1876,7 +1894,7 @@ class SmartBatteryOptimizer extends IPSModule
 
                 $consumptionProfile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
                 if (!is_array($consumptionProfile)) $consumptionProfile = ['hourlyKWh'=>array_fill(0,24,0.0)];
-                $powerW = max(0.0, (float)$this->ReadPropertyInteger('MaxDischargePowerW'));
+                $powerW = $this->GetPlannedBatteryPowerW($consumptionProfile, $now);
                 $expectedExportW = $this->GetExpectedGridExportPowerW($consumptionProfile, $now);
                 $remainingKWh = max(0.0, $targetKWh - $deliveredKWh);
 
@@ -4399,6 +4417,7 @@ class SmartBatteryOptimizer extends IPSModule
                 'priceCt' => $p['priceCt'],
                 'marketCt' => $p['marketCt'],
                 'energyKWh' => $energy,
+                'gridTargetW' => $this->GetConfiguredGridFeedInTargetW(),
                 'powerW' => $batteryPowerW,
                 'expectedGridExportW' => $expectedExportKW * 1000.0,
                 'expectedLoadW' => $expectedLoadW,
@@ -4456,6 +4475,7 @@ class SmartBatteryOptimizer extends IPSModule
                     'priceCt' => $p['priceCt'],
                     'marketCt' => $p['marketCt'],
                     'energyKWh' => $energy,
+                    'gridTargetW' => $this->GetConfiguredGridFeedInTargetW(),
                     'powerW' => $batteryPowerW,
                     'expectedGridExportW' => $expectedExportKW * 1000.0,
                     'expectedLoadW' => $expectedLoadW,
@@ -4524,6 +4544,7 @@ class SmartBatteryOptimizer extends IPSModule
                 'priceIntervalStart' => $hourStart,
                 'priceIntervalEnd' => $hourEnd,
                 'energyKWh' => $energy,
+                'gridTargetW' => (float)($first['gridTargetW'] ?? $this->GetConfiguredGridFeedInTargetW()),
                 'powerW' => (float)$first['powerW'],
                 'expectedGridExportW' => (float)$first['expectedGridExportW'],
                 'expectedLoadW' => (float)($first['expectedLoadW'] ?? 0.0),
@@ -4751,6 +4772,7 @@ class SmartBatteryOptimizer extends IPSModule
                     'priceIntervalStart' => (int)($slot['priceIntervalStart'] ?? $slot['start']),
                     'priceIntervalEnd' => $intervalEnd,
                     'energyKWh' => $slotEnergyKWh,
+                    'gridTargetW' => (float)($slot['gridTargetW'] ?? $this->GetConfiguredGridFeedInTargetW()),
                     'powerW' => (float)($slot['powerW'] ?? 0.0),
                     'expectedGridExportW' => $expectedGridExportW,
                     'expectedLoadW' => (float)($slot['expectedLoadW'] ?? 0.0),
@@ -4840,24 +4862,40 @@ class SmartBatteryOptimizer extends IPSModule
         return max(0.0, (float)($hourly[$hour] ?? 0.0)) * 1000.0;
     }
 
+    private function GetConfiguredGridFeedInTargetW(): float
+    {
+        // Das Netz-Ziel stammt aus "Maximale Netzeinspeisung". Der separate
+        // Sicherheitsabstand gehoert ausschliesslich zum PV-/Netzlimit-Schutz und
+        // wird fuer die naechtliche Preis-Einspeisung NICHT abgezogen.
+        return max(0.0, (float)$this->GetRuntimeInteger(
+            'RuntimeGridFeedInLimitW',
+            $this->ReadPropertyInteger('GridFeedInLimitW')
+        ));
+    }
+
     private function GetPlannedBatteryPowerW(array $consumptionProfile, int $timestamp): float
     {
-        // Preis-Einspeiseautomatik: Der AlphaESS-Dispatch wird immer mit der in der
-        // Konfiguration eingestellten "Max. Einspeise-/Entladeleistung" gefahren.
-        // Das separate Netzeinspeiselimit und dessen Sicherheitsabstand gehören zum
-        // PV-/Netzlimit-Schutz und dürfen die nächtliche Preis-Einspeisung nicht begrenzen.
+        // Gewuenschtes Verhalten:
+        //   Netz-Ziel 10 kW + erwartete Last 5 kW + WR max. 20 kW => 15 kW Dispatch, 10 kW Netz.
+        //   Netz-Ziel 20 kW + erwartete Last 5 kW + WR max. 20 kW => 20 kW Dispatch, 15 kW Netz.
         //
-        // Für die PLANUNG der tatsächlich erreichbaren Netzeinspeisung wird der
-        // prognostizierte Eigenverbrauch anschließend in GetExpectedGridExportPowerW()
-        // vom konfigurierten Dispatch-Wert abgezogen.
-        return max(0.0, (float)$this->ReadPropertyInteger('MaxDischargePowerW'));
+        // Damit bleibt "Maximale Netzeinspeisung" das gewuenschte Netz-Ziel.
+        // Der gelernte Eigenverbrauch wird nur so weit auf den Dispatch aufgeschlagen,
+        // wie es die physische Maximalleistung des Wechselrichters/Batteriesystems erlaubt.
+        $maxBatteryW = max(0.0, (float)$this->ReadPropertyInteger('MaxDischargePowerW'));
+        $gridTargetW = $this->GetConfiguredGridFeedInTargetW();
+        if ($maxBatteryW <= 0.0 || $gridTargetW <= 0.0) return 0.0;
+
+        $loadW = $this->GetExpectedLoadPowerW($consumptionProfile, $timestamp);
+        return min($maxBatteryW, $gridTargetW + $loadW);
     }
 
     private function GetExpectedGridExportPowerW(array $consumptionProfile, int $timestamp): float
     {
+        $gridTargetW = $this->GetConfiguredGridFeedInTargetW();
         $batteryW = $this->GetPlannedBatteryPowerW($consumptionProfile, $timestamp);
         $loadW = $this->GetExpectedLoadPowerW($consumptionProfile, $timestamp);
-        return max(0.0, $batteryW - $loadW);
+        return min($gridTargetW, max(0.0, $batteryW - $loadW));
     }
 
     private function EstimateFeedInDurationSeconds(float $remainingKWh, int $startTs, int $hardEndTs, array $consumptionProfile): int
@@ -7225,7 +7263,8 @@ class SmartBatteryOptimizer extends IPSModule
             $hourTs = $displayStart + $i * 3600;
             $hourBuckets[$hourTs] = [
                 'market' => [], 'price' => [], 'selected' => false, 'reason' => '',
-                'powerW' => 0.0, 'energyKWh' => 0.0
+                'powerW' => 0.0, 'gridTargetW' => 0.0, 'dispatchPowerW' => 0.0,
+                'expectedLoadW' => 0.0, 'expectedGridExportW' => 0.0, 'energyKWh' => 0.0
             ];
         }
 
@@ -7266,7 +7305,11 @@ class SmartBatteryOptimizer extends IPSModule
                     } elseif ($bucket['reason'] === '') {
                         $bucket['reason'] = 'price';
                     }
-                    $bucket['powerW'] = max($bucket['powerW'], (float)($segment['expectedGridExportW'] ?? $segment['powerW'] ?? 0.0));
+                    $bucket['gridTargetW'] = max($bucket['gridTargetW'], (float)($segment['gridTargetW'] ?? $this->GetConfiguredGridFeedInTargetW()));
+                    $bucket['dispatchPowerW'] = max($bucket['dispatchPowerW'], (float)($segment['powerW'] ?? 0.0));
+                    $bucket['expectedLoadW'] = max($bucket['expectedLoadW'], (float)($segment['expectedLoadW'] ?? 0.0));
+                    $bucket['expectedGridExportW'] = max($bucket['expectedGridExportW'], (float)($segment['expectedGridExportW'] ?? 0.0));
+                    $bucket['powerW'] = $bucket['expectedGridExportW'];
                     $bucket['energyKWh'] += max(0.0, (float)($segment['energyKWh'] ?? 0.0)) * $fraction;
                 }
                 unset($bucket);
@@ -7286,6 +7329,10 @@ class SmartBatteryOptimizer extends IPSModule
                 'selected' => $bucket['selected'],
                 'reason' => $bucket['reason'],
                 'powerW' => round($bucket['powerW'], 1),
+                'gridTargetW' => round($bucket['gridTargetW'], 1),
+                'dispatchPowerW' => round($bucket['dispatchPowerW'], 1),
+                'expectedLoadW' => round($bucket['expectedLoadW'], 1),
+                'expectedGridExportW' => round($bucket['expectedGridExportW'], 1),
                 'energyKWh' => round($bucket['energyKWh'], 4)
             ];
         }
@@ -7310,7 +7357,7 @@ class SmartBatteryOptimizer extends IPSModule
             $html .= 'title:{text:null,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff"}},credits:{enabled:false},legend:{enabled:false,itemStyle:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff"},itemHoverStyle:{color:"#ffffff"}},';
             $html .= 'xAxis:{categories:categories,lineColor:"#ffffff",tickColor:"#ffffff",labels:{rotation:-45,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffffff"}}},';
             $html .= 'yAxis:{title:{text:"ct/kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff"}},labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffffff"}},gridLineColor:"rgba(255,255,255,0.18)",plotLines:[{value:0,color:"#ffffff",width:1,zIndex:4},{value:' . json_encode($minimumPrice) . ',color:"#e0a000",width:1,dashStyle:"Dash",zIndex:4,label:{text:"Mindestpreis Einspeisung ' . number_format($minimumPrice, 2, ',', '.') . ' ct",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#ffffff"}}}]},';
-            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff\\"><b>"+r.label+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Leistung: "+Highcharts.numberFormat(r.powerW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
+            $html .= 'tooltip:{useHTML:true,backgroundColor:"rgba(30,30,30,0.96)",borderColor:"#888888",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#ffffff",fontSize:"11px"},formatter:function(){var r=this.point.custom;return "<span style=\\"font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff\\"><b>"+r.label+"</b><br>Börsenpreis: <b>"+Highcharts.numberFormat(r.marketCt,2,",",".")+" ct/kWh</b><br>Berechneter Tarif: "+Highcharts.numberFormat(r.priceCt,2,",",".")+" ct/kWh"+(r.selected?"<br><b>"+(r.reason==="pv_space"?"Speicher für PV freihalten":"Preisoptimierung")+"</b><br>Netz-Ziel: "+Highcharts.numberFormat(r.gridTargetW/1000,2,",",".")+" kW<br>WR-Dispatch: "+Highcharts.numberFormat(r.dispatchPowerW/1000,2,",",".")+" kW<br>Erw. Eigenverbrauch: "+Highcharts.numberFormat(r.expectedLoadW/1000,2,",",".")+" kW<br>Rechnerische Netzeinspeisung: "+Highcharts.numberFormat(r.expectedGridExportW/1000,2,",",".")+" kW<br>Energie: "+Highcharts.numberFormat(r.energyKWh,2,",",".")+" kWh":"")+"</span>";}},';
             $html .= 'plotOptions:{column:{borderWidth:0,groupPadding:0.08,pointPadding:0.03,dataLabels:{enabled:true,crop:false,overflow:"allow",formatter:function(){return Highcharts.numberFormat(this.y,2,",",".")+" ct";},style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",fontWeight:"normal",color:"#ffffff",textOutline:"none"}}}},';
             $html .= 'series:[{name:"Einspeisevergütung",data:market}]';
             $html .= '});}';
