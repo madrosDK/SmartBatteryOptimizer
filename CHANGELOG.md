@@ -1,3 +1,14 @@
+## 1.10.45 (Build 216)
+- Archiv-Neuberechnung des Lastprofils blockiert die regulären Modul-Timer nicht mehr.
+- Archiv-Worker läuft nur noch in kurzen Blöcken mit 5 Sekunden Pause und gibt aktiven Preis-/PV-/Plan-Berechnungen Vorrang.
+- Bestehende Preis-, Diagramm-, PV- und Planungslogik unverändert.
+
+## 1.10.44 (Build 215)
+- **Lastprofil-Neuberechnung sichtbar wirksam:** Beim Klick auf `Lastprofil neu berechnen (inkl. Archiv)` wird sofort aus den jüngsten abgeschlossenen Archivtagen ein echtes stündliches Startprofil erzeugt und gespeichert. Der vollständige Archivlauf erweitert dieses Profil anschließend blockweise.
+- **Kein 45-kWh/24-Fallback trotz vorhandener Daten:** Falls die EV-bereinigte Detailauswertung eines Tages keine verwertbare Stundenkurve liefert, verwendet das Lernen für diesen Tag die bereits bewährte Stundenintegration aus dem Ist-Verbrauchsdiagramm.
+- **Diagnose direkt im Diagramm:** Unter der Überschrift wird nun die aktuell verwendete Lastprofil-Quelle angezeigt, damit sofort erkennbar ist, ob Archivprofil, Startprofil oder Fallback aktiv ist.
+- Keine anderen Funktionsbereiche geändert; bestehende Archive, Statistikwerte, Konfigurationen und Lernwerte werden beim Update nicht gelöscht oder zurückgesetzt.
+
 ## 1.10.43 (Build 214)
 - **Lastprofil erweitert:** Eigenes 24-Stunden-Profil für jeden Wochentag statt nur eines gemeinsamen Stundenprofils.
 - **Saisonabhängiges Lernen mit sanftem Verlauf:** Winter, Frühling, Sommer und Herbst werden als Stützprofile gelernt und per Cosinus-Interpolation weich ineinander überführt.

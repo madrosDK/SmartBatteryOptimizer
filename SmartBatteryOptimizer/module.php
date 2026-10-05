@@ -506,7 +506,7 @@ class SmartBatteryOptimizer extends IPSModule
         if (is_array($rebuildState) && !empty($rebuildState['active'])) {
             // Der bereits bestehende ManualRecalculateWorker wird für den blockweisen
             // Archiv-Wiederaufbau wiederverwendet. Damit ist kein zusätzlicher Modul-Timer nötig.
-            $this->SetTimerInterval('ManualRecalculateWorker', 1000);
+            $this->SetTimerInterval('ManualRecalculateWorker', 5000);
         }
 
         // Reste der zwischenzeitlichen Scheduler-/Watchdog-Versionen entfernen.
@@ -543,7 +543,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.43';
+        $currentModuleVersion = '1.10.45';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -668,7 +668,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.43',
+            'moduleVersion' => '1.10.45',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1616,6 +1616,23 @@ class SmartBatteryOptimizer extends IPSModule
                 return;
             }
 
+            // Sofort ein echtes stündliches Profil aus den jüngsten abgeschlossenen
+            // Archivtagen erzeugen. Der vollständige Archivlauf läuft danach weiter und
+            // ersetzt/ergänzt dieses Startprofil. So bleibt die Anzeige nach dem Klick
+            // niemals bis zum Worker-Abschluss auf dem gleichmäßigen Tages-Fallback stehen.
+            $seed = $this->BuildImmediateConsumptionProfileSeed($archiveID, $varID);
+            if (is_array($seed)) {
+                $this->WriteAttributeString('ConsumptionProfileJSON', json_encode($seed));
+                $this->WriteAttributeInteger('ConsumptionProfileUpdated', time());
+                $this->WriteAttributeString('ConsumptionLearningSource', (string)($seed['source'] ?? 'Archiv gelernt'));
+                $chartID = (int)@$this->GetIDForIdent('ConsumptionProfileChartHTML');
+                if ($chartID > 0) SetValue($chartID, $this->RenderConsumptionProfileChartHTML($seed));
+                $forecastID = (int)@$this->GetIDForIdent('ConsumptionForecastTomorrow');
+                if ($forecastID > 0) SetValue($forecastID, round((float)($seed['dailyKWh'] ?? 0.0), 3));
+                $statusID = (int)@$this->GetIDForIdent('ConsumptionLearningStatus');
+                if ($statusID > 0) SetValue($statusID, (string)($seed['source'] ?? 'Archiv gelernt'));
+            }
+
             $state = [
                 'active' => true,
                 'archiveID' => $archiveID,
@@ -1627,11 +1644,14 @@ class SmartBatteryOptimizer extends IPSModule
                 'accumulator' => $this->CreateConsumptionAccumulator()
             ];
             $this->WriteAttributeString('ConsumptionArchiveRebuildStateJSON', json_encode($state));
-            $this->SetTimerInterval('ManualRecalculateWorker', 1000);
+            // Der Archiv-Wiederaufbau darf die normalen Modul-Timer nicht verdrängen.
+            // Deshalb bewusst mit Pause zwischen den kurzen Worker-Läufen starten.
+            $this->SetTimerInterval('ManualRecalculateWorker', 5000);
 
             $text = 'Lastprofil-Neuberechnung aus Archiv gestartet: '
                 . date('d.m.Y', $firstDay) . ' bis ' . date('d.m.Y', $lastDay)
-                . '. Autoladungen werden erkannt und aus dem Grundprofil ausgeschlossen.';
+                . '. ' . (is_array($seed) ? 'Stündliches Startprofil sofort erzeugt; ' : '')
+                . 'Autoladungen werden erkannt und aus dem Grundprofil ausgeschlossen.';
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
             echo $text;
@@ -1665,12 +1685,22 @@ class SmartBatteryOptimizer extends IPSModule
                 throw new Exception('ungültiger Wiederaufbau-Zustand');
             }
 
-            // Archivtage bewusst in kleinen Blöcken verarbeiten, damit die übrigen
-            // Modul-Timer nicht durch eine lange Komplettauswertung blockiert werden.
+            // Normale Preis-/PV-/Plan-Aktualisierungen haben immer Vorrang.
+            // Wenn gerade ein regulärer Rechenlauf aktiv ist, macht der Archiv-Worker
+            // nur Pause und versucht es später erneut.
+            if ($this->ReadAttributeInteger('CalculationLockUntil') > time()) {
+                $this->SetTimerInterval('ManualRecalculateWorker', 5000);
+                return;
+            }
+
+            // Archivtage nur in sehr kurzen Blöcken verarbeiten. Die vorherige Kombination
+            // aus 1-s-Timer und bis zu 4 s Rechenzeit konnte die übrigen Modul-Timer praktisch
+            // dauerhaft verdrängen. Maximal zwei Tage bzw. ca. 0,75 s pro Lauf lassen
+            // ausreichend Luft für Preis-, PV- und Diagramm-Aktualisierungen.
             $processed = 0;
             $chunkStarted = microtime(true);
-            while ($cursorDay <= $lastDay && $processed < 7 && (microtime(true) - $chunkStarted) < 4.0) {
-                $day = $this->GetHourlyConsumptionForLearningDay($archiveID, $varID, $cursorDay);
+            while ($cursorDay <= $lastDay && $processed < 2 && (microtime(true) - $chunkStarted) < 0.75) {
+                $day = $this->GetConsumptionDayForProfileLearning($archiveID, $varID, $cursorDay);
                 if (is_array($day)) {
                     $this->AddConsumptionDayToAccumulator($acc, $cursorDay, $day);
                 }
@@ -1690,7 +1720,7 @@ class SmartBatteryOptimizer extends IPSModule
                     . (int)($acc['validDays'] ?? 0) . ' gültige Tage · '
                     . (int)($acc['evSessions'] ?? 0) . ' Autoladungen erkannt.';
                 $this->SetActionFeedback($text);
-                $this->SetTimerInterval('ManualRecalculateWorker', 1000);
+                $this->SetTimerInterval('ManualRecalculateWorker', 5000);
                 return;
             }
 
@@ -5525,7 +5555,7 @@ class SmartBatteryOptimizer extends IPSModule
 
         for ($age = 1; $age <= $days; $age++) {
             $dayStart = strtotime('-' . $age . ' days 00:00:00');
-            $day = $this->GetHourlyConsumptionForLearningDay($archiveID, $varID, $dayStart);
+            $day = $this->GetConsumptionDayForProfileLearning($archiveID, $varID, $dayStart);
             if (!is_array($day)) continue;
             $this->AddConsumptionDayToAccumulator($acc, $dayStart, $day);
         }
@@ -5942,6 +5972,60 @@ class SmartBatteryOptimizer extends IPSModule
             if (is_array($probe) && count($probe) > 0) return $day;
         }
         return $oldestMonth;
+    }
+
+    private function GetConsumptionDayForProfileLearning(int $archiveID, int $varID, int $dayStart): ?array
+    {
+        // Bevorzugt die EV-bereinigte Detailauswertung. Sollte diese wegen einer
+        // ungewöhnlichen Archivstruktur keine verwertbare Tageskurve liefern, wird
+        // auf dieselbe Stundenintegration zurückgegriffen, die auch im Ist-Diagramm
+        // verwendet wird. Dadurch kann vorhandenes Archiv nicht als leer erscheinen.
+        $day = $this->GetHourlyConsumptionForLearningDay($archiveID, $varID, $dayStart);
+        if (is_array($day)
+            && isset($day['hourlyKWh'])
+            && is_array($day['hourlyKWh'])
+            && count($day['hourlyKWh']) === 24
+            && array_sum(array_map('floatval', $day['hourlyKWh'])) > 0.1
+        ) {
+            return $day;
+        }
+
+        $raw = $this->GetHourlyConsumptionForDay($archiveID, $varID, $dayStart);
+        if (!is_array($raw) || count($raw) !== 24) return null;
+        $daily = array_sum(array_map('floatval', $raw));
+        if (!is_finite($daily) || $daily <= 0.1) return null;
+
+        return [
+            'hourlyKWh' => array_values($raw),
+            'rawHourlyKWh' => array_values($raw),
+            'evSessions' => 0,
+            'evKWh' => 0.0,
+            'learningFallback' => true
+        ];
+    }
+
+    private function BuildImmediateConsumptionProfileSeed(int $archiveID, int $varID): ?array
+    {
+        $configuredDays = max(3, min(90, $this->ReadPropertyInteger('LearningDays')));
+        // Maximal 14 abgeschlossene Tage synchron lesen; der vollständige Archivlauf
+        // folgt blockweise. Zwei Wochen liefern bereits jeden Wochentag mehrfach und
+        // halten den Button trotzdem reaktionsschnell.
+        $seedDays = min(14, $configuredDays);
+        $acc = $this->CreateConsumptionAccumulator();
+        for ($age = 1; $age <= $seedDays; $age++) {
+            $dayStart = strtotime('-' . $age . ' days 00:00:00');
+            $day = $this->GetConsumptionDayForProfileLearning($archiveID, $varID, $dayStart);
+            if (is_array($day)) $this->AddConsumptionDayToAccumulator($acc, $dayStart, $day);
+        }
+
+        if ((int)($acc['validDays'] ?? 0) < 1) return null;
+        $model = $this->FinalizeConsumptionAccumulator($acc);
+        $result = $this->ComposeConsumptionProfileFromModel($model, strtotime('tomorrow 12:00:00'));
+        $result['updated'] = time();
+        $result['archiveRebuild'] = true;
+        $result['immediateSeed'] = true;
+        $result['source'] = 'Archiv-Startprofil – ' . (int)($model['validDays'] ?? 0) . ' Tage; vollständige Archiv-Neuberechnung läuft';
+        return $result;
     }
 
     private function GetHourlyConsumptionForLearningDay(int $archiveID, int $varID, int $dayStart): ?array
@@ -8550,7 +8634,11 @@ class SmartBatteryOptimizer extends IPSModule
                 'rows'=>$rows
             ];
         }
+        $profileSource = trim((string)($profile['source'] ?? $this->ReadAttributeString('ConsumptionLearningSource')));
         $html='<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Aktualisiert: ' . date('d.m.Y H:i:s') . '</span><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
+        if ($profileSource !== '') {
+            $html .= '<span style="font-size:11px;color:#bbb">Lastprofil: ' . htmlspecialchars($profileSource, ENT_QUOTES, 'UTF-8') . '</span><br>';
+        }
         if($highchartsJS==='') return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
         $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px">&#8592;</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px">&#8594;</button><button id="'.$chartId.'_today" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
         $html.='var days='.json_encode($days).',id='.json_encode($chartId).',key='.json_encode('sbo_consumption_selected_day_' . $this->InstanceID).',idx=Math.max(0,days.length-1),chart=null;try{var sd=localStorage.getItem(key);if(sd){for(var si=0;si<days.length;si++){if(days[si].date===sd){idx=si;break;}}}}catch(e){}function e(s){return document.getElementById(id+s)}function draw(){if(days.length){try{localStorage.setItem(key,days[idx].date)}catch(e){}}if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#fff"}},labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; <span style=\"color:#ffe082\">Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b></span>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};e("_today").onclick=function(){var t=new Date(),y=t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0");for(var q=0;q<days.length;q++){if(days[q].date===y){idx=q;break;}}draw()};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';

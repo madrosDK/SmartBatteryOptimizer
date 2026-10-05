@@ -1,4 +1,4 @@
-> Version 1.10.43 / Build 214: Lastprofil mit eigenem 24-h-Profil je Wochentag, sanfter saisonaler Interpolation, Archiv-Neuberechnung, Autolade-Erkennung und manuellem Lastprofil-Reset.
+> Version 1.10.45 / Build 216: Lastprofil-Archiv-Neuberechnung läuft timerfreundlich in kurzen Blöcken und blockiert Preis-/PV-/Diagramm-Aktualisierungen nicht mehr.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -17,7 +17,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.43 / Build 214**
+**1.10.45 / Build 216**
 
 ## Neu in 1.2.3
 
