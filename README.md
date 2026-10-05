@@ -1,4 +1,4 @@
-> Version 1.10.36 / Build 207: Der optionale Netzeinspeise-Energiezähler in kWh ist jetzt auch die bevorzugte Quelle für die laufend tatsächlich eingespeiste Automatikmenge; die Watt-Integration bleibt Fallback.
+> Version 1.10.37 / Build 208: Einspeise-Erlöse außerhalb der Automatik werden mit realen kWh-Zählerdifferenzen und dem archivierten aktuellen Einspeisetarif berechnet; Statistik-Navigation bleibt bei Chart-Refresh erhalten und Statistik/Lastprofil zeigen den Aktualisierungszeitpunkt.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -17,7 +17,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.36 / Build 207**
+**1.10.37 / Build 208**
 
 ## Neu in 1.2.3
 

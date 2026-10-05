@@ -1,3 +1,11 @@
+## 1.10.37 (Build 208)
+
+- Die Variable **Aktueller Einspeisepreis** wird nun zuverlässig aus dem geladenen Tarifraster aktualisiert, mit `ct/kWh`-Profil versehen und automatisch im IP-Symcon-Archiv protokolliert.
+- Erlöse außerhalb der Einspeiseautomatik werden bei vorhandener kWh-Einspeisevariable bevorzugt direkt aus realen Energie-Zählerdifferenzen und dem zeitlich gültigen archivierten Einspeisetarif berechnet.
+- Für historische Zeiträume ohne ausreichende Preis-Historie bleibt die bisherige Erlösbasis als Fallback erhalten; Archivdaten werden nicht gelöscht oder verändert.
+- Die Einspeise-Statistik merkt sich neben Woche/Monat nun auch die konkret ausgewählte Kalenderwoche bzw. den ausgewählten Monat. Ein automatischer HTML-/Chart-Refresh springt dadurch nicht mehr auf die aktuelle Periode zurück.
+- **Einspeise-Statistik** und **Verbrauch / gelerntes Lastprofil** zeigen zusätzlich `Aktualisiert: TT.MM.JJJJ HH:MM:SS`.
+
 ## 1.10.36 (Build 207)
 
 - Die konfigurierte **Netzeinspeisung Energie (kWh)** wird jetzt nicht nur fuer die Tagesstatistik, sondern auch fuer **Tatsaechlich eingespeiste Menge aktuell** verwendet.

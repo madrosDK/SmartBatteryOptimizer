@@ -403,6 +403,8 @@ class SmartBatteryOptimizer extends IPSModule
         // ist funktional aber ab dieser Version die zentrale Preisuntergrenze für JEDE Netzeinspeisung.
         $minimumPriceVarID = @$this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt');
         if ($minimumPriceVarID > 0) @IPS_SetName($minimumPriceVarID, 'Mindestpreis Einspeisung');
+        $currentPriceVarID = (int)@$this->GetIDForIdent('CurrentPrice');
+        if ($currentPriceVarID > 0) @IPS_SetVariableCustomProfile($currentPriceVarID, 'SBO.PriceCt');
         $this->InitializeFeedInFactorMemory();
         $this->EnsurePVSurfaceStableIDs();
 
@@ -529,7 +531,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.36';
+        $currentModuleVersion = '1.10.37';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -654,7 +656,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.36',
+            'moduleVersion' => '1.10.37',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1377,6 +1379,7 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
             $this->ForecastDiagnosticStep('09 Preise START');
             $prices = $this->FetchPrices();
+            $this->UpdateCurrentPriceVariable($prices);
             $this->ForecastDiagnosticStep('10 Preise ENDE');
             $this->DebugLog('Preise', 'Geladene interne Preis-Slots: ' . count($prices));
             $nightForPlan = (float)($forecast['nightConsumptionTomorrowKWh'] ?? $night);
@@ -1807,6 +1810,11 @@ class SmartBatteryOptimizer extends IPSModule
         try {
             $now = time();
 
+            // Aktuellen berechneten Einspeisetarif aus dem geladenen Preisraster
+            // fortlaufend in eine eigene, archivierte Variable schreiben. Damit kann
+            // die Einspeise-Statistik den realen Erlös auch außerhalb der Automatik
+            // zeitgenau aus Energie x Tarif rekonstruieren.
+            $this->UpdateCurrentPriceVariable();
             $this->TrackTotalGridExport();
             $priceLock = $this->UpdateFeedInPriceLock();
             if (!empty($priceLock['blocked'])) {
@@ -2385,6 +2393,126 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         foreach ($daily as $day => $kWh) $daily[$day] = max(0.0, (float)$kWh);
+        return $daily;
+    }
+
+    private function GetGridExportRevenueDailyFromArchive(int $startTs, int $endTs): array
+    {
+        // Eine exakte zeitliche Erlösberechnung ist mit dem kumulativen Einspeise-kWh-
+        // Zähler möglich. Ohne diese Variable bleibt für Alt-/Fallback-Fälle weiterhin
+        // der bisherige GridExportDailyJSON-Erlös verfügbar.
+        $archiveID = $this->FindArchive();
+        $energyVarID = $this->ReadPropertyInteger('GridExportEnergyVariable');
+        $priceVarID = (int)@$this->GetIDForIdent('CurrentPrice');
+        if ($archiveID <= 0 || $energyVarID <= 0 || !@IPS_VariableExists($energyVarID) || $priceVarID <= 0 || $endTs <= $startTs) return [];
+
+        $effectiveEnd = min($endTs, time());
+        if ($effectiveEnd <= $startTs) return [];
+
+        // Preis-Zeitreihe aus dem Archiv lesen. Zusätzlich werden die aktuell geladenen
+        // Preis-Slots verwendet; dadurch kann der laufende Tag bereits unmittelbar nach
+        // einem Update korrekt bewertet werden, auch wenn noch kein Stundenwechsel im
+        // Preisarchiv stattgefunden hat.
+        $pricePoints = [];
+        $prevPrice = @AC_GetLoggedValues($archiveID, $priceVarID, 0, $startTs - 1, 1);
+        if (is_array($prevPrice) && count($prevPrice) > 0) {
+            $pricePoints[$startTs] = (float)$prevPrice[0]['Value'];
+        }
+        $loggedPrices = @AC_GetLoggedValues($archiveID, $priceVarID, $startTs, $effectiveEnd, 0);
+        if (is_array($loggedPrices)) {
+            foreach (array_reverse($loggedPrices) as $row) {
+                $ts = (int)($row['TimeStamp'] ?? 0);
+                if ($ts >= $startTs && $ts <= $effectiveEnd) $pricePoints[$ts] = (float)($row['Value'] ?? 0.0);
+            }
+        }
+        $cachedPrices = json_decode($this->ReadAttributeString('PricesJSON'), true);
+        if (is_array($cachedPrices)) {
+            foreach ($cachedPrices as $p) {
+                $ps = (int)($p['start'] ?? 0); $pe = (int)($p['end'] ?? 0);
+                if ($pe <= $startTs || $ps >= $effectiveEnd || $pe <= $ps) continue;
+                $pricePoints[max($startTs, $ps)] = (float)($p['priceCt'] ?? 0.0);
+            }
+        }
+        if (count($pricePoints) === 0) return [];
+        ksort($pricePoints);
+
+        $energyValues = @AC_GetLoggedValues($archiveID, $energyVarID, $startTs, $effectiveEnd, 0);
+        if (!is_array($energyValues)) $energyValues = [];
+        $energyValues = array_reverse($energyValues);
+        $prevEnergy = @AC_GetLoggedValues($archiveID, $energyVarID, 0, $startTs - 1, 1);
+        if (is_array($prevEnergy) && count($prevEnergy) > 0) {
+            array_unshift($energyValues, ['TimeStamp'=>$startTs, 'Value'=>(float)$prevEnergy[0]['Value']]);
+        } elseif (count($energyValues) > 0 && (int)$energyValues[0]['TimeStamp'] > $startTs) {
+            array_unshift($energyValues, ['TimeStamp'=>$startTs, 'Value'=>(float)$energyValues[0]['Value']]);
+        }
+        if ($effectiveEnd >= time() - 5 && @IPS_VariableExists($energyVarID)) {
+            $lastTs = count($energyValues) > 0 ? (int)$energyValues[count($energyValues)-1]['TimeStamp'] : 0;
+            if ($lastTs < $effectiveEnd) $energyValues[] = ['TimeStamp'=>$effectiveEnd, 'Value'=>(float)GetValue($energyVarID)];
+        }
+        if (count($energyValues) < 2) return [];
+
+        $priceAt = static function(int $ts) use ($pricePoints): ?float {
+            $found = null;
+            foreach ($pricePoints as $pts => $price) {
+                if ((int)$pts > $ts) break;
+                $found = (float)$price;
+            }
+            return $found;
+        };
+        $priceChangeTs = array_map('intval', array_keys($pricePoints));
+        $daily = [];
+
+        for ($i = 1; $i < count($energyValues); $i++) {
+            $t1 = max($startTs, (int)$energyValues[$i-1]['TimeStamp']);
+            $t2 = min($effectiveEnd, (int)$energyValues[$i]['TimeStamp']);
+            if ($t2 <= $t1) continue;
+            $v1 = (float)$energyValues[$i-1]['Value'];
+            $v2 = (float)$energyValues[$i]['Value'];
+            $delta = $v2 - $v1;
+
+            if ($delta < 0.0) {
+                // Tageszähler-/Zählerreset: analog zur kWh-Statistik wird der neue
+                // positive Stand dem Zeitpunkt nach dem Reset zugerechnet.
+                $resetKWh = max(0.0, $v2);
+                if ($resetKWh <= 0.0) continue;
+                $price = $priceAt($t2);
+                $day = date('Y-m-d', $t2);
+                if (!isset($daily[$day])) $daily[$day] = ['kWh'=>0.0, 'pricedKWh'=>0.0, 'eur'=>0.0];
+                $daily[$day]['kWh'] += $resetKWh;
+                if ($price !== null) {
+                    $daily[$day]['pricedKWh'] += $resetKWh;
+                    $daily[$day]['eur'] += $resetKWh * $price / 100.0;
+                }
+                continue;
+            }
+            if ($delta <= 0.0) continue;
+
+            $duration = $t2 - $t1;
+            $breaks = [$t1, $t2];
+            foreach ($priceChangeTs as $pts) if ($pts > $t1 && $pts < $t2) $breaks[] = $pts;
+            $cursor = $t1;
+            while ($cursor < $t2) {
+                $midnight = strtotime('tomorrow 00:00:00', $cursor);
+                if ($midnight > $t1 && $midnight < $t2) $breaks[] = $midnight;
+                $cursor = min($t2, $midnight);
+            }
+            $breaks = array_values(array_unique(array_map('intval', $breaks)));
+            sort($breaks);
+            for ($b = 0; $b < count($breaks)-1; $b++) {
+                $pieceStart = $breaks[$b]; $pieceEnd = $breaks[$b+1];
+                if ($pieceEnd <= $pieceStart) continue;
+                $pieceKWh = $delta * (($pieceEnd - $pieceStart) / $duration);
+                if ($pieceKWh <= 0.0) continue;
+                $day = date('Y-m-d', $pieceStart);
+                if (!isset($daily[$day])) $daily[$day] = ['kWh'=>0.0, 'pricedKWh'=>0.0, 'eur'=>0.0];
+                $daily[$day]['kWh'] += $pieceKWh;
+                $price = $priceAt($pieceStart);
+                if ($price !== null) {
+                    $daily[$day]['pricedKWh'] += $pieceKWh;
+                    $daily[$day]['eur'] += $pieceKWh * $price / 100.0;
+                }
+            }
+        }
         return $daily;
     }
 
@@ -6023,6 +6151,36 @@ class SmartBatteryOptimizer extends IPSModule
         return 0.0;
     }
 
+    private function UpdateCurrentPriceVariable(?array $prices = null): void
+    {
+        if ($prices === null) {
+            $prices = json_decode($this->ReadAttributeString('PricesJSON'), true);
+        }
+        if (!is_array($prices) || count($prices) === 0) return;
+
+        $now = time();
+        $known = false;
+        $priceCt = 0.0;
+        foreach ($prices as $p) {
+            $start = (int)($p['start'] ?? 0);
+            $end = (int)($p['end'] ?? 0);
+            if ($start <= 0 || $end <= $start) continue;
+            if ($now >= $start && $now < $end) {
+                $priceCt = (float)($p['priceCt'] ?? 0.0);
+                $known = true;
+                break;
+            }
+        }
+        if (!$known) return;
+
+        $id = (int)@$this->GetIDForIdent('CurrentPrice');
+        if ($id <= 0) return;
+        $old = (float)GetValue($id);
+        if (abs($old - $priceCt) > 0.00001) {
+            SetValue($id, $priceCt);
+        }
+    }
+
     private function EnsureArchiveStorageAndMigration(): void
     {
         $archiveID = $this->FindArchive();
@@ -6087,6 +6245,24 @@ class SmartBatteryOptimizer extends IPSModule
                 if (!AC_GetLoggingStatus($archiveID, $gridEnergyVarID)) AC_SetLoggingStatus($archiveID, $gridEnergyVarID, true);
             } catch (Throwable $e) {
                 $this->DebugLog('ArchiveStorage', 'Netzeinspeisung Energie (kWh) ' . $gridEnergyVarID . ': ' . $e->getMessage(), 0);
+            }
+        }
+
+        // Den jeweils gültigen berechneten Einspeisetarif ebenfalls archivieren.
+        // Die Einspeise-Statistik kann dadurch reale kWh-Zählerdifferenzen außerhalb
+        // der Automatik zeitgenau mit dem zu diesem Zeitpunkt gültigen Tarif bewerten.
+        $currentPriceID = (int)@$this->GetIDForIdent('CurrentPrice');
+        if ($currentPriceID > 0) {
+            try {
+                if (!AC_GetLoggingStatus($archiveID, $currentPriceID)) AC_SetLoggingStatus($archiveID, $currentPriceID, true);
+                if (AC_GetAggregationType($archiveID, $currentPriceID) !== 0) AC_SetAggregationType($archiveID, $currentPriceID, 0);
+                if (function_exists('AC_SetGraphStatus')) @AC_SetGraphStatus($archiveID, $currentPriceID, false);
+                $recentPrice = @AC_GetLoggedValues($archiveID, $currentPriceID, time() - 86400, time(), 1);
+                if ((!is_array($recentPrice) || count($recentPrice) === 0) && function_exists('AC_AddLoggedValues')) {
+                    @AC_AddLoggedValues($archiveID, $currentPriceID, [['TimeStamp'=>time(), 'Value'=>(float)GetValue($currentPriceID)]]);
+                }
+            } catch (Throwable $e) {
+                $this->DebugLog('ArchiveStorage', 'Aktueller Einspeisepreis ' . $currentPriceID . ': ' . $e->getMessage(), 0);
             }
         }
 
@@ -7036,9 +7212,9 @@ class SmartBatteryOptimizer extends IPSModule
             }
             if (!$duplicate) $stats[]=$r;
         }
-        // GridExportDailyJSON bleibt nur noch als historische Erlös-/Preis-Basis erhalten.
-        // Die kWh-Auswertung der Einspeise-Statistik kommt ausschließlich aus dem Archiv
-        // der konfigurierten Einspeise-Energievariable (kWh); ohne Auswahl aus der Netzleistungsvariable.
+        // GridExportDailyJSON bleibt nur noch als Fallback für ältere Zeiträume erhalten,
+        // für die noch keine archivierte Preis-Zeitreihe existiert. Die kWh-Auswertung
+        // selbst kommt ausschließlich aus dem realen Einspeisearchiv.
         $legacyDaily=json_decode($this->ReadAttributeString('GridExportDailyJSON'),true); if(!is_array($legacyDaily))$legacyDaily=[];
         $autoByDay=[];
         foreach($stats as $r){$ts=(int)($r['start']??$r['end']??0);if($ts<=0)continue;$d=date('Y-m-d',$ts);if(!isset($autoByDay[$d]))$autoByDay[$d]=['kWh'=>0.0,'eur'=>0.0,'target'=>0.0,'windows'=>0];$autoByDay[$d]['kWh']+=max(0.0,(float)($r['deliveredKWh']??0));$autoByDay[$d]['eur']+=max(0.0,(float)($r['revenueEUR']??0));$autoByDay[$d]['target']+=max(0.0,(float)($r['targetKWh']??0));$autoByDay[$d]['windows']++;}
@@ -7047,9 +7223,11 @@ class SmartBatteryOptimizer extends IPSModule
         // Für jeden sichtbaren Tag gilt ausschließlich die zeitintegrierte reale
         // Netzeinspeisung aus dem IP-Symcon-Archiv. Ein fehlender Archivwert bedeutet
         // 0 kWh und fällt NICHT auf einen alten GridExportDailyJSON-Zähler zurück.
-        $archiveDaily = $this->GetGridExportDailyFromArchive($first, min(time(), strtotime('+1 day', $last)));
+        $archiveEnd = min(time(), strtotime('+1 day', $last));
+        $archiveDaily = $this->GetGridExportDailyFromArchive($first, $archiveEnd);
+        $pricedDaily = $this->GetGridExportRevenueDailyFromArchive($first, $archiveEnd);
 
-        $makeRow=function(int $ts) use($autoByDay,$archiveDaily,$legacyDaily): array {
+        $makeRow=function(int $ts) use($autoByDay,$archiveDaily,$pricedDaily,$legacyDaily): array {
             $key=date('Y-m-d',$ts);
             $a=$autoByDay[$key]??['kWh'=>0,'eur'=>0,'target'=>0,'windows'=>0];
             $totalK=max(0.0,(float)($archiveDaily[$key]??0.0));
@@ -7061,15 +7239,24 @@ class SmartBatteryOptimizer extends IPSModule
             $autoE=max(0.0,(float)$a['eur']);
             $otherK=max(0.0,$totalK-$autoK);
 
-            // Historischen Erlös auf die korrigierte kWh-Menge umrechnen. Dazu wird nur
-            // der bisherige durchschnittliche Erlös des Nicht-Automatik-Anteils als
-            // Preisbasis benutzt; die alten JSON-kWh selbst werden niemals angezeigt.
-            $legacy=$legacyDaily[$key]??['kWh'=>0.0,'eur'=>0.0];
-            $legacyTotalK=max(0.0,(float)($legacy['kWh']??0.0));
-            $legacyTotalE=max(0.0,(float)($legacy['eur']??0.0));
-            $legacyOtherK=max(0.0,$legacyTotalK-$autoK);
-            $legacyOtherE=max(0.0,$legacyTotalE-$autoE);
-            $otherE=$legacyOtherK>0.0001 ? ($legacyOtherE/$legacyOtherK)*$otherK : 0.0;
+            // Ab v1.10.37 wird der Gesamt-Erlös eines Tages bevorzugt direkt aus den
+            // realen kWh-Zählerdifferenzen und dem dazu zeitlich gültigen archivierten
+            // Einspeisetarif berechnet. Erst wenn für einen historischen Tag noch nicht
+            // genügend Preis-Historie vorhanden ist, wird auf die alte Erlösbasis zurückgefallen.
+            $priced=$pricedDaily[$key]??null;
+            $pricedKWh=is_array($priced)?max(0.0,(float)($priced['pricedKWh']??0.0)):0.0;
+            $coverageOk=$totalK<=0.0001 || ($pricedKWh+max(0.05,$totalK*0.02) >= $totalK);
+            if($coverageOk && is_array($priced)){
+                $totalE=(float)($priced['eur']??0.0);
+                $otherE=max(0.0,$totalE-$autoE);
+            } else {
+                $legacy=$legacyDaily[$key]??['kWh'=>0.0,'eur'=>0.0];
+                $legacyTotalK=max(0.0,(float)($legacy['kWh']??0.0));
+                $legacyTotalE=max(0.0,(float)($legacy['eur']??0.0));
+                $legacyOtherK=max(0.0,$legacyTotalK-$autoK);
+                $legacyOtherE=max(0.0,$legacyTotalE-$autoE);
+                $otherE=$legacyOtherK>0.0001 ? ($legacyOtherE/$legacyOtherK)*$otherK : 0.0;
+            }
 
             return [
                 'label'=>date('d',$ts),
@@ -7089,9 +7276,9 @@ class SmartBatteryOptimizer extends IPSModule
         for($m=$startMonth;$m<=$endMonth;$m=strtotime('+1 month',$m)){$rows=[];$n=(int)date('t',$m);for($d=1;$d<=$n;$d++)$rows[]=$makeRow(strtotime(date('Y-m-',$m).sprintf('%02d',$d).' 00:00:00'));$months[]=['key'=>date('Y-m',$m),'label'=>$monthNames[(int)date('n',$m)].' '.date('Y',$m),'isCurrent'=>date('Y-m',$m)===date('Y-m'),'rows'=>$rows,'sum'=>$sumRows($rows)];}
         $monday=function(int $ts): int {return strtotime('monday this week',strtotime(date('Y-m-d 12:00:00',$ts)));}; $startWeek=$monday($first); $endWeek=$monday($last); $weeks=[];
         for($w=$startWeek;$w<=$endWeek;$w=strtotime('+7 days',$w)){$rows=[];for($i=0;$i<7;$i++)$rows[]=$makeRow(strtotime('+'.$i.' days',$w));$we=strtotime('+6 days',$w);$weeks[]=['key'=>date('o-W',$w),'label'=>'KW '.date('W',$w).' · '.date('d.m.',$w).' – '.date('d.m.Y',$we),'isCurrent'=>$w===$monday(time()),'rows'=>$rows,'sum'=>$sumRows($rows)];}
-        $highchartsJS=$this->GetHighchartsJavaScript();$id='sbo_feed_stats_'.$this->InstanceID;$html='<div style="font-family:Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#fff;width:100%"><b>Einspeise-Statistik</b><br><span style="font-size:11px">Blau: Einspeisung außerhalb der Automatik · Grün: Einspeisung während der Automatik. Gelb transparente Balken zeigen jeweils überlagert den zugehörigen Erlös.</span><br>';if($highchartsJS==='')return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
+        $highchartsJS=$this->GetHighchartsJavaScript();$id='sbo_feed_stats_'.$this->InstanceID;$html='<div style="font-family:Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#fff;width:100%"><b>Einspeise-Statistik</b><br><span style="font-size:11px">Aktualisiert: ' . date('d.m.Y H:i:s') . '</span><br><span style="font-size:11px">Blau: Einspeisung außerhalb der Automatik · Grün: Einspeisung während der Automatik. Gelb transparente Balken zeigen jeweils überlagert den zugehörigen Erlös.</span><br>';if($highchartsJS==='')return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
         $html.='<div id="'.$id.'" style="display:block;width:100%;max-width:none;min-width:0;height:430px;margin-top:8px;box-sizing:border-box"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px;flex-wrap:wrap"><button id="'.$id.'_prev" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8592;</button><span id="'.$id.'_date" style="min-width:235px;text-align:center;font-weight:bold"></span><button id="'.$id.'_next" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px;padding:3px 12px;cursor:pointer">&#8594;</button><button id="'.$id.'_today" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Heute</button><span style="width:8px"></span><button id="'.$id.'_week" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Woche</button><button id="'.$id.'_month" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;padding:4px 12px;font-weight:bold;cursor:pointer">Monat</button></div><div id="'.$id.'_summary" style="font-size:11px;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
-        $html.='var views={week:'.json_encode($weeks,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',month:'.json_encode($months,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).'},id='.json_encode($id).',store="sbo_feed_stats_view_'.$this->InstanceID.'",mode="month",idx=0,chart=null,resizeObserver=null;try{var sm=localStorage.getItem(store);if(sm==="week"||sm==="month")mode=sm}catch(x){}function e(s){return document.getElementById(id+s)}function f(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}function currentIndex(){var v=views[mode];for(var i=0;i<v.length;i++)if(v[i].isCurrent)return i;return Math.max(0,v.length-1)}function select(m){mode=m;idx=currentIndex();try{localStorage.setItem(store,mode)}catch(x){}draw()}function draw(){var v=views[mode];if(!v.length)return;idx=Math.max(0,Math.min(idx,v.length-1));var m=v[idx],a=[],o=[],ae=[],oe=[],c=[];m.rows.forEach(function(r){c.push(mode==="week"?r.weekLabel:r.label);a.push({y:r.autoKWh,custom:r});o.push({y:r.otherKWh,custom:r});ae.push({y:r.autoEUR,custom:r});oe.push({y:r.otherEUR,custom:r})});chart=Highcharts.chart(e(""),{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{color:"#fff",fontWeight:"normal",fontSize:"10px"}},xAxis:{categories:c,labels:{style:{color:"#fff",fontSize:"10px"}}},yAxis:[{min:0,title:{text:"kWh",style:{color:"#fff"}},labels:{style:{color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,formatter:function(){var r=this.points&&this.points[0]?this.points[0].point.custom:{};return "<b>"+(r.date||"")+"</b><br><span style=\\"color:#2f7ed8\\">Außerhalb Automatik: <b>"+f(r.otherKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.otherEUR,2)+" €</span><br><span style=\\"color:#38a169\\">Während Automatik: <b>"+f(r.autoKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.autoEUR,2)+" €</span><br>Gesamt: <b>"+f(Number(r.autoKWh)+Number(r.otherKWh),2)+" kWh / "+f(Number(r.autoEUR)+Number(r.otherEUR),2)+" €</b>"+(r.targetKWh>0?"<br>Automatik geplant: "+f(r.targetKWh,2)+" kWh":"")}},plotOptions:{column:{borderWidth:0,grouping:false}},series:[{name:"Außerhalb Automatik kWh",data:o,pointPlacement:-0.22,pointPadding:0.16,yAxis:0,zIndex:1},{name:"Außerhalb Automatik Erlös",data:oe,color:"rgba(255,213,79,.38)",pointPlacement:-0.22,pointPadding:0.34,yAxis:1,zIndex:2},{name:"Während Automatik kWh",data:a,color:"#38a169",pointPlacement:0.22,pointPadding:0.16,yAxis:0,zIndex:1},{name:"Während Automatik Erlös",data:ae,color:"rgba(255,213,79,.38)",pointPlacement:0.22,pointPadding:0.34,yAxis:1,zIndex:2}]});e("_date").innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=m.sum;e("_summary").innerHTML=(mode==="week"?"Woche":"Monat")+" · Außerhalb Automatik: <b>"+f(s.otherKWh,2)+" kWh / "+f(s.otherEUR,2)+" €</b> &middot; Während Automatik: <b>"+f(s.autoKWh,2)+" kWh / "+f(s.autoEUR,2)+" €</b> &middot; Gesamt: <b>"+f(Number(s.autoKWh)+Number(s.otherKWh),2)+" kWh / "+f(Number(s.autoEUR)+Number(s.otherEUR),2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=v.length-1;e("_week").disabled=mode==="week";e("_month").disabled=mode==="month"}idx=currentIndex();e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<views[mode].length-1){idx++;draw()}};e("_today").onclick=function(){idx=currentIndex();draw()};e("_week").onclick=function(){select("week")};e("_month").onclick=function(){select("month")};draw();var host=e("");function rf(){if(!chart||!host)return;try{chart.setSize(host.clientWidth||null,null,false);chart.reflow()}catch(x){}}if(typeof ResizeObserver!=="undefined"&&host){resizeObserver=new ResizeObserver(function(){setTimeout(rf,0)});resizeObserver.observe(host);if(host.parentElement)resizeObserver.observe(host.parentElement);setTimeout(rf,50);setTimeout(rf,300)}else if(typeof window!=="undefined"){window.addEventListener("resize",function(){setTimeout(rf,0)});setTimeout(rf,100)}})();</script></div>';return $html;
+        $html.='var views={week:'.json_encode($weeks,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).',month:'.json_encode($months,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).'},id='.json_encode($id).',store="sbo_feed_stats_view_'.$this->InstanceID.'",mode="month",idx=0,chart=null,resizeObserver=null;try{var sm=localStorage.getItem(store);if(sm==="week"||sm==="month")mode=sm}catch(x){}function e(s){return document.getElementById(id+s)}function f(v,n){return Highcharts.numberFormat(Number(v)||0,n,",",".")}function currentIndex(){var v=views[mode];for(var i=0;i<v.length;i++)if(v[i].isCurrent)return i;return Math.max(0,v.length-1)}function restoreIndex(){var v=views[mode],saved="";try{saved=localStorage.getItem(store+"_"+mode+"_key")||""}catch(x){}if(saved){for(var i=0;i<v.length;i++)if(v[i].key===saved)return i}return currentIndex()}function select(m){mode=m;idx=restoreIndex();try{localStorage.setItem(store,mode)}catch(x){}draw()}function draw(){var v=views[mode];if(!v.length)return;idx=Math.max(0,Math.min(idx,v.length-1));try{localStorage.setItem(store+"_"+mode+"_key",v[idx].key)}catch(x){}var m=v[idx],a=[],o=[],ae=[],oe=[],c=[];m.rows.forEach(function(r){c.push(mode==="week"?r.weekLabel:r.label);a.push({y:r.autoKWh,custom:r});o.push({y:r.otherKWh,custom:r});ae.push({y:r.autoEUR,custom:r});oe.push({y:r.otherEUR,custom:r})});chart=Highcharts.chart(e(""),{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{color:"#fff",fontWeight:"normal",fontSize:"10px"}},xAxis:{categories:c,labels:{style:{color:"#fff",fontSize:"10px"}}},yAxis:[{min:0,title:{text:"kWh",style:{color:"#fff"}},labels:{style:{color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},{min:0,opposite:true,title:{text:"€",style:{color:"#ffe082"}},labels:{format:"{value:.2f} €",style:{color:"#ffe082"}},gridLineWidth:0}],tooltip:{shared:true,useHTML:true,formatter:function(){var r=this.points&&this.points[0]?this.points[0].point.custom:{};return "<b>"+(r.date||"")+"</b><br><span style=\\"color:#2f7ed8\\">Außerhalb Automatik: <b>"+f(r.otherKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.otherEUR,2)+" €</span><br><span style=\\"color:#38a169\\">Während Automatik: <b>"+f(r.autoKWh,2)+" kWh</b></span> / <span style=\\"color:#ffe082\\">"+f(r.autoEUR,2)+" €</span><br>Gesamt: <b>"+f(Number(r.autoKWh)+Number(r.otherKWh),2)+" kWh / "+f(Number(r.autoEUR)+Number(r.otherEUR),2)+" €</b>"+(r.targetKWh>0?"<br>Automatik geplant: "+f(r.targetKWh,2)+" kWh":"")}},plotOptions:{column:{borderWidth:0,grouping:false}},series:[{name:"Außerhalb Automatik kWh",data:o,pointPlacement:-0.22,pointPadding:0.16,yAxis:0,zIndex:1},{name:"Außerhalb Automatik Erlös",data:oe,color:"rgba(255,213,79,.38)",pointPlacement:-0.22,pointPadding:0.34,yAxis:1,zIndex:2},{name:"Während Automatik kWh",data:a,color:"#38a169",pointPlacement:0.22,pointPadding:0.16,yAxis:0,zIndex:1},{name:"Während Automatik Erlös",data:ae,color:"rgba(255,213,79,.38)",pointPlacement:0.22,pointPadding:0.34,yAxis:1,zIndex:2}]});e("_date").innerHTML=m.label+(m.isCurrent?" &ndash; Heute":"");var s=m.sum;e("_summary").innerHTML=(mode==="week"?"Woche":"Monat")+" · Außerhalb Automatik: <b>"+f(s.otherKWh,2)+" kWh / "+f(s.otherEUR,2)+" €</b> &middot; Während Automatik: <b>"+f(s.autoKWh,2)+" kWh / "+f(s.autoEUR,2)+" €</b> &middot; Gesamt: <b>"+f(Number(s.autoKWh)+Number(s.otherKWh),2)+" kWh / "+f(Number(s.autoEUR)+Number(s.otherEUR),2)+" €</b>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=v.length-1;e("_week").disabled=mode==="week";e("_month").disabled=mode==="month"}idx=restoreIndex();e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<views[mode].length-1){idx++;draw()}};e("_today").onclick=function(){idx=currentIndex();draw()};e("_week").onclick=function(){select("week")};e("_month").onclick=function(){select("month")};draw();var host=e("");function rf(){if(!chart||!host)return;try{chart.setSize(host.clientWidth||null,null,false);chart.reflow()}catch(x){}}if(typeof ResizeObserver!=="undefined"&&host){resizeObserver=new ResizeObserver(function(){setTimeout(rf,0)});resizeObserver.observe(host);if(host.parentElement)resizeObserver.observe(host.parentElement);setTimeout(rf,50);setTimeout(rf,300)}else if(typeof window!=="undefined"){window.addEventListener("resize",function(){setTimeout(rf,0)});setTimeout(rf,100)}})();</script></div>';return $html;
     }
 
     private function RenderConsumptionProfileChartHTML(array $profile): string
@@ -7132,7 +7319,7 @@ class SmartBatteryOptimizer extends IPSModule
                 'rows'=>$rows
             ];
         }
-        $html='<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
+        $html='<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;color:#fff;width:100%"><b>Verbrauch / gelerntes Lastprofil</b><br><span style="font-size:11px">Aktualisiert: ' . date('d.m.Y H:i:s') . '</span><br><span style="font-size:11px">Stündliche Verbrauchsprognose im Vergleich zum tatsächlichen Verbrauch</span><br>';
         if($highchartsJS==='') return $html.'<div style="margin-top:8px">Highcharts lokal nicht verfügbar.</div></div>';
         $html.='<div id="'.$chartId.'" style="width:100%;height:410px;margin-top:8px"></div><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:4px 0 8px"><button id="'.$chartId.'_prev" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px">&#8592;</button><span id="'.$chartId.'_date" style="min-width:150px;text-align:center;font-weight:bold"></span><button id="'.$chartId.'_next" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:16px;min-width:46px">&#8594;</button><button id="'.$chartId.'_today" type="button" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;min-width:72px;font-weight:bold;padding:4px 12px;cursor:pointer">Heute</button></div><div id="'.$chartId.'_summary" style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:11px;color:#fff;text-align:center"></div><script>'.$highchartsJS.'</script><script>(function(){';
         $html.='var days='.json_encode($days).',id='.json_encode($chartId).',key='.json_encode('sbo_consumption_selected_day_' . $this->InstanceID).',idx=Math.max(0,days.length-1),chart=null;try{var sd=localStorage.getItem(key);if(sd){for(var si=0;si<days.length;si++){if(days[si].date===sd){idx=si;break;}}}}catch(e){}function e(s){return document.getElementById(id+s)}function draw(){if(days.length){try{localStorage.setItem(key,days[idx].date)}catch(e){}}if(!days.length||typeof Highcharts==="undefined")return;var d=days[idx],c=[],f=[],a=[];for(var j=0;j<d.rows.length;j++){var r=d.rows[j];c.push(r.label);f.push(r.forecastKWh);a.push(r.actualKWh)}chart=Highcharts.chart(id,{chart:{type:"column",backgroundColor:"transparent",animation:false,style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"}},title:{text:null},credits:{enabled:false},legend:{itemStyle:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff",fontWeight:"normal"}},xAxis:{categories:c,lineColor:"#fff",tickColor:"#fff",labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff"}}},yAxis:{min:0,title:{text:"kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",color:"#fff"}},labels:{style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"10px",color:"#fff"}},gridLineColor:"rgba(255,255,255,.18)"},tooltip:{shared:true,valueSuffix:" kWh",style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"}},plotOptions:{column:{borderWidth:0,grouping:false,groupPadding:.06,pointPadding:.02}},series:[{name:"Gelerntes Lastprofil",data:f,dataLabels:{enabled:true,formatter:function(){return this.y>=.15?Highcharts.numberFormat(this.y,1,",","."):""},style:{fontFamily:"Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",fontSize:"9px",fontWeight:"normal",color:"#fff",textOutline:"none"}}},{name:"Ist-Verbrauch",data:a,color:"rgba(255,213,79,.38)",pointPadding:.20}]});e("_date").innerHTML=d.label+(idx===days.length-1?" &ndash; Heute":"");e("_summary").innerHTML="Prognose: <b>"+Highcharts.numberFormat(d.forecastTotalKWh,2,",",".")+" kWh</b> &middot; <span style=\"color:#ffe082\">Ist: <b>"+(d.actualTotalKWh===null?"–":Highcharts.numberFormat(d.actualTotalKWh,2,",",".")+" kWh")+"</b></span>";e("_prev").disabled=idx<=0;e("_next").disabled=idx>=days.length-1}function init(){e("_prev").onclick=function(){if(idx>0){idx--;draw()}};e("_next").onclick=function(){if(idx<days.length-1){idx++;draw()}};e("_today").onclick=function(){var t=new Date(),y=t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0");for(var q=0;q<days.length;q++){if(days[q].date===y){idx=q;break;}}draw()};draw()}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else setTimeout(init,0)})();</script></div>';
