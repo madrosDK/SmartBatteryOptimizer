@@ -438,6 +438,23 @@ class SmartBatteryOptimizer extends IPSModule
             }
             $this->WriteAttributeInteger('FeedInPlannerVersion', 5);
         }
+
+        // v1.10.34: Dispatch bleibt strikt auf Netz-Ziel/WR-Maximum begrenzt. Das
+        // Lastprofil reduziert die rechnerisch erreichbare Netzeinspeisung nur dann,
+        // wenn Netz-Ziel + Last die physische WR-Maximalleistung uebersteigen.
+        if ($this->ReadAttributeInteger('FeedInPlannerVersion') < 6) {
+            if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
+                $this->WriteAttributeString('PlanJSON', '[]');
+                $targetVar = (int)@$this->GetIDForIdent('FeedInTargetEnergy');
+                $deliveredVar = (int)@$this->GetIDForIdent('FeedInDeliveredEnergy');
+                $windowVar = (int)@$this->GetIDForIdent('NextFeedInWindow');
+                if ($targetVar > 0) SetValue($targetVar, 0.0);
+                if ($deliveredVar > 0) SetValue($deliveredVar, 0.0);
+                if ($windowVar > 0) SetValue($windowVar, '-');
+                $this->DebugLog('Einspeiseplan', 'v1.10.34: Zukunftsplan neu aufgebaut; Dispatch bleibt am Netz-Ziel, Last reduziert die Rechenleistung nur bei WR-Leistungsgrenze.');
+            }
+            $this->WriteAttributeInteger('FeedInPlannerVersion', 6);
+        }
         // Zeitreihen ab 1.9.79 im IP-Symcon Archive Control verwalten.
         // Bestehende JSON-Lerndaten/Statistiken werden beim ersten Lauf einmalig uebernommen.
         $this->EnsureArchiveStorageAndMigration();
@@ -509,7 +526,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.33';
+        $currentModuleVersion = '1.10.34';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -634,7 +651,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.33',
+            'moduleVersion' => '1.10.34',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -4398,7 +4415,7 @@ class SmartBatteryOptimizer extends IPSModule
 
             $batteryPowerW = $this->GetPlannedBatteryPowerW($consumptionProfile, $slotStart);
             $expectedLoadW = $this->GetExpectedLoadPowerW($consumptionProfile, $slotStart);
-            $expectedExportKW = max(0.0, ($batteryPowerW - $expectedLoadW) / 1000.0);
+            $expectedExportKW = $this->GetExpectedGridExportPowerW($consumptionProfile, $slotStart) / 1000.0;
             if ($expectedExportKW <= 0.001 || $batteryPowerW <= 0.0) continue;
 
             // Ziel bleibt Netz-kWh. Der Eigenverbrauch wirkt ausschließlich auf die
@@ -4461,7 +4478,7 @@ class SmartBatteryOptimizer extends IPSModule
                 if ($slotRemaining <= 0.001) continue;
                 $batteryPowerW = $this->GetPlannedBatteryPowerW($consumptionProfile, $slotStart);
                 $expectedLoadW = $this->GetExpectedLoadPowerW($consumptionProfile, $slotStart);
-                $expectedExportKW = max(0.0, ($batteryPowerW - $expectedLoadW) / 1000.0);
+                $expectedExportKW = $this->GetExpectedGridExportPowerW($consumptionProfile, $slotStart) / 1000.0;
                 if ($expectedExportKW <= 0.001 || $batteryPowerW <= 0.0) continue;
 
                 $energy = min($remaining, $mandatoryMissing, $slotRemaining, $expectedExportKW * $durationH);
@@ -4875,27 +4892,31 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function GetPlannedBatteryPowerW(array $consumptionProfile, int $timestamp): float
     {
-        // Gewuenschtes Verhalten:
-        //   Netz-Ziel 10 kW + erwartete Last 5 kW + WR max. 20 kW => 15 kW Dispatch, 10 kW Netz.
-        //   Netz-Ziel 20 kW + erwartete Last 5 kW + WR max. 20 kW => 20 kW Dispatch, 15 kW Netz.
-        //
-        // Damit bleibt "Maximale Netzeinspeisung" das gewuenschte Netz-Ziel.
-        // Der gelernte Eigenverbrauch wird nur so weit auf den Dispatch aufgeschlagen,
-        // wie es die physische Maximalleistung des Wechselrichters/Batteriesystems erlaubt.
+        // Dispatch-Regel fuer die naechtliche Preis-Einspeisung:
+        // Der AlphaESS-Dispatch darf weder das konfigurierte Netz-Ziel noch die
+        // physische Max. Einspeise-/Entladeleistung ueberschreiten. Das Lastprofil
+        // wird NICHT auf den Dispatch aufgeschlagen.
         $maxBatteryW = max(0.0, (float)$this->ReadPropertyInteger('MaxDischargePowerW'));
         $gridTargetW = $this->GetConfiguredGridFeedInTargetW();
         if ($maxBatteryW <= 0.0 || $gridTargetW <= 0.0) return 0.0;
-
-        $loadW = $this->GetExpectedLoadPowerW($consumptionProfile, $timestamp);
-        return min($maxBatteryW, $gridTargetW + $loadW);
+        return min($gridTargetW, $maxBatteryW);
     }
 
     private function GetExpectedGridExportPowerW(array $consumptionProfile, int $timestamp): float
     {
+        // Fuer die Mengen-/Dauerberechnung gilt:
+        // Solange Netz-Ziel + erwartete Last innerhalb der WR-Maximalleistung liegen,
+        // bleibt die rechnerische Netzeinspeisung beim Netz-Ziel. Erst wenn die Summe
+        // die WR-Grenze ueberschreitet, reduziert die erwartete Last die erreichbare
+        // Netzeinspeisung.
+        // Beispiele bei WR max. 20 kW:
+        //   Ziel 10 kW + Last 5 kW => 10 kW rechnerische Netzeinspeisung.
+        //   Ziel 20 kW + Last 5 kW => 15 kW rechnerische Netzeinspeisung.
+        $maxBatteryW = max(0.0, (float)$this->ReadPropertyInteger('MaxDischargePowerW'));
         $gridTargetW = $this->GetConfiguredGridFeedInTargetW();
-        $batteryW = $this->GetPlannedBatteryPowerW($consumptionProfile, $timestamp);
+        if ($maxBatteryW <= 0.0 || $gridTargetW <= 0.0) return 0.0;
         $loadW = $this->GetExpectedLoadPowerW($consumptionProfile, $timestamp);
-        return min($gridTargetW, max(0.0, $batteryW - $loadW));
+        return max(0.0, min($gridTargetW, $maxBatteryW - $loadW));
     }
 
     private function EstimateFeedInDurationSeconds(float $remainingKWh, int $startTs, int $hardEndTs, array $consumptionProfile): int

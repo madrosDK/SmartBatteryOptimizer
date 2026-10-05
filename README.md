@@ -1,4 +1,4 @@
-> Version 1.10.33 / Build 204: Nacht-Einspeisung korrigiert – „Maximale Netzeinspeisung“ ist das Netz-Ziel; der gelernte Eigenverbrauch wird beim WR-Dispatch berücksichtigt, begrenzt durch „Max. Einspeise-/Entladeleistung“. Der Sicherheitsabstand zur PV-Netzgrenze beeinflusst die Preis-Einspeisung nicht.
+> Version 1.10.34 / Build 205: Nacht-Einspeisung korrigiert – Dispatch bleibt strikt auf dem kleineren Wert aus „Maximale Netzeinspeisung“ und „Max. Einspeise-/Entladeleistung“. Das Lastprofil reduziert die rechnerische Netzeinspeisung nur, wenn Netz-Ziel + erwarteter Verbrauch die WR-Maximalleistung überschreiten. Der 500-W-Sicherheitsabstand bleibt bei der Preis-Einspeisung außen vor.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -438,17 +438,20 @@ Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig sc
 Über **Gespeicherte Modul-Daten als JSON exportieren** werden alle internen Lern-, Kalibrierungs-, Prognose-, Cache-, Preis-, Plan- und Statusattribute sowie die aktuellen Modulvariablen in eine JSON-Datei geschrieben. Die Datei liegt unter `user/SmartBatteryOptimizer/` im IP-Symcon-Kernelverzeichnis. API-Schlüssel werden nicht exportiert. Historische Rohwerte der referenzierten IP-Symcon-Variablen bleiben im normalen IP-Symcon-Archiv und werden nicht dupliziert.
 
 
-## Einspeiseplanung mit Lastprofil (v1.10.33)
+## Einspeiseplanung mit Lastprofil (v1.10.34)
 
-Bei der Preis-Einspeisung ist **Maximale Netzeinspeisung** das gewünschte Netz-Ziel. **Max. Einspeise-/Entladeleistung** ist dagegen die physische Obergrenze für den Batterie-/Wechselrichter-Dispatch. Der prognostizierte Eigenverbrauch aus dem stündlich gelernten Lastprofil wird zum benötigten Dispatch addiert, damit das Netz-Ziel trotz Eigenverbrauch erreicht werden kann. Der Dispatch wird dabei niemals über die konfigurierte Max. Einspeise-/Entladeleistung angehoben.
+Bei der Preis-Einspeisung ist **Maximale Netzeinspeisung** das Netz-Ziel. **Max. Einspeise-/Entladeleistung** ist die physische Obergrenze des Wechselrichters/Batteriesystems.
 
-Beispiele:
-- Netz-Ziel 10 kW, erwarteter Eigenverbrauch 5 kW, WR-Maximum 20 kW: 15 kW Dispatch, rechnerisch 10 kW Netzeinspeisung.
-- Netz-Ziel 20 kW, erwarteter Eigenverbrauch 5 kW, WR-Maximum 20 kW: 20 kW Dispatch, rechnerisch 15 kW Netzeinspeisung.
+Der AlphaESS-Dispatch wird auf den kleineren dieser beiden Werte begrenzt und durch den erwarteten Eigenverbrauch **nicht** erhöht. Für die Mengen- und Laufzeitberechnung bleibt das volle Netz-Ziel erhalten, solange **Netz-Ziel + erwarteter Eigenverbrauch** die WR-Maximalleistung nicht überschreiten. Nur wenn diese Summe über der WR-Maximalleistung liegt, wird die rechnerisch erreichbare Netzeinspeisung auf **WR-Maximum − erwarteter Eigenverbrauch** reduziert.
+
+Beispiele bei 20 kW WR-Maximum:
+- Netz-Ziel 10 kW, erwarteter Eigenverbrauch 5 kW: Dispatch 10 kW, rechnerische Netzeinspeisung 10 kW.
+- Netz-Ziel 20 kW, erwarteter Eigenverbrauch 5 kW: Dispatch 20 kW, rechnerische Netzeinspeisung 15 kW.
+- Netz-Ziel 18 kW, erwarteter Eigenverbrauch 5 kW: Dispatch 18 kW, rechnerische Netzeinspeisung 15 kW.
 
 Der **Sicherheitsabstand zur Einspeisegrenze** gehört ausschließlich zum PV-/Netzlimit-Schutz. Er wird bei der nächtlichen Preis-Einspeisung nicht vom Netz-Ziel abgezogen.
 
-Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und dem Lastprofil eine neue Restlaufzeit berechnet. Gleichzeitig wird der Dispatch anhand von Netz-Ziel, erwartetem Eigenverbrauch und WR-Maximalleistung neu bestimmt. Die AlphaESS Dispatch Time wird auf diese Restlaufzeit zuzüglich 30 % Sicherheitsreserve gesetzt.
+Während einer aktiven Einspeisung bleibt die tatsächlich am Netzanschluss gemessene exportierte Energie maßgeblich. Alle 5 Minuten wird aus der noch fehlenden Zielenergie und der rechnerisch erreichbaren Netzeinspeisung eine neue Restlaufzeit bestimmt. Der Dispatch selbst bleibt auf `min(Netz-Ziel, WR-Maximum)` begrenzt.
 
 ### PV-Kalibrierung bei Einspeisefaktor 0 % – 1.9.77
 Sobald die konfigurierte **Variable Einspeisefaktor (%)** auf `0 %` steht, wird die PV-Autokalibrierung pausiert. Das gilt sowohl fuer die automatische Preissperre durch **Mindestpreis Einspeisung** als auch fuer eine manuell auf 0 % gesetzte Einspeisefreigabe. Der Sperrzeitraum wird protokolliert; ab Sperrbeginn werden keine PV-Lernintervalle verwendet. Beim Wiederfreigeben beginnt die Integration mit einem neuen Messpunkt, damit kein Intervall ueber die Sperrgrenze hinweg entsteht.

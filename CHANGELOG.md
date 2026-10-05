@@ -1,3 +1,13 @@
+## 1.10.34 (Build 205)
+
+- Nacht-Einspeiseplanung korrigiert: Dispatch bleibt strikt auf `min(Netz-Ziel, Max. Einspeise-/Entladeleistung)` begrenzt.
+- Der prognostizierte Eigenverbrauch wird nicht mehr auf den Dispatch aufgeschlagen.
+- Für Mengen-/Dauerberechnung bleibt das volle Netz-Ziel erhalten, solange Netz-Ziel + Lastprofil innerhalb der WR-Maximalleistung liegen.
+- Nur bei Überschreitung der WR-Maximalleistung wird die rechnerische Netzeinspeisung auf `WR-Maximum - prognostizierter Eigenverbrauch` reduziert.
+- Beispiele: 10 kW Ziel + 5 kW Last + 20 kW WR => 10 kW Dispatch / 10 kW Rechenleistung; 20 kW Ziel + 5 kW Last + 20 kW WR => 20 kW Dispatch / 15 kW Rechenleistung.
+- Der 500-W-Sicherheitsabstand bleibt ausschließlich Bestandteil des PV-/Netzlimit-Schutzes.
+- Alte zukünftige Einspeisepläne werden einmalig verworfen und mit der korrigierten Leistungslogik neu aufgebaut; laufende Einspeisungen bleiben unangetastet.
+
 ## 1.10.33 (Build 204)
 
 - Nacht-Einspeiseplanung trennt jetzt sauber zwischen **Netz-Ziel** und physischer **Max. Einspeise-/Entladeleistung**.
