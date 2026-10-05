@@ -58,6 +58,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('LearningDays', 30);
         $this->RegisterPropertyFloat('FallbackNightConsumptionKWh', 4.0);
         $this->RegisterPropertyBoolean('ConsumptionProfileLearningEnabled', true);
+        $this->RegisterPropertyFloat('EVChargingDetectionThresholdKW', 6.5);
         $this->RegisterPropertyInteger('MinimumValidConsumptionDays', 3);
         $this->RegisterPropertyFloat('FallbackDailyConsumptionKWh', 12.0);
         $this->RegisterPropertyFloat('ConsumptionForecastSafetyPct', 10.0);
@@ -6157,7 +6158,9 @@ class SmartBatteryOptimizer extends IPSModule
         // Buffer zwischengespeichert. So kann auch eine längere Diagramm-Historie ohne
         // wiederholte Minuten-Aggregat-Abfragen flüssig geblättert werden.
         $isPastDay = $fullDayEnd <= strtotime('today 00:00:00');
-        $cacheKey = date('Y-m-d', $dayStart) . '|' . $archiveID . '|' . $varID . '|v2';
+        $evThresholdKW = max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW'));
+        $cacheKey = date('Y-m-d', $dayStart) . '|' . $archiveID . '|' . $varID
+            . '|v3|threshold=' . number_format($evThresholdKW, 3, '.', '');
         if ($isPastDay) {
             $cache = json_decode((string)$this->GetBuffer('ConsumptionEVAnalysisCache'), true);
             if (is_array($cache) && isset($cache[$cacheKey]) && is_array($cache[$cacheKey])) {
@@ -6412,29 +6415,75 @@ class SmartBatteryOptimizer extends IPSModule
         $count = count($points);
         if ($count < 2) return $sessions;
 
-        // Nutzeranlage: Das Fahrzeug lädt nominell mit > 6,5 kW und besitzt 14,4 kWh
-        // Batteriekapazität. In 1-Minuten-Aggregaten kann der sichtbare Sprung durch
-        // Start innerhalb einer Minute und gleichzeitig wechselnde Hauslast kleiner
-        // ausfallen. Deshalb startet die Kandidatenerkennung bereits bei 5,0 kW;
-        // Dauer und plausible Ladeenergie müssen den Vorgang zusätzlich bestätigen.
-        $stepThresholdW = 5000.0;
-        $releaseMarginW = 2600.0;
+        // Autoladung nicht mehr ueber die Groesse eines einzelnen Lastsprungs erkennen,
+        // sondern direkt ueber die tatsaechlich gemessene Hausverbrauchsleistung.
+        // Hintergrund: Laeuft vor Ladebeginn bereits normale Hauslast, kann der sichtbare
+        // Sprung deutlich kleiner als die Ladeleistung sein, obwohl der Gesamtverbrauch
+        // waehrend des Ladens eindeutig hoch ist.
+        $thresholdW = max(1000.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW') * 1000.0);
         $minDurationS = 5 * 60;
-        $maxSessionKWh = 17.5;
+        $allowedGapS = 3 * 60;
+        $baselineWindowS = 20 * 60;
         $minSessionKWh = 0.45;
+        // Bekannte Fahrzeugbatterie 14,4 kWh; mit Ladeverlusten/Restunschaerfe etwas Luft.
+        $maxSessionKWh = 18.5;
 
-        for ($i = 1; $i < $count; $i++) {
-            $ts = (int)$points[$i]['ts'];
-            if ($ts < $rangeStart || $ts >= $rangeEnd) continue;
+        $i = 0;
+        while ($i < $count) {
+            $ts = (int)($points[$i]['ts'] ?? 0);
+            $valueW = max(0.0, (float)($points[$i]['value'] ?? 0.0));
+            if ($ts < $rangeStart || $ts >= $rangeEnd || $valueW < $thresholdW) {
+                $i++;
+                continue;
+            }
 
+            // Beginn ist die erste Minute mit Gesamtverbrauch >= konfiguriertem Wert.
+            $startIndex = $i;
+            $startTs = $ts;
+            $lastAboveIndex = $i;
+            $belowSince = 0;
+            $j = $i + 1;
+            for (; $j < $count; $j++) {
+                $pTs = (int)($points[$j]['ts'] ?? 0);
+                if ($pTs >= $rangeEnd) break;
+                $pW = max(0.0, (float)($points[$j]['value'] ?? 0.0));
+                if ($pW >= $thresholdW) {
+                    $lastAboveIndex = $j;
+                    $belowSince = 0;
+                    continue;
+                }
+                if ($belowSince <= 0) $belowSince = $pTs;
+                if (($pTs - $belowSince) >= $allowedGapS) break;
+            }
+
+            $endTs = $rangeEnd;
+            if ($lastAboveIndex + 1 < $count) {
+                $endTs = min($rangeEnd, (int)($points[$lastAboveIndex + 1]['ts'] ?? $rangeEnd));
+            }
+            $durationS = max(0, $endTs - $startTs);
+            if ($durationS < $minDurationS) {
+                $i = max($i + 1, $j);
+                continue;
+            }
+
+            // Grundlast aus den 20 Minuten unmittelbar vor Ladebeginn bestimmen.
+            // Nur Werte unterhalb der Ladeschwelle verwenden, damit eine bereits hohe
+            // Lade-Minute die Grundlast nicht nach oben zieht.
             $historyValues = [];
-            $historyStart = $ts - 15 * 60;
-            for ($k = $i - 1; $k >= 0; $k--) {
-                if ((int)$points[$k]['ts'] < $historyStart) break;
-                $historyValues[] = max(0.0, (float)$points[$k]['value']);
+            $historyStart = $startTs - $baselineWindowS;
+            for ($k = $startIndex - 1; $k >= 0; $k--) {
+                $hTs = (int)($points[$k]['ts'] ?? 0);
+                if ($hTs < $historyStart) break;
+                $hW = max(0.0, (float)($points[$k]['value'] ?? 0.0));
+                if ($hW < $thresholdW) $historyValues[] = $hW;
+            }
+            if (count($historyValues) === 0 && $startIndex > 0) {
+                $historyValues[] = max(0.0, (float)($points[$startIndex - 1]['value'] ?? 0.0));
             }
             if (count($historyValues) === 0) {
-                $historyValues[] = max(0.0, (float)$points[$i - 1]['value']);
+                // Ohne belastbare Grundlast keine Ladeenergie erfinden.
+                $i = max($i + 1, $j);
+                continue;
             }
             sort($historyValues, SORT_NUMERIC);
             $n = count($historyValues);
@@ -6442,54 +6491,36 @@ class SmartBatteryOptimizer extends IPSModule
                 ? (float)$historyValues[(int)floor($n / 2)]
                 : ((float)$historyValues[$n / 2 - 1] + (float)$historyValues[$n / 2]) / 2.0;
 
-            $currentW = max(0.0, (float)$points[$i]['value']);
-            if (($currentW - $baselineW) < $stepThresholdW) continue;
-
-            $endIndex = $count;
-            $endTs = $rangeEnd;
-            for ($j = $i + 1; $j < $count; $j++) {
-                if ((float)$points[$j]['value'] <= $baselineW + $releaseMarginW) {
-                    $endIndex = $j;
-                    $endTs = min($rangeEnd, (int)$points[$j]['ts']);
-                    break;
-                }
-            }
-
-            $startTs = $ts;
-            $durationS = max(0, $endTs - $startTs);
-            if ($durationS < $minDurationS) continue;
-
+            // Nur den Zusatzverbrauch oberhalb dieser Grundlast als Autoladung werten.
             $extraWh = 0.0;
-            for ($j = $i; $j < min($endIndex, $count); $j++) {
-                $segStart = max($startTs, (int)$points[$j]['ts']);
-                $segEnd = ($j + 1 < $count)
-                    ? min($endTs, (int)$points[$j + 1]['ts'])
+            for ($k = $startIndex; $k < $count; $k++) {
+                $segStart = max($startTs, (int)($points[$k]['ts'] ?? 0));
+                if ($segStart >= $endTs) break;
+                $segEnd = ($k + 1 < $count)
+                    ? min($endTs, (int)($points[$k + 1]['ts'] ?? 0))
                     : $endTs;
                 if ($segEnd <= $segStart) continue;
-                $extraW = max(0.0, (float)$points[$j]['value'] - $baselineW);
+                $extraW = max(0.0, (float)($points[$k]['value'] ?? 0.0) - $baselineW);
                 $extraWh += $extraW * (($segEnd - $segStart) / 3600.0);
             }
             $extraKWh = $extraWh / 1000.0;
-            $avgExtraW = $durationS > 0
-                ? ($extraKWh / ($durationS / 3600.0)) * 1000.0
-                : 0.0;
-
-            if ($extraKWh < $minSessionKWh || $extraKWh > $maxSessionKWh) continue;
-            // Unter 5 kW mittlerem Zusatzverbrauch ist es trotz eines einzelnen
-            // Sprungs keine typische Fahrzeugladung dieser Anlage.
-            if ($avgExtraW < 5000.0) continue;
+            if ($extraKWh < $minSessionKWh || $extraKWh > $maxSessionKWh) {
+                $i = max($i + 1, $j);
+                continue;
+            }
 
             $sessions[] = [
                 'start' => $startTs,
                 'end' => $endTs,
                 'baselineW' => $baselineW,
-                'chargePowerW' => min(15000.0, max($stepThresholdW, $avgExtraW)),
-                'extraKWh' => $extraKWh
+                'chargePowerW' => max(0.0, ($extraKWh / max(1.0 / 60.0, $durationS / 3600.0)) * 1000.0),
+                'extraKWh' => $extraKWh,
+                'thresholdW' => $thresholdW
             ];
 
-            // Innerhalb eines bereits erkannten Ladevorgangs keine weiteren
-            // Lastsprünge als neue Autoladung klassifizieren.
-            if ($endIndex < $count) $i = max($i, $endIndex - 1);
+            // Den bereits klassifizierten Hochlastblock nicht erneut als zweite Ladung
+            // beginnen lassen.
+            $i = max($i + 1, $j);
         }
 
         return $sessions;

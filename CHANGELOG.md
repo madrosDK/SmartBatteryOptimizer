@@ -1,3 +1,13 @@
+# SmartBatteryOptimizer 1.10.49 / Build 220
+
+- Autolade-Erkennung auf die tatsächliche Hausverbrauchsleistung umgestellt: Nicht mehr die Größe eines einzelnen Lastsprungs ist entscheidend, sondern ob der gemessene Verbrauch die konfigurierte kW-Schwelle erreicht.
+- Neuer einstellbarer Wert `Autoladung erkennen ab Hausverbrauch` im Bereich `Eigenverbrauch lernen`, Standard 6,5 kW.
+- Eine Hochlastphase muss mindestens fünf Minuten anliegen; kurze Unterschreitungen bis drei Minuten werden toleriert.
+- Der Autolade-Anteil wird als Differenz zwischen gemessenem Verbrauch und der Median-Grundlast der 20 Minuten vor Ladebeginn berechnet. Nur dieser Zusatzanteil wird aus dem Lernprofil abgezogen und im Diagramm orange dargestellt.
+- Die Plausibilitätsprüfung für die bekannte 14,4-kWh-Fahrzeugbatterie bleibt erhalten; erkannte Ladeenergie wird nicht in das normale Lastprofil eingelernt.
+- Cache-Version der Autolade-Erkennung angehoben und um den konfigurierten kW-Schwellwert erweitert. Dadurch werden frühere `keine Autoladung erkannt`-Cacheeinträge nach dem Update nicht weiterverwendet.
+- Keine Preis-, PV-, Einspeise-, Dispatch- oder sonstigen bestehenden Funktionspfade geändert. Keine Archive, Lernwerte, Statistiken oder Konfigurationen werden beim Update gelöscht.
+
 # SmartBatteryOptimizer 1.10.48 / Build 219
 
 - Lastprofil-Diagramm nicht mehr auf sechs Tage Vergangenheit begrenzt: Es kann jetzt über das konfigurierte Verbrauchs-Lernfenster (bis 90 Tage) zurückgeblättert werden; bei kürzerem Archiv beginnt die Anzeige am tatsächlich gelernten Archivbeginn.

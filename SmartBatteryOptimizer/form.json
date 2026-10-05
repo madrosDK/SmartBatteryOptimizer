@@ -470,6 +470,19 @@
                 },
                 {
                     "type": "NumberSpinner",
+                    "name": "EVChargingDetectionThresholdKW",
+                    "caption": "Autoladung erkennen ab Hausverbrauch",
+                    "digits": 1,
+                    "minimum": 1.0,
+                    "maximum": 20.0,
+                    "suffix": " kW"
+                },
+                {
+                    "type": "Label",
+                    "caption": "Liegt der gemessene Hausverbrauch mindestens 5 Minuten über diesem Wert, wird der zusätzliche Anteil gegenüber der unmittelbar davor gemessenen Grundlast als Autoladung erkannt, orange dargestellt und aus dem gelernten Lastprofil herausgerechnet."
+                },
+                {
+                    "type": "NumberSpinner",
                     "name": "MinimumValidConsumptionDays",
                     "caption": "Mindestens gültige Tage für Tagesverbrauchsprofil",
                     "digits": 0,
