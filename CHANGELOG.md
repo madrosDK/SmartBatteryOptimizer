@@ -1,3 +1,15 @@
+# SmartBatteryOptimizer 1.10.48 / Build 219
+
+- Lastprofil-Diagramm nicht mehr auf sechs Tage Vergangenheit begrenzt: Es kann jetzt über das konfigurierte Verbrauchs-Lernfenster (bis 90 Tage) zurückgeblättert werden; bei kürzerem Archiv beginnt die Anzeige am tatsächlich gelernten Archivbeginn.
+- Autoladungen werden im Diagramm separat **orange** dargestellt. Der orange Ladeanteil wird ausschließlich aus dem Lernprofil herausgerechnet; das originale Verbrauchsarchiv bleibt unverändert.
+- Die Autolade-Erkennung wurde für 1-Minuten-Aggregate robuster gemacht: Kandidaten werden mit Toleranz für Minutenmittel/wechselnde Grundlast erkannt und zusätzlich über Mindestdauer und plausible Energie der 14,4-kWh-Fahrzeugbatterie geprüft.
+- Beim Abzug wird nicht mehr pauschal mit einer konstanten Ladeleistung gerechnet. Stattdessen wird der tatsächlich erkannte Zusatzanteil minutenweise gegen die Grundlast integriert und stündlich abgezogen.
+- Das Diagramm zeigt als blaues `Gelerntes Lastprofil` jetzt das reine gelernte Grundprofil ohne Verbrauchs-Sicherheitsaufschlag. Der Sicherheitsaufschlag bleibt in Batterie-/Einspeiseplanung unverändert aktiv.
+- Die Quellenzeile im Lastprofil-Diagramm folgt beim Blättern jetzt dem tatsächlich ausgewählten Kalendertag (Wochentag/Saison) statt statisch dem morgigen Profil.
+- Wochentags-/Saisonprofile mit erst wenigen Vergleichstagen werden kontrolliert mit dem globalen Stundenprofil gemischt. Dadurch kann ein einzelner ungewöhnlicher Tag das Profil nicht mehr so stark verzerren; mit wachsender Datenbasis steigt das Gewicht des individuellen Wochentags automatisch.
+- Historische Ist-Verbrauchswerte des Lastprofil-Diagramms werden ebenfalls über Archiv-Aggregate gelesen; dadurch bleibt die längere Historie speicherschonend und lädt keine kompletten hochfrequenten Tages-Rohwertlisten in PHP.
+- Keine vorhandenen Archive, Lernwerte, Statistiken oder Konfigurationen werden beim Update gelöscht oder zurückgesetzt.
+
 # SmartBatteryOptimizer 1.10.47 / Build 218
 
 - Börsenpreis-Refresh entkoppelt: Preise und Börsenpreis-Diagramm werden am Beginn des regulären Rechenlaufs aktualisiert, bevor Nachtverbrauch oder Lastprofil-Lernen ausgeführt werden. Ein langsamer/fehlerhafter Lernlauf kann das Preisdiagramm damit nicht mehr blockieren.
