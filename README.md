@@ -1,4 +1,4 @@
-> Version 1.10.39 / Build 210: Archiviert den Einspeisetarif exakt zu seiner Gültigkeitszeit und richtet den noch bekannten Preisverlauf beim ersten Lauf rückwirkend aus.
+> Version 1.10.40 / Build 211: Korrigiert den Preisarchiv-Import bei deaktiviertem Auto-Logging und schreibt Tarifwerte weiterhin exakt zu ihrer Gültigkeitszeit.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -17,7 +17,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.39 / Build 210**
+**1.10.40 / Build 211**
 
 ## Neu in 1.2.3
 

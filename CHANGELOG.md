@@ -1,3 +1,8 @@
+## 1.10.40 (Build 211)
+- Fix: Gezielte Archivimporte aktivieren das Logging der Zielvariable nur waehrend `AC_AddLoggedValues()` und stellen den vorherigen Zustand danach wieder her.
+- Dadurch kann die Einspeisepreis-Zeitreihe trotz absichtlich deaktiviertem Auto-Logging rueckwirkend mit exakten Tarif-Startzeiten geschrieben werden.
+- Die einmalige Preisarchiv-Ausrichtung aus v1.10.39 wird bei zuvor fehlgeschlagenem Import erneut ausgefuehrt.
+
 ## 1.10.39 (Build 210)
 - **Preisarchiv auf Tarifzeiten ausgerichtet:** `Aktueller Einspeisepreis` wird im Archiv nicht mehr mit zufälligen Refresh-/Timerzeitpunkten protokolliert, sondern mit dem tatsächlichen Beginn des Tarifintervalls. Bei EPEX 60 min sind das volle Stunden (`HH:00:00`).
 - Beim ersten erfolgreichen Lauf wird der von `PricesJSON` noch bekannte historische Zeitraum einmalig bereinigt und mit den dort vorhandenen Preisen rückwirkend auf den korrekten Gültigkeitszeiten neu aufgebaut. Ältere Zeiträume ohne bekannte Preise bleiben unangetastet.

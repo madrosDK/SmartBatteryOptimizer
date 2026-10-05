@@ -533,7 +533,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.39';
+        $currentModuleVersion = '1.10.40';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -658,7 +658,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.39',
+            'moduleVersion' => '1.10.40',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -6508,8 +6508,35 @@ class SmartBatteryOptimizer extends IPSModule
             }
             $rows[] = ['TimeStamp'=>$ts, 'Value'=>(float)$value];
         }
-        foreach (array_chunk($rows, 2000) as $chunk) AC_AddLoggedValues($archiveID, $variableID, $chunk);
-        if (function_exists('AC_ReAggregateVariable')) @AC_ReAggregateVariable($archiveID, $variableID);
+        if (count($rows) === 0) return;
+
+        // AC_AddLoggedValues() akzeptiert nur Variablen mit aktivem Logging.
+        // Einige vom Modul selbst gepflegte Archiv-Zeitreihen (z. B. CurrentPrice)
+        // haben automatisches Logging absichtlich AUS, damit ein normales SetValue()
+        // keinen Punkt zur zufaelligen Refresh-Uhrzeit erzeugt. Fuer den gezielten
+        // historischen Schreibvorgang Logging deshalb nur temporaer aktivieren und
+        // danach exakt auf den vorherigen Zustand zurueckstellen.
+        $restoreLogging = false;
+        try {
+            if (function_exists('AC_GetLoggingStatus') && function_exists('AC_SetLoggingStatus')) {
+                $wasLogging = (bool)AC_GetLoggingStatus($archiveID, $variableID);
+                if (!$wasLogging) {
+                    AC_SetLoggingStatus($archiveID, $variableID, true);
+                    $restoreLogging = true;
+                    if (!AC_GetLoggingStatus($archiveID, $variableID)) {
+                        throw new Exception('Archiv-Logging konnte fuer Variable ' . $variableID . ' nicht aktiviert werden.');
+                    }
+                }
+            }
+            foreach (array_chunk($rows, 2000) as $chunk) {
+                AC_AddLoggedValues($archiveID, $variableID, $chunk);
+            }
+            if (function_exists('AC_ReAggregateVariable')) @AC_ReAggregateVariable($archiveID, $variableID);
+        } finally {
+            if ($restoreLogging && function_exists('AC_SetLoggingStatus')) {
+                @AC_SetLoggingStatus($archiveID, $variableID, false);
+            }
+        }
     }
 
     private function MigratePVCalibrationJSONToArchive(int $archiveID, array $surfaces): int
