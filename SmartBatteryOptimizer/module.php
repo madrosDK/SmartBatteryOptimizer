@@ -59,6 +59,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('FallbackNightConsumptionKWh', 4.0);
         $this->RegisterPropertyBoolean('ConsumptionProfileLearningEnabled', true);
         $this->RegisterPropertyFloat('EVChargingDetectionThresholdKW', 6.5);
+        $this->RegisterPropertyInteger('EVArchiveSearchDays', 90);
         $this->RegisterPropertyInteger('MinimumValidConsumptionDays', 3);
         $this->RegisterPropertyFloat('FallbackDailyConsumptionKWh', 12.0);
         $this->RegisterPropertyFloat('ConsumptionForecastSafetyPct', 10.0);
@@ -160,6 +161,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('ConsumptionProfileChartHTML', 'Verbrauch Lastprofil Diagramm', '~HTMLBox', 151);
         $this->RegisterVariableString('FeedInStatisticsHTML', 'Einspeise-Statistik', '~HTMLBox', 152);
         $this->RegisterVariableString('FeedInDebugHTML', 'Einspeise-Debug 24 h', '~HTMLBox', 153);
+        $this->RegisterVariableString('EVArchiveSearchStatus', 'Autoladung Archivsuche', '', 154);
         $this->RegisterVariableString('PVCalibrationDiagnosisHTML', 'PV-Kalibrierung Diagnose', '~HTMLBox', 190);
         $this->RegisterVariableString('ActionFeedback', 'Letzte Aktionen', '~HTMLBox', 118);
         $this->RegisterVariableString('ForecastSolarStatus', 'PV-Prognose Anbieter', '~HTMLBox', 119);
@@ -223,6 +225,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('ConsumptionProfileUpdated', 0);
         $this->RegisterAttributeString('ConsumptionLearningSource', 'Fallback');
         $this->RegisterAttributeString('ConsumptionArchiveRebuildStateJSON', '{}');
+        $this->RegisterAttributeString('EVArchiveSearchStateJSON', '{}');
+        $this->RegisterAttributeString('EVArchiveDetectionsJSON', '{}');
         $this->RegisterAttributeBoolean('AlphaDispatchActive', false);
         $this->RegisterAttributeString('AlphaDispatchCommandKey', '');
         $this->RegisterAttributeString('ActiveFeedInPlanKey', '');
@@ -263,6 +267,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterTimer('PVCalibrationTimer', 0, 'SBO_RefreshPVCalibration($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ControlTimer', 0, 'SBO_Control($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ManualRecalculateWorker', 0, 'SBO_RunManualRecalculate($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('EVArchiveSearchWorker', 0, 'SBO_RunEVArchiveSearch($_IPS[\'TARGET\']);');
         $this->RegisterTimer('FullRefreshWorker', 0, 'SBO_RunFullRefresh($_IPS[\'TARGET\']);');
         $this->RegisterTimer('DeferredDebugRebuildTimer', 0, 'SBO_DeferredDebugRebuild($_IPS[\'TARGET\']);');
     }
@@ -501,6 +506,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->SetTimerInterval('PVCalibrationTimer', $pvCalibrationPollSeconds * 1000);
         $this->SetTimerInterval('ControlTimer', 15 * 1000);
         $this->SetTimerInterval('ManualRecalculateWorker', 0);
+        $this->SetTimerInterval('EVArchiveSearchWorker', 0);
         $this->SetTimerInterval('FullRefreshWorker', 0);
         $this->SetTimerInterval('DeferredDebugRebuildTimer', 0);
         $rebuildState = json_decode($this->ReadAttributeString('ConsumptionArchiveRebuildStateJSON'), true);
@@ -508,6 +514,10 @@ class SmartBatteryOptimizer extends IPSModule
             // Der bereits bestehende ManualRecalculateWorker wird für den blockweisen
             // Archiv-Wiederaufbau wiederverwendet. Damit ist kein zusätzlicher Modul-Timer nötig.
             $this->SetTimerInterval('ManualRecalculateWorker', 5000);
+        }
+        $evSearchState = json_decode($this->ReadAttributeString('EVArchiveSearchStateJSON'), true);
+        if (is_array($evSearchState) && !empty($evSearchState['active'])) {
+            $this->SetTimerInterval('EVArchiveSearchWorker', 4000);
         }
 
         // Reste der zwischenzeitlichen Scheduler-/Watchdog-Versionen entfernen.
@@ -544,7 +554,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.48';
+        $currentModuleVersion = '1.10.50';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -629,7 +639,7 @@ class SmartBatteryOptimizer extends IPSModule
             'ForecastJSON','PVForecastHistoryJSON','PVSourceForecastHistoryJSON','ForecastSolarSurfaceCacheJSON','OpenMeteoSurfaceCacheJSON',
             'PVDebugVisibilityJSON','ProviderDebugLogJSON','ActionHistoryJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
             'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PVCalibrationExcludedPeriodsJSON','PVCalibrationExclusionActiveReason','PVCalibrationCleanupStatus','PricesJSON','PriceCacheSignature','PlanJSON','NightLearningSource',
-            'ConsumptionProfileJSON','ConsumptionLearningSource','ConsumptionArchiveRebuildStateJSON','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
+            'ConsumptionProfileJSON','ConsumptionLearningSource','ConsumptionArchiveRebuildStateJSON','EVArchiveSearchStateJSON','EVArchiveDetectionsJSON','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
             'CompletedFeedInPlanKeysJSON','FeedInStatisticsJSON','ActiveFeedInReason','AlphaTestTrace','ArchiveStorageStatus'
         ];
         $integerAttributes = [
@@ -675,7 +685,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.48',
+            'moduleVersion' => '1.10.50',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1614,10 +1624,230 @@ class SmartBatteryOptimizer extends IPSModule
     }
 
 
+    public function SearchEVChargingArchive()
+    {
+        $this->SetActionFeedback('Autoladung: Archivsuche wird vorbereitet ...');
+        try {
+            $rebuildState = json_decode($this->ReadAttributeString('ConsumptionArchiveRebuildStateJSON'), true);
+            if (is_array($rebuildState) && !empty($rebuildState['active'])) {
+                $text = 'Autoladungs-Archivsuche nicht gestartet: Die Lastprofil-Neuberechnung läuft noch.';
+                $this->SetActionFeedback($text);
+                echo $text;
+                return;
+            }
+
+            $varID = $this->ReadPropertyInteger('HousePowerVariable');
+            if ($varID <= 0 || !@IPS_VariableExists($varID)) {
+                $text = 'Autoladungs-Archivsuche nicht gestartet: Hausverbrauchsvariable fehlt.';
+                $this->SetActionFeedback($text);
+                echo $text;
+                return;
+            }
+            $archiveID = $this->FindArchive();
+            if ($archiveID <= 0) {
+                $text = 'Autoladungs-Archivsuche nicht gestartet: Archiv nicht gefunden.';
+                $this->SetActionFeedback($text);
+                echo $text;
+                return;
+            }
+            if (function_exists('AC_GetLoggingStatus') && !@AC_GetLoggingStatus($archiveID, $varID)) {
+                $text = 'Autoladungs-Archivsuche nicht gestartet: Hausverbrauchsvariable ist nicht archiviert.';
+                $this->SetActionFeedback($text);
+                echo $text;
+                return;
+            }
+
+            $archiveFirstDay = $this->FindConsumptionArchiveStartDay($archiveID, $varID);
+            $lastDay = strtotime('yesterday 00:00:00');
+            if ($archiveFirstDay <= 0 || $archiveFirstDay > $lastDay) {
+                $text = 'Autoladungs-Archivsuche nicht gestartet: keine abgeschlossenen Archivtage gefunden.';
+                $this->SetActionFeedback($text);
+                echo $text;
+                return;
+            }
+
+            $searchDays = max(0, $this->ReadPropertyInteger('EVArchiveSearchDays'));
+            $firstDay = $archiveFirstDay;
+            if ($searchDays > 0) {
+                $limitedFirst = strtotime('-' . max(0, $searchDays - 1) . ' days', $lastDay);
+                $firstDay = max($archiveFirstDay, $limitedFirst);
+            }
+            $thresholdKW = max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW'));
+            $totalDays = max(1, (int)floor(($lastDay - $firstDay) / 86400) + 1);
+            $state = [
+                'active' => true,
+                'archiveID' => $archiveID,
+                'varID' => $varID,
+                'firstDay' => $firstDay,
+                'lastDay' => $lastDay,
+                'cursorDay' => $lastDay,
+                'started' => time(),
+                'thresholdKW' => $thresholdKW,
+                'totalDays' => $totalDays,
+                'processedDays' => 0,
+                'foundDays' => 0,
+                'sessions' => 0,
+                'kWh' => 0.0,
+                'latestSessionTs' => 0
+            ];
+            $this->WriteAttributeString('EVArchiveSearchStateJSON', json_encode($state));
+            $this->SetBuffer('ConsumptionEVAnalysisCache', '');
+            $this->SetTimerInterval('EVArchiveSearchWorker', 1000);
+
+            $rangeText = $searchDays <= 0 ? 'gesamtes verfügbares Archiv' : $totalDays . ' abgeschlossene Tage';
+            $text = 'Autoladungs-Archivsuche gestartet: ' . $rangeText
+                . ' (' . date('d.m.Y', $firstDay) . ' bis ' . date('d.m.Y', $lastDay) . ')'
+                . ', Erkennung ab ' . number_format($thresholdKW, 1, ',', '.') . ' kW Hausverbrauch.';
+            SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $text);
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
+        } catch (Throwable $e) {
+            $this->SetTimerInterval('EVArchiveSearchWorker', 0);
+            $text = 'Autoladungs-Archivsuche konnte nicht gestartet werden: ' . $e->getMessage();
+            SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $text);
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+            echo $text;
+        }
+    }
+
+    public function RunEVArchiveSearch()
+    {
+        $state = json_decode($this->ReadAttributeString('EVArchiveSearchStateJSON'), true);
+        if (!is_array($state) || empty($state['active'])) {
+            $this->SetTimerInterval('EVArchiveSearchWorker', 0);
+            return;
+        }
+
+        try {
+            $archiveID = (int)($state['archiveID'] ?? 0);
+            $varID = (int)($state['varID'] ?? 0);
+            $firstDay = (int)($state['firstDay'] ?? 0);
+            $cursorDay = (int)($state['cursorDay'] ?? 0);
+            if ($archiveID <= 0 || $varID <= 0 || $firstDay <= 0 || $cursorDay <= 0) {
+                throw new Exception('ungültiger Suchzustand');
+            }
+
+            $stored = json_decode($this->ReadAttributeString('EVArchiveDetectionsJSON'), true);
+            if (!is_array($stored)) $stored = [];
+            $batchStart = microtime(true);
+            $batchDays = 0;
+            while ($cursorDay >= $firstDay && $batchDays < 2 && (microtime(true) - $batchStart) < 0.80) {
+                $dateKey = date('Y-m-d', $cursorDay);
+                // Force=true: Ein nachträglicher Suchlauf darf nie ein altes "kein Treffer"-
+                // Cacheergebnis wiederverwenden. Jede Suchrunde bewertet den Tag mit der
+                // aktuell konfigurierten kW-Schwelle neu.
+                $ev = $this->GetEVChargingAnalysisForDay($archiveID, $varID, $cursorDay, true);
+                $sessionCount = (int)($ev['sessions'] ?? 0);
+                $kWh = max(0.0, (float)($ev['kWh'] ?? 0.0));
+                if ($kWh > 0.01) {
+                    $stored[$dateKey] = [
+                        'version' => 4,
+                        'thresholdKW' => max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW')),
+                        'hourlyWh' => array_values($ev['hourlyWh'] ?? array_fill(0, 24, 0.0)),
+                        'sessions' => $sessionCount,
+                        'kWh' => $kWh,
+                        'details' => is_array($ev['details'] ?? null) ? array_values($ev['details']) : [],
+                        'updated' => time()
+                    ];
+                    $state['foundDays'] = (int)($state['foundDays'] ?? 0) + 1;
+                    $state['sessions'] = (int)($state['sessions'] ?? 0) + $sessionCount;
+                    $state['kWh'] = (float)($state['kWh'] ?? 0.0) + $kWh;
+                    foreach (($ev['details'] ?? []) as $detail) {
+                        $state['latestSessionTs'] = max((int)($state['latestSessionTs'] ?? 0), (int)($detail['start'] ?? 0));
+                    }
+                } else {
+                    // Der Tag wurde mit der aktuellen Schwelle geprüft und enthält keine
+                    // Autoladung. Einen eventuell früher gespeicherten Treffer für diesen
+                    // Kalendertag deshalb gezielt entfernen.
+                    unset($stored[$dateKey]);
+                }
+
+                $state['processedDays'] = (int)($state['processedDays'] ?? 0) + 1;
+                $cursorDay = strtotime('-1 day', $cursorDay);
+                $state['cursorDay'] = $cursorDay;
+                $batchDays++;
+            }
+
+            // Positive Treffer sind kompakt (24 Stundenwerte + Details) und werden
+            // dauerhaft gespeichert. Die eigentlichen Verbrauchsarchive bleiben unverändert.
+            ksort($stored);
+            $this->WriteAttributeString('EVArchiveDetectionsJSON', json_encode($stored));
+
+            $processed = (int)($state['processedDays'] ?? 0);
+            $total = max(1, (int)($state['totalDays'] ?? 1));
+            $pct = min(100, (int)round($processed * 100 / $total));
+            $progress = 'Autoladungs-Archivsuche: ' . $processed . '/' . $total . ' Tage (' . $pct . ' %)'
+                . ' · ' . (int)($state['sessions'] ?? 0) . ' Ladungen'
+                . ' · ' . number_format((float)($state['kWh'] ?? 0.0), 2, ',', '.') . ' kWh erkannt.';
+            SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $progress);
+            $this->SetActionFeedback($progress);
+
+            if ($cursorDay < $firstDay) {
+                $state['active'] = false;
+                $state['finished'] = time();
+                $this->WriteAttributeString('EVArchiveSearchStateJSON', json_encode($state));
+                $this->SetTimerInterval('EVArchiveSearchWorker', 0);
+
+                // Das aktuelle Lernfenster sofort aus den nun bekannten Lade-Markierungen
+                // neu bilden. Dank des Such-Caches werden dabei keine langen Rohwert-Scans
+                // wiederholt. Historische Treffer außerhalb des Lernfensters bleiben
+                // gespeichert und werden bei der nächsten Archiv-Neuberechnung verwendet.
+                $profileText = '';
+                if ($this->ReadPropertyBoolean('ConsumptionProfileLearningEnabled')) {
+                    try {
+                        $profile = $this->LearnConsumptionProfileInternal(true);
+                        $chartID = (int)@$this->GetIDForIdent('ConsumptionProfileChartHTML');
+                        if ($chartID > 0 && is_array($profile)) {
+                            SetValue($chartID, $this->RenderConsumptionProfileChartHTML($profile));
+                        }
+                        $profileText = ' Aktuelles Lastprofil wurde mit den gefundenen Ladeanteilen neu gelernt.';
+                    } catch (Throwable $learnError) {
+                        $profileText = ' Lastprofil-Neulernen fehlgeschlagen: ' . $learnError->getMessage();
+                    }
+                }
+
+                $latest = (int)($state['latestSessionTs'] ?? 0);
+                $done = 'Autoladungs-Archivsuche abgeschlossen: '
+                    . (int)($state['sessions'] ?? 0) . ' Ladungen an '
+                    . (int)($state['foundDays'] ?? 0) . ' Tagen, '
+                    . number_format((float)($state['kWh'] ?? 0.0), 2, ',', '.') . ' kWh Ladeanteil.'
+                    . ($latest > 0 ? ' Letzter Fund: ' . date('d.m.Y H:i', $latest) . '.' : '')
+                    . $profileText;
+                SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $done);
+                SetValue($this->GetIDForIdent('StatusText'), $done);
+                $this->SetActionFeedback($done);
+                return;
+            }
+
+            $this->WriteAttributeString('EVArchiveSearchStateJSON', json_encode($state));
+            $this->SetTimerInterval('EVArchiveSearchWorker', 4000);
+        } catch (Throwable $e) {
+            $state['active'] = false;
+            $state['error'] = $e->getMessage();
+            $this->WriteAttributeString('EVArchiveSearchStateJSON', json_encode($state));
+            $this->SetTimerInterval('EVArchiveSearchWorker', 0);
+            $text = 'Autoladungs-Archivsuche FEHLER: ' . $e->getMessage();
+            SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $text);
+            SetValue($this->GetIDForIdent('StatusText'), $text);
+            $this->SetActionFeedback($text);
+        }
+    }
+
+
     public function RebuildConsumptionProfileFromArchive()
     {
         $this->SetActionFeedback('Lastprofil: Archiv wird für die vollständige Neuberechnung vorbereitet ...');
         try {
+            $evSearchState = json_decode($this->ReadAttributeString('EVArchiveSearchStateJSON'), true);
+            if (is_array($evSearchState) && !empty($evSearchState['active'])) {
+                $text = 'Lastprofil-Neuberechnung nicht gestartet: Die Autoladungs-Archivsuche läuft noch.';
+                $this->SetActionFeedback($text);
+                echo $text;
+                return;
+            }
+
             if (!$this->ReadPropertyBoolean('ConsumptionProfileLearningEnabled')) {
                 $text = 'Lastprofil-Neuberechnung nicht gestartet: Verbrauchsprofil-Lernen ist deaktiviert.';
                 $this->SetActionFeedback($text);
@@ -6141,7 +6371,7 @@ class SmartBatteryOptimizer extends IPSModule
         ];
     }
 
-    private function GetEVChargingAnalysisForDay(int $archiveID, int $varID, int $dayStart): array
+    private function GetEVChargingAnalysisForDay(int $archiveID, int $varID, int $dayStart, bool $forceRefresh = false): array
     {
         $empty = [
             'hourlyWh' => array_fill(0, 24, 0.0),
@@ -6159,9 +6389,31 @@ class SmartBatteryOptimizer extends IPSModule
         // wiederholte Minuten-Aggregat-Abfragen flüssig geblättert werden.
         $isPastDay = $fullDayEnd <= strtotime('today 00:00:00');
         $evThresholdKW = max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW'));
-        $cacheKey = date('Y-m-d', $dayStart) . '|' . $archiveID . '|' . $varID
-            . '|v3|threshold=' . number_format($evThresholdKW, 3, '.', '');
-        if ($isPastDay) {
+        $dateKey = date('Y-m-d', $dayStart);
+        $cacheKey = $dateKey . '|' . $archiveID . '|' . $varID
+            . '|v4|threshold=' . number_format($evThresholdKW, 3, '.', '');
+
+        // Ein expliziter Archiv-Suchlauf speichert positive Treffer dauerhaft. Dadurch
+        // kann das Lastprofil die nachträglich gefundenen Ladeanteile auch nach einem
+        // Neustart sofort wieder abziehen, ohne denselben Tag erneut minutenweise zu lesen.
+        if ($isPastDay && !$forceRefresh) {
+            $stored = json_decode($this->ReadAttributeString('EVArchiveDetectionsJSON'), true);
+            $saved = is_array($stored) ? ($stored[$dateKey] ?? null) : null;
+            if (is_array($saved)
+                && (int)($saved['version'] ?? 0) === 4
+                && abs((float)($saved['thresholdKW'] ?? 0.0) - $evThresholdKW) < 0.0001
+                && isset($saved['hourlyWh']) && is_array($saved['hourlyWh']) && count($saved['hourlyWh']) === 24
+            ) {
+                return [
+                    'hourlyWh' => array_values($saved['hourlyWh']),
+                    'sessions' => (int)($saved['sessions'] ?? 0),
+                    'kWh' => max(0.0, (float)($saved['kWh'] ?? 0.0)),
+                    'details' => is_array($saved['details'] ?? null) ? array_values($saved['details']) : []
+                ];
+            }
+        }
+
+        if ($isPastDay && !$forceRefresh) {
             $cache = json_decode((string)$this->GetBuffer('ConsumptionEVAnalysisCache'), true);
             if (is_array($cache) && isset($cache[$cacheKey]) && is_array($cache[$cacheKey])) {
                 $cached = $cache[$cacheKey];
@@ -6194,6 +6446,7 @@ class SmartBatteryOptimizer extends IPSModule
         $hourlyEVWh = array_fill(0, 24, 0.0);
         $sessionCount = 0;
         $evWh = 0.0;
+        $details = [];
         $pointCount = count($points);
 
         foreach ($sessions as $session) {
@@ -6205,6 +6458,13 @@ class SmartBatteryOptimizer extends IPSModule
             if ($overlapEnd <= $overlapStart) continue;
 
             if ($sessionStart >= $dayStart && $sessionStart < $fullDayEnd) $sessionCount++;
+            $details[] = [
+                'start' => $sessionStart,
+                'end' => $sessionEnd,
+                'baselineW' => $baselineW,
+                'chargePowerW' => max(0.0, (float)($session['chargePowerW'] ?? 0.0)),
+                'kWh' => max(0.0, (float)($session['extraKWh'] ?? 0.0))
+            ];
 
             // Den tatsächlichen Zusatzanteil minutenweise gegen die unmittelbar vor
             // Ladebeginn ermittelte Grundlast integrieren. Dadurch wird nicht pauschal
@@ -6236,7 +6496,8 @@ class SmartBatteryOptimizer extends IPSModule
         $result = [
             'hourlyWh' => $hourlyEVWh,
             'sessions' => $sessionCount,
-            'kWh' => $evWh / 1000.0
+            'kWh' => $evWh / 1000.0,
+            'details' => $details
         ];
 
         if ($isPastDay) {

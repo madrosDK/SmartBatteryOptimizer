@@ -1,3 +1,15 @@
+# SmartBatteryOptimizer 1.10.50 / Build 221
+
+- Neuer separater Button `Autoladungen im Archiv suchen` für eine nachträgliche Suche in abgeschlossenen Verbrauchstagen.
+- Neuer Parameter `Autoladung Archiv-Suchzeitraum`: 0 = gesamtes verfügbares Archiv, ansonsten die gewünschte Anzahl vergangener Tage.
+- Die Suche verwendet die bereits konfigurierbare Schwelle `Autoladung erkennen ab Hausverbrauch` und bewertet jeden Tag mit der aktuell eingestellten kW-Grenze neu; alte Negativ-Cacheergebnisse werden dabei nicht übernommen.
+- Eigener `EVArchiveSearchWorker` verarbeitet maximal zwei Tage pro Lauf und arbeitet unabhängig von Börsenpreis-, PV- und Lastprofil-Workern.
+- Positive Treffer werden dauerhaft mit Tages-/Stundenanteilen und Sitzungsdetails gespeichert. Das originale IP-Symcon-Verbrauchsarchiv bleibt unverändert.
+- Nach Abschluss wird das aktuelle Lastprofil-Lernfenster automatisch mit den neu gefundenen Ladeanteilen neu gelernt; Treffer außerhalb des Lernfensters bleiben für spätere Archiv-Neuberechnungen gespeichert.
+- Suchstatus zeigt Fortschritt, Anzahl der Ladevorgänge, erkannte kWh sowie den letzten Fund.
+- Gleichzeitiger Start von Lastprofil-Archiv-Neuberechnung und Autoladungs-Archivsuche wird verhindert, damit sich die beiden Archiv-Worker nicht gegenseitig belasten.
+- Keine Preis-, PV-, Einspeise-, Dispatch-, Statistik- oder Archivdaten werden beim Update zurückgesetzt oder gelöscht.
+
 # SmartBatteryOptimizer 1.10.49 / Build 220
 
 - Autolade-Erkennung auf die tatsächliche Hausverbrauchsleistung umgestellt: Nicht mehr die Größe eines einzelnen Lastsprungs ist entscheidend, sondern ob der gemessene Verbrauch die konfigurierte kW-Schwelle erreicht.
