@@ -211,6 +211,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('PricesJSON', '[]');
         $this->RegisterAttributeInteger('PriceCacheUpdatedTs', 0);
         $this->RegisterAttributeString('PriceCacheSignature', '');
+        $this->RegisterAttributeInteger('PriceArchiveAlignmentVersion', 0);
+        $this->RegisterAttributeInteger('PriceArchiveLastSyncedTs', 0);
         $this->RegisterAttributeString('PlanJSON', '[]');
         $this->RegisterAttributeInteger('FeedInPlannerVersion', 0);
         $this->RegisterAttributeFloat('LearnedNightKWh', 0.0);
@@ -531,7 +533,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.37';
+        $currentModuleVersion = '1.10.39';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -617,7 +619,7 @@ class SmartBatteryOptimizer extends IPSModule
             'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
             'PVCalibrationBlockedFromTs','PVCalibrationExclusionActiveFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ActiveFeedInEnergyVariableID','ManualTestUntil',
-            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','FeedInStatisticsLastRenderTs'
+            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','PriceArchiveAlignmentVersion','PriceArchiveLastSyncedTs','FeedInStatisticsLastRenderTs'
         ];
         $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInLastEnergyKWh','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
         $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized','FeedInPriceLockActive','FeedInFactorOriginalValid'];
@@ -656,7 +658,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.37',
+            'moduleVersion' => '1.10.39',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1379,6 +1381,14 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
             $this->ForecastDiagnosticStep('09 Preise START');
             $prices = $this->FetchPrices();
+            // Das frisch geladene Preisraster zuerst veröffentlichen. Der parallel
+            // laufende ControlTimer darf niemals noch ein altes PricesJSON lesen und
+            // damit den bereits neuen CurrentPrice wieder überschreiben.
+            $this->WriteAttributeString('PricesJSON', json_encode($prices));
+            // Preisarchiv mit den echten Tarif-Gültigkeitszeiten pflegen. Beim ersten
+            // Lauf von v1.10.39 wird der noch bekannte historische Bereich einmalig
+            // bereinigt und rückwirkend mit den korrekten Startzeiten neu aufgebaut.
+            $this->SyncCurrentPriceArchiveTimeline($prices);
             $this->UpdateCurrentPriceVariable($prices);
             $this->ForecastDiagnosticStep('10 Preise ENDE');
             $this->DebugLog('Preise', 'Geladene interne Preis-Slots: ' . count($prices));
@@ -1399,7 +1409,8 @@ class SmartBatteryOptimizer extends IPSModule
             $this->DebugLog('Einspeiseplan', ['SoC'=>$plan['soc'] ?? null,'gespeichertKWh'=>$plan['storedKWh'] ?? null,'ReserveKWh'=>$plan['reserveKWh'] ?? null,'verfuegbarKWh'=>$plan['availableKWh'] ?? null,'PVSpeicherKWh'=>$plan['pvSpaceRequiredKWh'] ?? null,'Slots'=>count($plan['slots'] ?? []),'ErloesEUR'=>$plan['expectedRevenueEUR'] ?? null,'Status'=>$plan['status'] ?? '']);
 
             $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
-            $this->WriteAttributeString('PricesJSON', json_encode($prices));
+            // PricesJSON wurde unmittelbar nach FetchPrices() gespeichert, damit
+            // CurrentPrice und ControlTimer dieselbe Preisbasis verwenden.
             $this->WriteAttributeString('PlanJSON', json_encode($plan));
 
             SetValue($this->GetIDForIdent('PVForecastToday'), round((float)($forecast['todayKWh'] ?? 0.0), 3));
@@ -6144,6 +6155,116 @@ class SmartBatteryOptimizer extends IPSModule
         }
     }
 
+    private function BuildCurrentPriceArchivePoints(array $prices): array
+    {
+        $provider = $this->ReadPropertyInteger('PriceProvider');
+        $now = time();
+        $points = [];
+        foreach ($prices as $p) {
+            $start = (int)($p['start'] ?? 0);
+            $end = (int)($p['end'] ?? 0);
+            if ($start <= 0 || $end <= $start || $start > $now) continue;
+
+            // EPEX/aWATTar/benutzerdefinierter EPEX-Tarif werden intern zwar in
+            // 15-Minuten-Slots erweitert, der Tarif selbst gilt aber stündlich.
+            // Deshalb nur den Start jeder vollen Stunde archivieren. Bei einer eigenen
+            // JSON-Quelle bleiben deren normalisierte Slotstarts erhalten.
+            if ($provider !== 2 && date('i:s', $start) !== '00:00') continue;
+            $points[$start] = (float)($p['priceCt'] ?? 0.0);
+        }
+        ksort($points);
+        return $points;
+    }
+
+    private function SyncCurrentPriceArchiveTimeline(array $prices): void
+    {
+        $archiveID = $this->FindArchive();
+        $priceVarID = (int)@$this->GetIDForIdent('CurrentPrice');
+        if ($archiveID <= 0 || $priceVarID <= 0 || !function_exists('AC_AddLoggedValues')) return;
+
+        $points = $this->BuildCurrentPriceArchivePoints($prices);
+        if (count($points) === 0) return;
+
+        try {
+            // Zufällige Live-Schreibzeitpunkte verhindern. Das Modul pflegt die
+            // Preis-Zeitreihe selbst mit den originalen Tarifstarts.
+            if (AC_GetLoggingStatus($archiveID, $priceVarID)) AC_SetLoggingStatus($archiveID, $priceVarID, false);
+            if (AC_GetAggregationType($archiveID, $priceVarID) !== 0) AC_SetAggregationType($archiveID, $priceVarID, 0);
+
+            $timestamps = array_map('intval', array_keys($points));
+            $fromTs = min($timestamps);
+            $toTs = min(time(), max($timestamps) + ($this->ReadPropertyInteger('PriceProvider') === 2 ? 900 : 3600) - 1);
+
+            // v1.10.39: einmalige Reparatur des noch bekannten historischen Bereichs.
+            // Nur der Zeitraum, dessen echte Preise noch in PricesJSON vorhanden sind,
+            // wird bereinigt. Aeltere unbekannte Preiswerte bleiben unangetastet.
+            if ($this->ReadAttributeInteger('PriceArchiveAlignmentVersion') < 1) {
+                @AC_DeleteVariableData($archiveID, $priceVarID, $fromTs, $toTs);
+                $this->AddArchiveLoggedValues($archiveID, $priceVarID, $points);
+                $this->WriteAttributeInteger('PriceArchiveAlignmentVersion', 1);
+                $this->WriteAttributeInteger('PriceArchiveLastSyncedTs', max($timestamps));
+                $this->DebugLog('Preisarchiv', 'v1.10.39: Preisarchiv rueckwirkend aus PricesJSON neu ausgerichtet | ' . date('d.m.Y H:i:s', $fromTs) . ' bis ' . date('d.m.Y H:i:s', $toTs) . ' | Punkte=' . count($points));
+                return;
+            }
+
+            // Laufende Synchronisierung idempotent: vorhandene exakte Tarifstarts
+            // beibehalten, geaenderte Tarife am gleichen Startzeitpunkt ersetzen.
+            $existingRows = @AC_GetLoggedValues($archiveID, $priceVarID, $fromTs, $toTs, 0);
+            $existing = [];
+            if (is_array($existingRows)) {
+                foreach ($existingRows as $row) {
+                    $ts = (int)($row['TimeStamp'] ?? 0);
+                    if ($ts > 0) $existing[$ts] = (float)($row['Value'] ?? 0.0);
+                }
+            }
+            $toAdd = [];
+            foreach ($points as $ts => $price) {
+                $ts = (int)$ts;
+                if (!array_key_exists($ts, $existing)) {
+                    $toAdd[$ts] = (float)$price;
+                    continue;
+                }
+                if (abs((float)$existing[$ts] - (float)$price) > 0.00001) {
+                    @AC_DeleteVariableData($archiveID, $priceVarID, $ts, $ts);
+                    $toAdd[$ts] = (float)$price;
+                }
+            }
+            if (count($toAdd) > 0) $this->AddArchiveLoggedValues($archiveID, $priceVarID, $toAdd);
+            $this->WriteAttributeInteger('PriceArchiveLastSyncedTs', max($timestamps));
+        } catch (Throwable $e) {
+            $this->DebugLog('Preisarchiv', 'Synchronisierung fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
+    }
+
+    private function ArchiveCurrentPriceAtTariffStart(int $slotStart, float $priceCt): void
+    {
+        if ($slotStart <= 0 || $slotStart > time()) return;
+        $provider = $this->ReadPropertyInteger('PriceProvider');
+        if ($provider !== 2) {
+            $slotStart = strtotime(date('Y-m-d H:00:00', $slotStart));
+        }
+        if ($slotStart <= 0) return;
+        if ($this->ReadAttributeInteger('PriceArchiveLastSyncedTs') === $slotStart) return;
+
+        $archiveID = $this->FindArchive();
+        $priceVarID = (int)@$this->GetIDForIdent('CurrentPrice');
+        if ($archiveID <= 0 || $priceVarID <= 0 || !function_exists('AC_AddLoggedValues')) return;
+        try {
+            if (AC_GetLoggingStatus($archiveID, $priceVarID)) AC_SetLoggingStatus($archiveID, $priceVarID, false);
+            $existing = @AC_GetLoggedValues($archiveID, $priceVarID, $slotStart, $slotStart, 1);
+            $same = is_array($existing) && count($existing) > 0
+                && (int)($existing[0]['TimeStamp'] ?? 0) === $slotStart
+                && abs((float)($existing[0]['Value'] ?? 0.0) - $priceCt) <= 0.00001;
+            if (!$same) {
+                @AC_DeleteVariableData($archiveID, $priceVarID, $slotStart, $slotStart);
+                $this->AddArchiveLoggedValues($archiveID, $priceVarID, [$slotStart => $priceCt]);
+            }
+            $this->WriteAttributeInteger('PriceArchiveLastSyncedTs', $slotStart);
+        } catch (Throwable $e) {
+            $this->DebugLog('Preisarchiv', 'Tarifstart konnte nicht archiviert werden: ' . $e->getMessage(), 0);
+        }
+    }
+
     private function FindCurrentPrice(array $prices): float
     {
         $now = time();
@@ -6154,6 +6275,13 @@ class SmartBatteryOptimizer extends IPSModule
     private function UpdateCurrentPriceVariable(?array $prices = null): void
     {
         if ($prices === null) {
+            // Während RecalculateInternal() ein neues Preisraster lädt, darf ein
+            // paralleler ControlTimer den archivierten aktuellen Preis nicht aus
+            // dem noch alten PricesJSON zurückschreiben. Der Berechnungslauf setzt
+            // CurrentPrice nach dem Speichern des neuen Preisrasters selbst.
+            if ($this->ReadAttributeInteger('CalculationLockUntil') > time()) {
+                return;
+            }
             $prices = json_decode($this->ReadAttributeString('PricesJSON'), true);
         }
         if (!is_array($prices) || count($prices) === 0) return;
@@ -6161,17 +6289,23 @@ class SmartBatteryOptimizer extends IPSModule
         $now = time();
         $known = false;
         $priceCt = 0.0;
+        $priceStart = 0;
         foreach ($prices as $p) {
             $start = (int)($p['start'] ?? 0);
             $end = (int)($p['end'] ?? 0);
             if ($start <= 0 || $end <= $start) continue;
             if ($now >= $start && $now < $end) {
                 $priceCt = (float)($p['priceCt'] ?? 0.0);
+                $priceStart = $start;
                 $known = true;
                 break;
             }
         }
         if (!$known) return;
+
+        // Unabhaengig vom Zeitpunkt dieses Timerlaufs wird der Preis im Archiv auf
+        // den Beginn seines Tarifintervalls gelegt (bei EPEX 60 min auf HH:00:00).
+        $this->ArchiveCurrentPriceAtTariffStart($priceStart, $priceCt);
 
         $id = (int)@$this->GetIDForIdent('CurrentPrice');
         if ($id <= 0) return;
@@ -6248,18 +6382,20 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
 
-        // Den jeweils gültigen berechneten Einspeisetarif ebenfalls archivieren.
-        // Die Einspeise-Statistik kann dadurch reale kWh-Zählerdifferenzen außerhalb
-        // der Automatik zeitgenau mit dem zu diesem Zeitpunkt gültigen Tarif bewerten.
+        // Den berechneten Einspeisetarif als saubere Tarif-Zeitreihe archivieren.
+        // Automatisches Logging bleibt bewusst AUS: SetValue(CurrentPrice) kann zu einer
+        // beliebigen Refresh-Uhrzeit erfolgen. Die Archivwerte werden stattdessen vom
+        // Modul exakt auf die Gültigkeitszeit des Tarifs (EPEX 60 min: volle Stunde)
+        // geschrieben. So entstehen keine künstlichen Zwischenpunkte wie 13:24:17.
         $currentPriceID = (int)@$this->GetIDForIdent('CurrentPrice');
         if ($currentPriceID > 0) {
             try {
-                if (!AC_GetLoggingStatus($archiveID, $currentPriceID)) AC_SetLoggingStatus($archiveID, $currentPriceID, true);
+                if (AC_GetLoggingStatus($archiveID, $currentPriceID)) AC_SetLoggingStatus($archiveID, $currentPriceID, false);
                 if (AC_GetAggregationType($archiveID, $currentPriceID) !== 0) AC_SetAggregationType($archiveID, $currentPriceID, 0);
                 if (function_exists('AC_SetGraphStatus')) @AC_SetGraphStatus($archiveID, $currentPriceID, false);
-                $recentPrice = @AC_GetLoggedValues($archiveID, $currentPriceID, time() - 86400, time(), 1);
-                if ((!is_array($recentPrice) || count($recentPrice) === 0) && function_exists('AC_AddLoggedValues')) {
-                    @AC_AddLoggedValues($archiveID, $currentPriceID, [['TimeStamp'=>time(), 'Value'=>(float)GetValue($currentPriceID)]]);
+                $cachedPriceTimeline = json_decode($this->ReadAttributeString('PricesJSON'), true);
+                if (is_array($cachedPriceTimeline) && count($cachedPriceTimeline) > 0) {
+                    $this->SyncCurrentPriceArchiveTimeline($cachedPriceTimeline);
                 }
             } catch (Throwable $e) {
                 $this->DebugLog('ArchiveStorage', 'Aktueller Einspeisepreis ' . $currentPriceID . ': ' . $e->getMessage(), 0);

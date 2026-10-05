@@ -1,3 +1,14 @@
+## 1.10.39 (Build 210)
+- **Preisarchiv auf Tarifzeiten ausgerichtet:** `Aktueller Einspeisepreis` wird im Archiv nicht mehr mit zufälligen Refresh-/Timerzeitpunkten protokolliert, sondern mit dem tatsächlichen Beginn des Tarifintervalls. Bei EPEX 60 min sind das volle Stunden (`HH:00:00`).
+- Beim ersten erfolgreichen Lauf wird der von `PricesJSON` noch bekannte historische Zeitraum einmalig bereinigt und mit den dort vorhandenen Preisen rückwirkend auf den korrekten Gültigkeitszeiten neu aufgebaut. Ältere Zeiträume ohne bekannte Preise bleiben unangetastet.
+- Das automatische Archive-Control-Logging von `CurrentPrice` ist deaktiviert; die Modulvariable zeigt live weiterhin den aktuellen Tarif, die Historie wird gezielt über `AC_AddLoggedValues` gepflegt.
+- Bei späteren Preisupdates werden fehlende bzw. geänderte Tarifpunkte idempotent am korrekten Startzeitpunkt ergänzt/ersetzt. Einspeise-kWh-Archive und sonstige Messarchive werden dabei nicht verändert.
+
+## 1.10.38 (Build 209)
+- **Aktueller Einspeisepreis synchronisiert:** Beim Preis-Refresh wird das neue `PricesJSON` jetzt vor `CurrentPrice` gespeichert.
+- Ein parallel laufender `ControlTimer` darf während einer aktiven Neuberechnung `CurrentPrice` nicht mehr aus einem noch alten Preisraster zurückschreiben. Dadurch verschwinden kurz aufeinanderfolgende Sprünge zwischen altem und neuem Stundenpreis.
+- Keine vorhandenen Archivdaten werden gelöscht oder verändert.
+
 ## 1.10.37 (Build 208)
 
 - Die Variable **Aktueller Einspeisepreis** wird nun zuverlässig aus dem geladenen Tarifraster aktualisiert, mit `ct/kWh`-Profil versehen und automatisch im IP-Symcon-Archiv protokolliert.
