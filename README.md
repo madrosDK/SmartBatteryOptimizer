@@ -1,4 +1,4 @@
-> Version 1.10.41 / Build 212: Startet die Einspeise-Statistik einmalig ab dem Update-Tag neu und verwendet dafür weiterhin die realen Einspeise-kWh- und Preisarchive.
+> Version 1.10.42 / Build 213: Ergänzt die Einspeise-Statistik um eine persistente Tagesansicht mit stündlicher Einspeisung und stündlichem Erlös; keine automatischen Statistik-Resets bei Updates.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -17,7 +17,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.41 / Build 212**
+**1.10.42 / Build 213**
 
 ## Neu in 1.2.3
 

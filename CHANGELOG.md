@@ -1,3 +1,10 @@
+## 1.10.42 (Build 213)
+- **Einspeise-Statistik um Tagesansicht erweitert:** Neben Woche und Monat steht jetzt `Tag` zur Verfügung.
+- Die Tagesansicht zeigt 24 Stunden mit Einspeisung und Erlös je Stunde; Blau = außerhalb Automatik, Grün = während Automatik, gelbe Überlagerung = jeweiliger Erlös.
+- Stundenwerte werden direkt aus Einspeise-kWh-/Netzleistungsarchiv und Preisarchiv gebildet und an Stunden-, Tarif- und Automatikgrenzen sauber aufgeteilt.
+- Gewählte Ansicht und konkret gewählter Tag bleiben auch nach automatischen HTML-/Chart-Aktualisierungen erhalten.
+- Ab dieser Version wird der einmalige Statistik-Reset aus v1.10.41 **nicht mehr aufgerufen**. Zukünftige Updates entfernen oder setzen keine Statistik-/Archivdaten automatisch zurück.
+
 ## 1.10.41 (Build 212)
 - **Einspeise-Statistik einmalig ab Update-Tag neu gestartet:** Historische abgeleitete Statistikdaten vor dem heutigen Tag werden entfernt, damit Woche/Monat nicht mehr von alten fehlerhaften Werten beeinflusst werden.
 - `GridExportDailyJSON` wird beim einmaligen Neustart geleert; die Statistik verwendet für den Neustart die realen Rohdaten aus Einspeise-kWh-Archiv und Preisarchiv.
