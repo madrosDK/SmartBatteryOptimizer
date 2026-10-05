@@ -1,3 +1,12 @@
+# SmartBatteryOptimizer 1.10.52 / Build 223
+
+- Autolade-Erkennung erkennt jetzt auch sehr schnelle Schaltflanken innerhalb einer einzigen Minute anhand der 1-Minuten-Aggregate `Min/Max` und `MinTime/MaxTime`. Damit wird z. B. ein Sprung von ca. 1,2 kW auf 7,3–8,5 kW innerhalb weniger Sekunden als Ladebeginn erkannt.
+- Die Minutenaggregation dient nur zur Kandidatensuche. Für erkannte Kandidaten werden anschließend ausschließlich kleine Rohdatenfenster von jeweils ±5 Minuten um Start und Ende gelesen, um die tatsächliche Aufwärts- bzw. Abwärtsflanke sekundengenauer zu bestätigen. Es werden weiterhin keine kompletten Tages-Rohwertlisten geladen.
+- Hochlast-Plateau und Rückkehr Richtung Grundlast bleiben Pflicht für historische Ladevorgänge; einzelne kurze Lastspitzen werden dadurch weiterhin nicht als Autoladung klassifiziert.
+- Erkennungscache und gespeicherte Autoladungs-Treffer auf Version 6 angehoben, damit ältere Nicht-Treffer mit der neuen Flankenerkennung nicht wiederverwendet werden.
+- Erkannter Ladeanteil wird weiterhin orange dargestellt und vollständig aus dem gelernten Lastprofil herausgerechnet; das originale Verbrauchsarchiv bleibt unverändert.
+- Keine Preis-, PV-, Einspeise-, Dispatch- oder Statistiklogik geändert.
+
 # SmartBatteryOptimizer 1.10.51 / Build 222
 
 - Autolade-Erkennung grundlegend auf Lastmuster umgestellt: deutlicher kW-Anstieg gegen die vorherige Grundlast, mehrere Minuten Hochlast-Plateau und anschließender deutlicher Lastabfall.
