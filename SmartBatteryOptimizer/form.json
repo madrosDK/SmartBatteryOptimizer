@@ -155,6 +155,15 @@
                     "caption": "Netzbezug / Netzeinspeisung (auch für reale Einspeisemengenmessung)"
                 },
                 {
+                    "type": "SelectVariable",
+                    "name": "GridExportEnergyVariable",
+                    "caption": "Netzeinspeisung Energie (kWh) – für Statistik und Ist-Menge"
+                },
+                {
+                    "type": "Label",
+                    "caption": "Optional: kumulativer Einspeise-Energiezähler in kWh. Wenn gesetzt, verwendet das Modul diesen Zähler bevorzugt für die Einspeise-Statistik und für „Tatsächlich eingespeiste Menge aktuell“. Ohne Auswahl bleibt die Integration der Netzleistung (W) als Fallback aktiv. Die Archivierung wird automatisch aktiviert."
+                },
+                {
                     "type": "NumberSpinner",
                     "name": "PVCalibrationFeedInLimitW",
                     "caption": "Einspeisegrenze",

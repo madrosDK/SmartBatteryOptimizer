@@ -53,6 +53,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('AlphaDispatchTimeVariable', 0);
 
         $this->RegisterPropertyInteger('HousePowerVariable', 0);
+        $this->RegisterPropertyInteger('GridExportEnergyVariable', 0);
         $this->RegisterPropertyInteger('PVActualPowerVariable', 0);
         $this->RegisterPropertyInteger('LearningDays', 30);
         $this->RegisterPropertyFloat('FallbackNightConsumptionKWh', 4.0);
@@ -225,6 +226,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
         $this->RegisterAttributeInteger('ActiveFeedInLastTs', 0);
         $this->RegisterAttributeFloat('ActiveFeedInLastExportW', 0.0);
+        $this->RegisterAttributeFloat('ActiveFeedInLastEnergyKWh', 0.0);
+        $this->RegisterAttributeInteger('ActiveFeedInEnergyVariableID', 0);
         $this->RegisterAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
         $this->RegisterAttributeInteger('ActiveFeedInPlannedEndTs', 0);
         $this->RegisterAttributeString('CompletedFeedInPlanKeysJSON', '{}');
@@ -526,7 +529,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.34';
+        $currentModuleVersion = '1.10.36';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -611,10 +614,10 @@ class SmartBatteryOptimizer extends IPSModule
         $integerAttributes = [
             'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
-            'PVCalibrationBlockedFromTs','PVCalibrationExclusionActiveFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ManualTestUntil',
+            'PVCalibrationBlockedFromTs','PVCalibrationExclusionActiveFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ActiveFeedInEnergyVariableID','ManualTestUntil',
             'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','FeedInStatisticsLastRenderTs'
         ];
-        $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
+        $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInLastEnergyKWh','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
         $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized','FeedInPriceLockActive','FeedInFactorOriginalValid'];
 
         $attributes = [];
@@ -651,7 +654,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.34',
+            'moduleVersion' => '1.10.36',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -2019,6 +2022,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
         $this->WriteAttributeInteger('ActiveFeedInLastTs', 0);
         $this->WriteAttributeFloat('ActiveFeedInLastExportW', 0.0);
+        $this->WriteAttributeInteger('ActiveFeedInEnergyVariableID', 0);
+        $this->WriteAttributeFloat('ActiveFeedInLastEnergyKWh', 0.0);
         $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
         $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
         $this->WriteAttributeInteger('ActiveFeedInStartedTs', 0);
@@ -2062,6 +2067,14 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', 0.0);
         $this->WriteAttributeInteger('ActiveFeedInLastTs', time());
         $this->WriteAttributeFloat('ActiveFeedInLastExportW', $this->ReadCurrentGridExportW());
+        $energyVarID = $this->ReadPropertyInteger('GridExportEnergyVariable');
+        if ($energyVarID > 0 && @IPS_VariableExists($energyVarID)) {
+            $this->WriteAttributeInteger('ActiveFeedInEnergyVariableID', $energyVarID);
+            $this->WriteAttributeFloat('ActiveFeedInLastEnergyKWh', max(0.0, (float)GetValue($energyVarID)));
+        } else {
+            $this->WriteAttributeInteger('ActiveFeedInEnergyVariableID', 0);
+            $this->WriteAttributeFloat('ActiveFeedInLastEnergyKWh', 0.0);
+        }
         $this->WriteAttributeInteger('ActiveFeedInLastAdjustmentTs', 0);
         $this->WriteAttributeInteger('ActiveFeedInPlannedEndTs', 0);
         $this->WriteAttributeInteger('ActiveFeedInStartedTs', time());
@@ -2085,9 +2098,42 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $now = time();
         $lastTs = $this->ReadAttributeInteger('ActiveFeedInLastTs');
+        $delivered = max(0.0, $this->ReadAttributeFloat('ActiveFeedInDeliveredKWh'));
+
+        // Wenn eine eigene kumulative Einspeise-Energievariable (kWh) konfiguriert ist,
+        // wird die laufende Automatikmenge direkt aus deren Zaehlerdifferenz bestimmt.
+        // Damit stammen Statistik und "Tatsaechlich eingespeiste Menge aktuell" aus
+        // derselben realen Energiequelle und nicht aus zwei unterschiedlichen Verfahren.
+        $energyVarID = $this->ReadPropertyInteger('GridExportEnergyVariable');
+        if ($energyVarID > 0 && @IPS_VariableExists($energyVarID)) {
+            $currentEnergy = max(0.0, (float)GetValue($energyVarID));
+            $lastEnergyVarID = $this->ReadAttributeInteger('ActiveFeedInEnergyVariableID');
+            $lastEnergy = max(0.0, $this->ReadAttributeFloat('ActiveFeedInLastEnergyKWh'));
+
+            if ($lastEnergyVarID === $energyVarID && $lastTs > 0) {
+                $delta = $currentEnergy - $lastEnergy;
+                if ($delta >= 0.0) {
+                    $delivered += $delta;
+                } else {
+                    // Tageszaehler/Zaehlerreset waehrend eines laufenden Fensters:
+                    // der neue positive Zaehlerstand ist die seit dem Reset gelieferte Energie.
+                    $delivered += $currentEnergy;
+                }
+            }
+
+            $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', $delivered);
+            $this->WriteAttributeInteger('ActiveFeedInLastTs', $now);
+            $this->WriteAttributeInteger('ActiveFeedInEnergyVariableID', $energyVarID);
+            $this->WriteAttributeFloat('ActiveFeedInLastEnergyKWh', $currentEnergy);
+            // Den Leistungswert parallel aktuell halten, falls die kWh-Variable spaeter
+            // waehrend eines Laufes entfernt wird und der Fallback uebernehmen muss.
+            try { $this->WriteAttributeFloat('ActiveFeedInLastExportW', $this->ReadCurrentGridExportW()); } catch (Throwable $e) {}
+            return $delivered;
+        }
+
+        // Fallback ohne kWh-Zaehler: reale Netzleistung zeitlich integrieren.
         $lastW = max(0.0, $this->ReadAttributeFloat('ActiveFeedInLastExportW'));
         $currentW = $this->ReadCurrentGridExportW();
-        $delivered = max(0.0, $this->ReadAttributeFloat('ActiveFeedInDeliveredKWh'));
         if ($lastTs > 0 && $now > $lastTs) {
             $seconds = min(180, $now - $lastTs);
             $delivered += (($lastW + $currentW) / 2.0) * ($seconds / 3600.0) / 1000.0;
@@ -2095,6 +2141,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeFloat('ActiveFeedInDeliveredKWh', $delivered);
         $this->WriteAttributeInteger('ActiveFeedInLastTs', $now);
         $this->WriteAttributeFloat('ActiveFeedInLastExportW', $currentW);
+        $this->WriteAttributeInteger('ActiveFeedInEnergyVariableID', 0);
+        $this->WriteAttributeFloat('ActiveFeedInLastEnergyKWh', 0.0);
         return $delivered;
     }
 
@@ -2175,46 +2223,34 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RebuildTodayGridExportFromArchive(): void
     {
-        $archiveID = $this->FindArchive();
-        $varID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
-        if ($archiveID <= 0 || $varID <= 0 || !@IPS_VariableExists($varID)) return;
-
         $start = strtotime('today 00:00:00');
         $end = time();
         if ($end <= $start) return;
 
-        $values = @AC_GetLoggedValues($archiveID, $varID, $start, $end, 0);
-        if (!is_array($values) || count($values) === 0) return;
-        $values = array_reverse($values);
-
-        $prev = @AC_GetLoggedValues($archiveID, $varID, 0, $start - 1, 1);
-        if (is_array($prev) && count($prev) > 0) {
-            array_unshift($values, ['TimeStamp' => $start, 'Value' => $prev[0]['Value']]);
-        } elseif ((int)$values[0]['TimeStamp'] > $start) {
-            array_unshift($values, ['TimeStamp' => $start, 'Value' => $values[0]['Value']]);
-        }
-
-        $invert = $this->ReadPropertyBoolean('PVCalibrationFeedInInvert');
-        $wh = 0.0;
-        for ($i = 0; $i < count($values); $i++) {
-            $t1 = max($start, (int)$values[$i]['TimeStamp']);
-            $t2 = ($i + 1 < count($values)) ? min($end, (int)$values[$i + 1]['TimeStamp']) : $end;
-            if ($t2 <= $t1) continue;
-            $raw = (float)$values[$i]['Value'];
-            $exportW = $invert ? -$raw : $raw;
-            $exportW = max(0.0, $exportW);
-            $wh += $exportW * (($t2 - $t1) / 3600.0);
-        }
+        $daily = $this->GetGridExportDailyFromArchive($start, $end);
+        $day = date('Y-m-d', $start);
+        $kWh = max(0.0, (float)($daily[$day] ?? 0.0));
 
         $days = json_decode($this->ReadAttributeString('GridExportDailyJSON'), true);
         if (!is_array($days)) $days = [];
-        $day = date('Y-m-d', $start);
         if (!isset($days[$day]) || !is_array($days[$day])) $days[$day] = ['kWh' => 0.0, 'eur' => 0.0];
-        $days[$day]['kWh'] = max(0.0, $wh / 1000.0);
+        $days[$day]['kWh'] = $kWh;
         $this->WriteAttributeString('GridExportDailyJSON', json_encode($days));
     }
 
     private function GetGridExportDailyFromArchive(int $startTs, int $endTs): array
+    {
+        // Falls eine eigene kumulative Einspeise-Energievariable (kWh) konfiguriert ist,
+        // ist sie die maßgebliche Quelle der Statistik. Die zeitliche Integration der
+        // Netzleistungsvariable bleibt ausschließlich als Fallback erhalten.
+        $energyVarID = $this->ReadPropertyInteger('GridExportEnergyVariable');
+        if ($energyVarID > 0 && @IPS_VariableExists($energyVarID)) {
+            return $this->GetGridExportDailyFromEnergyArchive($startTs, $endTs, $energyVarID);
+        }
+        return $this->GetGridExportDailyFromPowerArchive($startTs, $endTs);
+    }
+
+    private function GetGridExportDailyFromPowerArchive(int $startTs, int $endTs): array
     {
         $archiveID = $this->FindArchive();
         $varID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
@@ -2236,20 +2272,39 @@ class SmartBatteryOptimizer extends IPSModule
         $count = count($values);
         for ($i = 0; $i < $count; $i++) {
             $segStart = max($startTs, (int)$values[$i]['TimeStamp']);
-            $segEnd = ($i + 1 < $count) ? min($endTs, (int)$values[$i + 1]['TimeStamp']) : $endTs;
+            $nextTs = ($i + 1 < $count) ? (int)$values[$i + 1]['TimeStamp'] : $endTs;
+            $segEnd = min($endTs, $nextTs);
             if ($segEnd <= $segStart) continue;
-            $raw = (float)$values[$i]['Value'];
-            $exportW = max(0.0, $invert ? -$raw : $raw);
-            if ($exportW <= 0.0) continue;
 
-            // Segmente über Mitternacht sauber auf die einzelnen Kalendertage verteilen.
+            $raw1 = (float)$values[$i]['Value'];
+            $exportW1 = max(0.0, $invert ? -$raw1 : $raw1);
+            $exportW2 = $exportW1;
+            if ($i + 1 < $count) {
+                $raw2 = (float)$values[$i + 1]['Value'];
+                $exportW2 = max(0.0, $invert ? -$raw2 : $raw2);
+            }
+
+            // Archivluecken duerfen nicht mehr so behandelt werden, als haette die
+            // letzte Leistung beliebig lange unveraendert angelegen. Das war die
+            // Hauptursache fuer unrealistisch hohe berechnete Tages-kWh. Wie bei der
+            // Live-Messung werden maximal 180 s ohne neuen Messpunkt fortgeschrieben.
+            $trustedEnd = min($segEnd, $segStart + 180);
+            if ($trustedEnd <= $segStart) continue;
+            $trustedSeconds = $trustedEnd - $segStart;
+            $fullSeconds = max(1, $nextTs - (int)$values[$i]['TimeStamp']);
+            $fraction = min(1.0, $trustedSeconds / $fullSeconds);
+            $endW = $exportW1 + ($exportW2 - $exportW1) * $fraction;
+            $avgW = max(0.0, ($exportW1 + $endW) / 2.0);
+            if ($avgW <= 0.0) continue;
+
+            // Segmente ueber Mitternacht sauber auf die einzelnen Kalendertage verteilen.
             $cursor = $segStart;
-            while ($cursor < $segEnd) {
+            while ($cursor < $trustedEnd) {
                 $nextMidnight = strtotime('tomorrow 00:00:00', $cursor);
-                $pieceEnd = min($segEnd, $nextMidnight);
+                $pieceEnd = min($trustedEnd, $nextMidnight);
                 $day = date('Y-m-d', $cursor);
                 if (!isset($dailyWh[$day])) $dailyWh[$day] = 0.0;
-                $dailyWh[$day] += $exportW * (($pieceEnd - $cursor) / 3600.0);
+                $dailyWh[$day] += $avgW * (($pieceEnd - $cursor) / 3600.0);
                 $cursor = $pieceEnd;
             }
         }
@@ -2257,6 +2312,80 @@ class SmartBatteryOptimizer extends IPSModule
         $result = [];
         foreach ($dailyWh as $day => $wh) $result[$day] = max(0.0, $wh / 1000.0);
         return $result;
+    }
+
+    private function GetGridExportDailyFromEnergyArchive(int $startTs, int $endTs, int $varID): array
+    {
+        $archiveID = $this->FindArchive();
+        if ($archiveID <= 0 || $varID <= 0 || !@IPS_VariableExists($varID) || $endTs <= $startTs) return [];
+
+        $effectiveEnd = min($endTs, time());
+        if ($effectiveEnd <= $startTs) return [];
+
+        $values = @AC_GetLoggedValues($archiveID, $varID, $startTs, $effectiveEnd, 0);
+        if (!is_array($values)) $values = [];
+        $values = array_reverse($values);
+
+        // Für einen kumulativen kWh-Zähler benötigen wir den letzten Stand vor dem
+        // Auswertezeitraum als Basis. Ohne diesen Wert beginnt die Auswertung beim
+        // ersten vorhandenen Archivpunkt.
+        $prev = @AC_GetLoggedValues($archiveID, $varID, 0, $startTs - 1, 1);
+        if (is_array($prev) && count($prev) > 0) {
+            array_unshift($values, ['TimeStamp' => $startTs, 'Value' => (float)$prev[0]['Value']]);
+        } elseif (count($values) > 0 && (int)$values[0]['TimeStamp'] > $startTs) {
+            array_unshift($values, ['TimeStamp' => $startTs, 'Value' => (float)$values[0]['Value']]);
+        }
+
+        // Für den laufenden Tag den aktuellen Zählerstand ergänzen, falls der letzte
+        // Archivpunkt älter ist. Historische Zeiträume werden nicht mit dem heutigen
+        // Livewert vermischt.
+        if ($effectiveEnd >= time() - 5 && @IPS_VariableExists($varID)) {
+            $current = (float)GetValue($varID);
+            $lastTs = count($values) > 0 ? (int)$values[count($values)-1]['TimeStamp'] : 0;
+            if ($lastTs < $effectiveEnd) $values[] = ['TimeStamp' => $effectiveEnd, 'Value' => $current];
+        }
+
+        if (count($values) < 2) return [];
+
+        $daily = [];
+        for ($i = 1; $i < count($values); $i++) {
+            $t1 = max($startTs, (int)$values[$i-1]['TimeStamp']);
+            $t2 = min($effectiveEnd, (int)$values[$i]['TimeStamp']);
+            if ($t2 <= $t1) continue;
+
+            $v1 = (float)$values[$i-1]['Value'];
+            $v2 = (float)$values[$i]['Value'];
+            $delta = $v2 - $v1;
+
+            if ($delta < 0.0) {
+                // Zählerreset (z. B. Tageszähler): negativer Sprung wird nicht als
+                // negative Einspeisung gewertet. Der neue positive Zählerstand gehört
+                // zum Tag des neuen Messpunkts.
+                $resetKWh = max(0.0, $v2);
+                if ($resetKWh > 0.0) {
+                    $day = date('Y-m-d', $t2);
+                    $daily[$day] = ($daily[$day] ?? 0.0) + $resetKWh;
+                }
+                continue;
+            }
+            if ($delta <= 0.0) continue;
+
+            // Wenn zwei Zählerstände eine Mitternacht überspannen, wird die positive
+            // Differenz proportional zur Zeit auf die betroffenen Kalendertage verteilt.
+            $duration = $t2 - $t1;
+            $cursor = $t1;
+            while ($cursor < $t2) {
+                $nextMidnight = strtotime('tomorrow 00:00:00', $cursor);
+                $pieceEnd = min($t2, $nextMidnight);
+                $ratio = ($pieceEnd - $cursor) / $duration;
+                $day = date('Y-m-d', $cursor);
+                $daily[$day] = ($daily[$day] ?? 0.0) + ($delta * $ratio);
+                $cursor = $pieceEnd;
+            }
+        }
+
+        foreach ($daily as $day => $kWh) $daily[$day] = max(0.0, (float)$kWh);
+        return $daily;
     }
 
     private function FinishMeasuredFeedInRun(bool $completed, string $reason): void
@@ -5938,7 +6067,7 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
 
-        // Netzbezug / Netzeinspeisung für reale Einspeisestatistik sicher archivieren.
+        // Netzbezug / Netzeinspeisung (W) für Fallback der realen Einspeisestatistik sicher archivieren.
         $gridVarID = $this->ReadPropertyInteger('PVCalibrationFeedInVariable');
         if ($gridVarID > 0 && @IPS_VariableExists($gridVarID)) {
             try {
@@ -5946,6 +6075,18 @@ class SmartBatteryOptimizer extends IPSModule
                 if (AC_GetAggregationType($archiveID, $gridVarID) !== 0) AC_SetAggregationType($archiveID, $gridVarID, 0);
             } catch (Throwable $e) {
                 $this->DebugLog('ArchiveStorage', 'Netzbezug/Netzeinspeisung ' . $gridVarID . ': ' . $e->getMessage(), 0);
+            }
+        }
+
+        // Optionale kumulative Netzeinspeise-Energievariable (kWh) für die
+        // Einspeise-Statistik sicher archivieren. Die vorhandene Aggregationsart wird
+        // bewusst nicht verändert; benötigt werden die originalen geloggten Zählerstände.
+        $gridEnergyVarID = $this->ReadPropertyInteger('GridExportEnergyVariable');
+        if ($gridEnergyVarID > 0 && @IPS_VariableExists($gridEnergyVarID)) {
+            try {
+                if (!AC_GetLoggingStatus($archiveID, $gridEnergyVarID)) AC_SetLoggingStatus($archiveID, $gridEnergyVarID, true);
+            } catch (Throwable $e) {
+                $this->DebugLog('ArchiveStorage', 'Netzeinspeisung Energie (kWh) ' . $gridEnergyVarID . ': ' . $e->getMessage(), 0);
             }
         }
 
@@ -6897,7 +7038,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         // GridExportDailyJSON bleibt nur noch als historische Erlös-/Preis-Basis erhalten.
         // Die kWh-Auswertung der Einspeise-Statistik kommt ausschließlich aus dem Archiv
-        // der konfigurierten Netzleistungsvariable.
+        // der konfigurierten Einspeise-Energievariable (kWh); ohne Auswahl aus der Netzleistungsvariable.
         $legacyDaily=json_decode($this->ReadAttributeString('GridExportDailyJSON'),true); if(!is_array($legacyDaily))$legacyDaily=[];
         $autoByDay=[];
         foreach($stats as $r){$ts=(int)($r['start']??$r['end']??0);if($ts<=0)continue;$d=date('Y-m-d',$ts);if(!isset($autoByDay[$d]))$autoByDay[$d]=['kWh'=>0.0,'eur'=>0.0,'target'=>0.0,'windows'=>0];$autoByDay[$d]['kWh']+=max(0.0,(float)($r['deliveredKWh']??0));$autoByDay[$d]['eur']+=max(0.0,(float)($r['revenueEUR']??0));$autoByDay[$d]['target']+=max(0.0,(float)($r['targetKWh']??0));$autoByDay[$d]['windows']++;}

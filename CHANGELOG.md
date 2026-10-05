@@ -1,3 +1,19 @@
+## 1.10.36 (Build 207)
+
+- Die konfigurierte **Netzeinspeisung Energie (kWh)** wird jetzt nicht nur fuer die Tagesstatistik, sondern auch fuer **Tatsaechlich eingespeiste Menge aktuell** verwendet.
+- Laufende Automatikfenster messen ihre reale Einspeisemenge damit direkt ueber Zaehlerdifferenzen; Tageszaehler-Resets werden beruecksichtigt.
+- Ohne kWh-Variable bleibt die Netzleistungsvariable als Fallback erhalten.
+- Die Archiv-Integration der Netzleistungsvariable begrenzt unplausibel lange Messluecken auf 180 Sekunden, damit ein alter Leistungswert nicht ueber Stunden fortgeschrieben wird.
+- Keine Archivdaten werden geloescht oder veraendert.
+
+## 1.10.35 (Build 206)
+
+- Neue optionale Konfiguration **Netzeinspeisung Energie (kWh) – für Einspeise-Statistik**.
+- Ist eine kWh-Energievariable gewählt, wird sie als maßgebliche Tages-Gesamteinspeisung verwendet; die bisherige Integration der Netzleistung in Watt bleibt nur noch Fallback.
+- Kumulative Lebenszeitzähler und täglich zurückgesetzte kWh-Zähler werden unterstützt; positive Zählerdifferenzen werden tageweise ausgewertet, Zähler-Resets werden berücksichtigt.
+- Die Archivierung der gewählten kWh-Variable wird beim Anwenden der Instanz automatisch aktiviert; vorhandene Archivdaten und Aggregationseinstellungen werden nicht gelöscht oder überschrieben.
+- Steuerung, PV-Lernsperre und laufende Einspeisemessung verwenden weiterhin die bestehende Netzleistungsvariable; geändert wird ausschließlich die Datenquelle der Einspeise-Statistik.
+
 ## 1.10.34 (Build 205)
 
 - Nacht-Einspeiseplanung korrigiert: Dispatch bleibt strikt auf `min(Netz-Ziel, Max. Einspeise-/Entladeleistung)` begrenzt.

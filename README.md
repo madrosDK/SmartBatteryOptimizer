@@ -1,4 +1,4 @@
-> Version 1.10.34 / Build 205: Nacht-Einspeisung korrigiert – Dispatch bleibt strikt auf dem kleineren Wert aus „Maximale Netzeinspeisung“ und „Max. Einspeise-/Entladeleistung“. Das Lastprofil reduziert die rechnerische Netzeinspeisung nur, wenn Netz-Ziel + erwarteter Verbrauch die WR-Maximalleistung überschreiten. Der 500-W-Sicherheitsabstand bleibt bei der Preis-Einspeisung außen vor.
+> Version 1.10.36 / Build 207: Der optionale Netzeinspeise-Energiezähler in kWh ist jetzt auch die bevorzugte Quelle für die laufend tatsächlich eingespeiste Automatikmenge; die Watt-Integration bleibt Fallback.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -17,7 +17,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.29 / Build 200**
+**1.10.36 / Build 207**
 
 ## Neu in 1.2.3
 
