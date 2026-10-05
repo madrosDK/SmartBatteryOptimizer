@@ -1,3 +1,15 @@
+# SmartBatteryOptimizer 1.10.51 / Build 222
+
+- Autolade-Erkennung grundlegend auf Lastmuster umgestellt: deutlicher kW-Anstieg gegen die vorherige Grundlast, mehrere Minuten Hochlast-Plateau und anschließender deutlicher Lastabfall.
+- Neuer einstellbarer Parameter `Autoladung Mindestanstieg`, Standard 4,0 kW. Damit kann z. B. ein Anstieg von 3 kW Grundlast auf 8,5 kW sicher erkannt werden, obwohl die bisherige absolute Schwelle allein nicht ausreichte.
+- Die bisherige 6,5-kW-Einstellung bleibt als Plausibilitätsgrenze für den Gesamtverbrauch erhalten, ist aber nicht mehr das primäre Startkriterium.
+- Ladeende wird über Rückkehr Richtung Grundlast oder einen deutlichen Abfall gegenüber dem erkannten Lade-Plateau bestätigt. Kurze Schwankungen während des Ladens werden toleriert.
+- Aus den im Archiv gefundenen Ladevorgängen wird ein robustes Muster aus typischer Zusatz-Ladeleistung, Dauer und Ladeenergie gelernt. Bei zukünftigen Erkennungen wird dieses Muster zusätzlich zur Anstieg/Plateau/Abfall-Logik verwendet.
+- Das gelernte Muster ist nur eine Plausibilisierung und kein hartes Ausschlusskriterium; neue oder abweichende Ladevorgänge können weiterhin erkannt werden.
+- Erkennungscache und gespeicherte Treffer auf Version 5 angehoben. Alte Fehlklassifikationen werden nach einem neuen Archiv-Suchlauf nicht weiterverwendet; vorhandene Verbrauchsarchive werden nicht verändert oder gelöscht.
+- Orange Darstellung und Abzug aus dem Lastprofil bleiben auf den tatsächlich erkannten Zusatzanteil oberhalb der Grundlast begrenzt.
+- Keine Preis-, PV-, Einspeise-, Dispatch- oder Statistiklogik geändert.
+
 # SmartBatteryOptimizer 1.10.50 / Build 221
 
 - Neuer separater Button `Autoladungen im Archiv suchen` für eine nachträgliche Suche in abgeschlossenen Verbrauchstagen.

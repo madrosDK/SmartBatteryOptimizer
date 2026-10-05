@@ -471,15 +471,24 @@
                 {
                     "type": "NumberSpinner",
                     "name": "EVChargingDetectionThresholdKW",
-                    "caption": "Autoladung erkennen ab Hausverbrauch",
+                    "caption": "Autoladung Plausibilitätsgrenze Gesamtverbrauch",
                     "digits": 1,
                     "minimum": 1.0,
                     "maximum": 20.0,
                     "suffix": " kW"
                 },
                 {
+                    "type": "NumberSpinner",
+                    "name": "EVChargingMinRiseKW",
+                    "caption": "Autoladung Mindestanstieg",
+                    "digits": 1,
+                    "minimum": 0.5,
+                    "maximum": 15.0,
+                    "suffix": " kW"
+                },
+                {
                     "type": "Label",
-                    "caption": "Liegt der gemessene Hausverbrauch mindestens 5 Minuten über diesem Wert, wird der zusätzliche Anteil gegenüber der unmittelbar davor gemessenen Grundlast als Autoladung erkannt, orange dargestellt und aus dem gelernten Lastprofil herausgerechnet."
+                    "caption": "Autoladung wird als Muster erkannt: deutlicher kW-Anstieg gegenüber der vorherigen Grundlast, mehrere Minuten Hochlast-Plateau und anschließender Abfall Richtung Grundlast. Der zusätzliche Ladeanteil wird orange dargestellt und aus dem Lernprofil herausgerechnet. Aus gefundenen Ladevorgängen wird zusätzlich die typische Ladeleistung für zukünftige Erkennungen gelernt."
                 },
                 {
                     "type": "NumberSpinner",

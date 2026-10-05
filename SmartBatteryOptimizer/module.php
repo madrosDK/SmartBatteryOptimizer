@@ -59,6 +59,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('FallbackNightConsumptionKWh', 4.0);
         $this->RegisterPropertyBoolean('ConsumptionProfileLearningEnabled', true);
         $this->RegisterPropertyFloat('EVChargingDetectionThresholdKW', 6.5);
+        $this->RegisterPropertyFloat('EVChargingMinRiseKW', 4.0);
         $this->RegisterPropertyInteger('EVArchiveSearchDays', 90);
         $this->RegisterPropertyInteger('MinimumValidConsumptionDays', 3);
         $this->RegisterPropertyFloat('FallbackDailyConsumptionKWh', 12.0);
@@ -227,6 +228,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('ConsumptionArchiveRebuildStateJSON', '{}');
         $this->RegisterAttributeString('EVArchiveSearchStateJSON', '{}');
         $this->RegisterAttributeString('EVArchiveDetectionsJSON', '{}');
+        $this->RegisterAttributeString('EVChargingPatternJSON', '{}');
         $this->RegisterAttributeBoolean('AlphaDispatchActive', false);
         $this->RegisterAttributeString('AlphaDispatchCommandKey', '');
         $this->RegisterAttributeString('ActiveFeedInPlanKey', '');
@@ -554,7 +556,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.50';
+        $currentModuleVersion = '1.10.51';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -639,7 +641,7 @@ class SmartBatteryOptimizer extends IPSModule
             'ForecastJSON','PVForecastHistoryJSON','PVSourceForecastHistoryJSON','ForecastSolarSurfaceCacheJSON','OpenMeteoSurfaceCacheJSON',
             'PVDebugVisibilityJSON','ProviderDebugLogJSON','ActionHistoryJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
             'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PVCalibrationExcludedPeriodsJSON','PVCalibrationExclusionActiveReason','PVCalibrationCleanupStatus','PricesJSON','PriceCacheSignature','PlanJSON','NightLearningSource',
-            'ConsumptionProfileJSON','ConsumptionLearningSource','ConsumptionArchiveRebuildStateJSON','EVArchiveSearchStateJSON','EVArchiveDetectionsJSON','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
+            'ConsumptionProfileJSON','ConsumptionLearningSource','ConsumptionArchiveRebuildStateJSON','EVArchiveSearchStateJSON','EVArchiveDetectionsJSON','EVChargingPatternJSON','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
             'CompletedFeedInPlanKeysJSON','FeedInStatisticsJSON','ActiveFeedInReason','AlphaTestTrace','ArchiveStorageStatus'
         ];
         $integerAttributes = [
@@ -685,7 +687,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.50',
+            'moduleVersion' => '1.10.51',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1673,6 +1675,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $firstDay = max($archiveFirstDay, $limitedFirst);
             }
             $thresholdKW = max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW'));
+            $minRiseKW = max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW'));
             $totalDays = max(1, (int)floor(($lastDay - $firstDay) / 86400) + 1);
             $state = [
                 'active' => true,
@@ -1683,6 +1686,7 @@ class SmartBatteryOptimizer extends IPSModule
                 'cursorDay' => $lastDay,
                 'started' => time(),
                 'thresholdKW' => $thresholdKW,
+                'minRiseKW' => $minRiseKW,
                 'totalDays' => $totalDays,
                 'processedDays' => 0,
                 'foundDays' => 0,
@@ -1697,7 +1701,8 @@ class SmartBatteryOptimizer extends IPSModule
             $rangeText = $searchDays <= 0 ? 'gesamtes verfügbares Archiv' : $totalDays . ' abgeschlossene Tage';
             $text = 'Autoladungs-Archivsuche gestartet: ' . $rangeText
                 . ' (' . date('d.m.Y', $firstDay) . ' bis ' . date('d.m.Y', $lastDay) . ')'
-                . ', Erkennung ab ' . number_format($thresholdKW, 1, ',', '.') . ' kW Hausverbrauch.';
+                . ', Erkennung über Lastanstieg ab ' . number_format($minRiseKW, 1, ',', '.') . ' kW'
+                . ' (Plausibilitätsgrenze Gesamtverbrauch ' . number_format($thresholdKW, 1, ',', '.') . ' kW).';
             SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $text);
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
@@ -1743,8 +1748,9 @@ class SmartBatteryOptimizer extends IPSModule
                 $kWh = max(0.0, (float)($ev['kWh'] ?? 0.0));
                 if ($kWh > 0.01) {
                     $stored[$dateKey] = [
-                        'version' => 4,
+                        'version' => 5,
                         'thresholdKW' => max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW')),
+                        'minRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW')),
                         'hourlyWh' => array_values($ev['hourlyWh'] ?? array_fill(0, 24, 0.0)),
                         'sessions' => $sessionCount,
                         'kWh' => $kWh,
@@ -1790,6 +1796,11 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->WriteAttributeString('EVArchiveSearchStateJSON', json_encode($state));
                 $this->SetTimerInterval('EVArchiveSearchWorker', 0);
 
+                // Aus allen nachträglich gefundenen Ladephasen ein robustes Muster für
+                // zukünftige Ladevorgänge bilden. Das Muster ist nur eine zusätzliche
+                // Plausibilisierung; Anstieg + Plateau + Abfall bleiben die Primärerkennung.
+                $pattern = $this->RebuildEVChargingPatternFromStoredDetections();
+
                 // Das aktuelle Lernfenster sofort aus den nun bekannten Lade-Markierungen
                 // neu bilden. Dank des Such-Caches werden dabei keine langen Rohwert-Scans
                 // wiederholt. Historische Treffer außerhalb des Lernfensters bleiben
@@ -1814,6 +1825,7 @@ class SmartBatteryOptimizer extends IPSModule
                     . (int)($state['foundDays'] ?? 0) . ' Tagen, '
                     . number_format((float)($state['kWh'] ?? 0.0), 2, ',', '.') . ' kWh Ladeanteil.'
                     . ($latest > 0 ? ' Letzter Fund: ' . date('d.m.Y H:i', $latest) . '.' : '')
+                    . ((int)($pattern['samples'] ?? 0) > 0 ? ' Gelerntes Lademuster: ca. ' . number_format((float)($pattern['chargePowerKW'] ?? 0.0), 1, ',', '.') . ' kW Zusatzlast.' : '')
                     . $profileText;
                 SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $done);
                 SetValue($this->GetIDForIdent('StatusText'), $done);
@@ -6389,9 +6401,14 @@ class SmartBatteryOptimizer extends IPSModule
         // wiederholte Minuten-Aggregat-Abfragen flüssig geblättert werden.
         $isPastDay = $fullDayEnd <= strtotime('today 00:00:00');
         $evThresholdKW = max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW'));
+        $evMinRiseKW = max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW'));
+        $pattern = $this->GetEVChargingPattern();
+        $patternUpdated = (int)($pattern['updated'] ?? 0);
         $dateKey = date('Y-m-d', $dayStart);
         $cacheKey = $dateKey . '|' . $archiveID . '|' . $varID
-            . '|v4|threshold=' . number_format($evThresholdKW, 3, '.', '');
+            . '|v5|threshold=' . number_format($evThresholdKW, 3, '.', '')
+            . '|rise=' . number_format($evMinRiseKW, 3, '.', '')
+            . '|pattern=' . $patternUpdated;
 
         // Ein expliziter Archiv-Suchlauf speichert positive Treffer dauerhaft. Dadurch
         // kann das Lastprofil die nachträglich gefundenen Ladeanteile auch nach einem
@@ -6400,8 +6417,9 @@ class SmartBatteryOptimizer extends IPSModule
             $stored = json_decode($this->ReadAttributeString('EVArchiveDetectionsJSON'), true);
             $saved = is_array($stored) ? ($stored[$dateKey] ?? null) : null;
             if (is_array($saved)
-                && (int)($saved['version'] ?? 0) === 4
+                && (int)($saved['version'] ?? 0) === 5
                 && abs((float)($saved['thresholdKW'] ?? 0.0) - $evThresholdKW) < 0.0001
+                && abs((float)($saved['minRiseKW'] ?? 0.0) - $evMinRiseKW) < 0.0001
                 && isset($saved['hourlyWh']) && is_array($saved['hourlyWh']) && count($saved['hourlyWh']) === 24
             ) {
                 return [
@@ -6431,7 +6449,7 @@ class SmartBatteryOptimizer extends IPSModule
         $points = $this->GetMinuteConsumptionPowerPoints($archiveID, $varID, $readStart, $readEnd);
         if (count($points) < 2) return $empty;
 
-        $sessions = $this->DetectEVChargingSessions($points, $readStart, $readEnd);
+        $sessions = $this->DetectEVChargingSessions($points, $readStart, $readEnd, $pattern);
         if (count($sessions) === 0) {
             if ($isPastDay) {
                 $cache = json_decode((string)$this->GetBuffer('ConsumptionEVAnalysisCache'), true);
@@ -6463,6 +6481,10 @@ class SmartBatteryOptimizer extends IPSModule
                 'end' => $sessionEnd,
                 'baselineW' => $baselineW,
                 'chargePowerW' => max(0.0, (float)($session['chargePowerW'] ?? 0.0)),
+                'initialRiseW' => max(0.0, (float)($session['initialRiseW'] ?? 0.0)),
+                'plateauCoverage' => max(0.0, min(1.0, (float)($session['plateauCoverage'] ?? 0.0))),
+                'confirmedDrop' => !empty($session['confirmedDrop']),
+                'patternMatch' => !empty($session['patternMatch']),
                 'kWh' => max(0.0, (float)($session['extraKWh'] ?? 0.0))
             ];
 
@@ -6478,6 +6500,14 @@ class SmartBatteryOptimizer extends IPSModule
                 if ((int)($points[$i]['ts'] ?? 0) >= $overlapEnd) break;
 
                 $extraW = max(0.0, (float)($points[$i]['value'] ?? 0.0) - $baselineW);
+                // Parallel eingeschaltete Hausverbraucher waehrend einer Ladephase nicht
+                // komplett dem Fahrzeug zurechnen. Das erkannte Lade-Plateau ist die
+                // robusteste Schaetzung der Fahrzeugleistung; kurze Mehrlasten werden
+                // deshalb auf 125 % dieses Plateaus begrenzt.
+                $sessionChargePowerW = max(0.0, (float)($session['chargePowerW'] ?? 0.0));
+                if ($sessionChargePowerW > 1000.0) {
+                    $extraW = min($extraW, $sessionChargePowerW * 1.25);
+                }
                 if ($extraW <= 0.0) continue;
 
                 $cursor = $segStart;
@@ -6670,87 +6700,189 @@ class SmartBatteryOptimizer extends IPSModule
         return $have ? $hourlyWh : null;
     }
 
-    private function DetectEVChargingSessions(array $points, int $rangeStart, int $rangeEnd): array
+    private function DetectEVChargingSessions(array $points, int $rangeStart, int $rangeEnd, array $learnedPattern = []): array
     {
         $sessions = [];
         $count = count($points);
-        if ($count < 2) return $sessions;
+        if ($count < 8) return $sessions;
 
-        // Autoladung nicht mehr ueber die Groesse eines einzelnen Lastsprungs erkennen,
-        // sondern direkt ueber die tatsaechlich gemessene Hausverbrauchsleistung.
-        // Hintergrund: Laeuft vor Ladebeginn bereits normale Hauslast, kann der sichtbare
-        // Sprung deutlich kleiner als die Ladeleistung sein, obwohl der Gesamtverbrauch
-        // waehrend des Ladens eindeutig hoch ist.
-        $thresholdW = max(1000.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW') * 1000.0);
+        // Primaererkennung: deutlicher Lastanstieg gegen die unmittelbar vorherige
+        // Grundlast -> stabiles Hochlast-Plateau -> anschliessender deutlicher Abfall.
+        // Der absolute Hausverbrauch ist nur noch eine Plausibilitaetsgrenze und NICHT
+        // mehr das alleinige Startkriterium.
+        $absoluteThresholdW = max(1000.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW') * 1000.0);
+        $configuredRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingMinRiseKW') * 1000.0);
         $minDurationS = 5 * 60;
-        $allowedGapS = 3 * 60;
         $baselineWindowS = 20 * 60;
+        $startConfirmPoints = 3;
+        $endConfirmPoints = 3;
+        $maxShortGapS = 3 * 60;
         $minSessionKWh = 0.45;
         // Bekannte Fahrzeugbatterie 14,4 kWh; mit Ladeverlusten/Restunschaerfe etwas Luft.
         $maxSessionKWh = 18.5;
 
-        $i = 0;
-        while ($i < $count) {
+        $patternSamples = max(0, (int)($learnedPattern['samples'] ?? 0));
+        $patternPowerW = max(0.0, (float)($learnedPattern['chargePowerKW'] ?? 0.0) * 1000.0);
+        // Das gelernte Muster darf eine durch Minutenmittel/parallel laufende Hauslast
+        // abgeschwaechte Flanke auffangen, aber nie alleine eine Ladung erzeugen.
+        $patternTolerance = 0.45;
+
+        $i = 1;
+        while ($i < $count - $startConfirmPoints) {
             $ts = (int)($points[$i]['ts'] ?? 0);
-            $valueW = max(0.0, (float)($points[$i]['value'] ?? 0.0));
-            if ($ts < $rangeStart || $ts >= $rangeEnd || $valueW < $thresholdW) {
+            if ($ts < $rangeStart || $ts >= $rangeEnd) {
                 $i++;
                 continue;
             }
 
-            // Beginn ist die erste Minute mit Gesamtverbrauch >= konfiguriertem Wert.
+            // Grundlast = Median der bis zu 20 Minuten VOR dem moeglichen Sprung.
+            $historyValues = [];
+            $historyStart = $ts - $baselineWindowS;
+            for ($k = $i - 1; $k >= 0; $k--) {
+                $hTs = (int)($points[$k]['ts'] ?? 0);
+                if ($hTs < $historyStart) break;
+                if ($hTs >= $ts) continue;
+                $historyValues[] = max(0.0, (float)($points[$k]['value'] ?? 0.0));
+            }
+            if (count($historyValues) < 3) {
+                $i++;
+                continue;
+            }
+            $baselineW = $this->Median($historyValues);
+
+            // Startflanke nicht an einer einzelnen Minute festmachen. Der Median der
+            // naechsten drei Minuten muss deutlich ueber der vorherigen Grundlast liegen.
+            $startValues = [];
+            for ($k = $i; $k < min($count, $i + $startConfirmPoints); $k++) {
+                $pTs = (int)($points[$k]['ts'] ?? 0);
+                if ($pTs >= $rangeEnd) break;
+                $startValues[] = max(0.0, (float)($points[$k]['value'] ?? 0.0));
+            }
+            if (count($startValues) < $startConfirmPoints) break;
+            $plateauStartW = $this->Median($startValues);
+            $initialRiseW = max(0.0, $plateauStartW - $baselineW);
+
+            $patternMatchAtStart = false;
+            if ($patternSamples >= 2 && $patternPowerW > 1000.0) {
+                $patternMatchAtStart = abs($initialRiseW - $patternPowerW) <= max(1200.0, $patternPowerW * $patternTolerance);
+            }
+            $effectiveRiseW = $configuredRiseW;
+            if ($patternMatchAtStart) {
+                // Mit gelerntem Muster darf die Flanke wegen Minutenmittel etwas kleiner
+                // sein; ein echter Anstieg von mindestens 55 % bleibt trotzdem Pflicht.
+                $effectiveRiseW = min($configuredRiseW, max(1500.0, $patternPowerW * 0.55));
+            }
+
+            // Hauptkriterium ist der Anstieg. Die absolute Schwelle dient nur als zweite
+            // Plausibilisierung; ein sehr gut passendes gelerntes Muster darf sie ersetzen.
+            $strongRise = $initialRiseW >= max($configuredRiseW, $absoluteThresholdW * 0.75);
+            if ($initialRiseW < $effectiveRiseW || ($plateauStartW < $absoluteThresholdW && !$patternMatchAtStart && !$strongRise)) {
+                $i++;
+                continue;
+            }
+
             $startIndex = $i;
             $startTs = $ts;
-            $lastAboveIndex = $i;
+            $highValues = [];
+            $lastHighTs = $startTs;
             $belowSince = 0;
-            $j = $i + 1;
+            $endTs = 0;
+            $endIndex = 0;
+            $hasConfirmedDrop = false;
+            // Rueckkehrband: nach Ladeende muss die Leistung klar Richtung Grundlast
+            // fallen. Es muss nicht exakt derselbe Hausverbrauch wie vorher sein.
+            $returnBandW = max(1200.0, min($configuredRiseW * 0.35, $initialRiseW * 0.45));
+            $dropNeededW = max(1800.0, $initialRiseW * 0.55);
+
+            $j = $startIndex;
             for (; $j < $count; $j++) {
                 $pTs = (int)($points[$j]['ts'] ?? 0);
                 if ($pTs >= $rangeEnd) break;
                 $pW = max(0.0, (float)($points[$j]['value'] ?? 0.0));
-                if ($pW >= $thresholdW) {
-                    $lastAboveIndex = $j;
+                $extraW = max(0.0, $pW - $baselineW);
+
+                if ($extraW >= max(1000.0, $effectiveRiseW * 0.45)) {
+                    $highValues[] = $pW;
+                    $lastHighTs = $pTs;
                     $belowSince = 0;
-                    continue;
+                } elseif ($belowSince <= 0) {
+                    $belowSince = $pTs;
                 }
-                if ($belowSince <= 0) $belowSince = $pTs;
-                if (($pTs - $belowSince) >= $allowedGapS) break;
+
+                // Abfall ueber mehrere Minuten bestaetigen. Entweder ist die Last wieder
+                // nahe der Grundlast oder sie ist gegenueber dem bisherigen Plateau klar
+                // um mindestens ~55 % der Startflanke abgesackt.
+                if ($j >= $startIndex + $startConfirmPoints) {
+                    $look = [];
+                    for ($m = $j; $m < min($count, $j + $endConfirmPoints); $m++) {
+                        $mTs = (int)($points[$m]['ts'] ?? 0);
+                        if ($mTs >= $rangeEnd) break;
+                        $look[] = max(0.0, (float)($points[$m]['value'] ?? 0.0));
+                    }
+                    if (count($look) === $endConfirmPoints) {
+                        $afterW = $this->Median($look);
+                        $plateauRefW = count($highValues) >= 3 ? $this->Median($highValues) : $plateauStartW;
+                        $returnedToBase = $afterW <= ($baselineW + $returnBandW);
+                        $clearDrop = ($plateauRefW - $afterW) >= $dropNeededW;
+                        if ($returnedToBase || $clearDrop) {
+                            $endTs = (int)($points[$j]['ts'] ?? $pTs);
+                            $endIndex = $j;
+                            $hasConfirmedDrop = true;
+                            break;
+                        }
+                    }
+                }
+
+                if ($belowSince > 0 && ($pTs - $belowSince) > $maxShortGapS && ($pTs - $lastHighTs) > $maxShortGapS) {
+                    // Kein sauberer Plateauverlauf mehr. Nur beenden, wenn bereits ein
+                    // deutlicher Rueckgang vorliegt; sonst Kandidat verwerfen.
+                    $plateauRefW = count($highValues) >= 3 ? $this->Median($highValues) : $plateauStartW;
+                    if (($plateauRefW - $pW) >= $dropNeededW) {
+                        $endTs = $pTs;
+                        $endIndex = $j;
+                        $hasConfirmedDrop = true;
+                    }
+                    break;
+                }
             }
 
-            $endTs = $rangeEnd;
-            if ($lastAboveIndex + 1 < $count) {
-                $endTs = min($rangeEnd, (int)($points[$lastAboveIndex + 1]['ts'] ?? $rangeEnd));
+            // Ein laufender aktueller Ladevorgang darf fuer die Live-Anzeige bereits als
+            // solcher gelten, wenn das gelernte Muster sehr gut passt und er lange genug
+            // stabil ist. Fuer historische Suchlaeufe wird dagegen ein Abfall verlangt.
+            $historicalRange = $rangeEnd < (time() - 120);
+            if ($endTs <= $startTs) {
+                $endTs = min($rangeEnd, (int)($points[min($count - 1, max($startIndex, $j - 1))]['ts'] ?? $rangeEnd));
             }
             $durationS = max(0, $endTs - $startTs);
-            if ($durationS < $minDurationS) {
-                $i = max($i + 1, $j);
+            if ($durationS < $minDurationS || ($historicalRange && !$hasConfirmedDrop)) {
+                $i = max($i + 1, $endIndex > 0 ? $endIndex : $j);
                 continue;
             }
 
-            // Grundlast aus den 20 Minuten unmittelbar vor Ladebeginn bestimmen.
-            // Nur Werte unterhalb der Ladeschwelle verwenden, damit eine bereits hohe
-            // Lade-Minute die Grundlast nicht nach oben zieht.
-            $historyValues = [];
-            $historyStart = $startTs - $baselineWindowS;
-            for ($k = $startIndex - 1; $k >= 0; $k--) {
-                $hTs = (int)($points[$k]['ts'] ?? 0);
-                if ($hTs < $historyStart) break;
-                $hW = max(0.0, (float)($points[$k]['value'] ?? 0.0));
-                if ($hW < $thresholdW) $historyValues[] = $hW;
+            // Plateauqualitaet: Autoladen ist eine laenger anliegende Zusatzlast, kein
+            // einzelner kurzer Verbraucherpeak. Parallelverbrauch darf das Plateau
+            // schwanken lassen, daher bewusst breite Toleranz.
+            $sessionExtraValues = [];
+            for ($k = $startIndex; $k < $count; $k++) {
+                $pTs = (int)($points[$k]['ts'] ?? 0);
+                if ($pTs >= $endTs) break;
+                $sessionExtraValues[] = max(0.0, (float)($points[$k]['value'] ?? 0.0) - $baselineW);
             }
-            if (count($historyValues) === 0 && $startIndex > 0) {
-                $historyValues[] = max(0.0, (float)($points[$startIndex - 1]['value'] ?? 0.0));
-            }
-            if (count($historyValues) === 0) {
-                // Ohne belastbare Grundlast keine Ladeenergie erfinden.
-                $i = max($i + 1, $j);
+            if (count($sessionExtraValues) < 4) {
+                $i = max($i + 1, $endIndex > 0 ? $endIndex : $j);
                 continue;
             }
-            sort($historyValues, SORT_NUMERIC);
-            $n = count($historyValues);
-            $baselineW = ($n % 2 === 1)
-                ? (float)$historyValues[(int)floor($n / 2)]
-                : ((float)$historyValues[$n / 2 - 1] + (float)$historyValues[$n / 2]) / 2.0;
+            $medianExtraW = $this->Median($sessionExtraValues);
+            $plateauGood = 0;
+            $plateauFloorW = max(1000.0, $medianExtraW * 0.50);
+            foreach ($sessionExtraValues as $extraW) {
+                if ($extraW >= $plateauFloorW) $plateauGood++;
+            }
+            $plateauCoverage = $plateauGood / max(1, count($sessionExtraValues));
+            if ($medianExtraW < max(1500.0, $effectiveRiseW * 0.75) || $plateauCoverage < 0.60) {
+                $i = max($i + 1, $endIndex > 0 ? $endIndex : $j);
+                continue;
+            }
 
             // Nur den Zusatzverbrauch oberhalb dieser Grundlast als Autoladung werten.
             $extraWh = 0.0;
@@ -6766,25 +6898,96 @@ class SmartBatteryOptimizer extends IPSModule
             }
             $extraKWh = $extraWh / 1000.0;
             if ($extraKWh < $minSessionKWh || $extraKWh > $maxSessionKWh) {
-                $i = max($i + 1, $j);
+                $i = max($i + 1, $endIndex > 0 ? $endIndex : $j);
                 continue;
+            }
+
+            $patternMatch = false;
+            if ($patternSamples >= 2 && $patternPowerW > 1000.0) {
+                $patternMatch = abs($medianExtraW - $patternPowerW) <= max(1200.0, $patternPowerW * $patternTolerance);
             }
 
             $sessions[] = [
                 'start' => $startTs,
                 'end' => $endTs,
                 'baselineW' => $baselineW,
-                'chargePowerW' => max(0.0, ($extraKWh / max(1.0 / 60.0, $durationS / 3600.0)) * 1000.0),
+                'chargePowerW' => $medianExtraW,
+                'initialRiseW' => $initialRiseW,
+                'plateauCoverage' => $plateauCoverage,
+                'confirmedDrop' => $hasConfirmedDrop,
+                'patternMatch' => $patternMatch,
                 'extraKWh' => $extraKWh,
-                'thresholdW' => $thresholdW
+                'thresholdW' => $absoluteThresholdW,
+                'minRiseW' => $configuredRiseW
             ];
 
-            // Den bereits klassifizierten Hochlastblock nicht erneut als zweite Ladung
-            // beginnen lassen.
-            $i = max($i + 1, $j);
+            // Den bereits klassifizierten Ladeblock nicht erneut als zweite Ladung starten.
+            $i = max($i + 1, $endIndex > 0 ? $endIndex + 1 : $j);
+        }
+        return $sessions;
+    }
+
+    private function GetEVChargingPattern(): array
+    {
+        $pattern = json_decode($this->ReadAttributeString('EVChargingPatternJSON'), true);
+        if (!is_array($pattern)) return [];
+        // Ein Muster ist nur fuer die Einstellungen gueltig, mit denen es gelernt wurde.
+        // Aendert der Benutzer Schwelle oder Mindestanstieg, beeinflusst das alte Muster
+        // die neue Archivsuche nicht; nach dem Suchlauf wird automatisch neu gelernt.
+        $thresholdKW = max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW'));
+        $minRiseKW = max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW'));
+        if (isset($pattern['thresholdKW']) && abs((float)$pattern['thresholdKW'] - $thresholdKW) > 0.0001) return [];
+        if (isset($pattern['minRiseKW']) && abs((float)$pattern['minRiseKW'] - $minRiseKW) > 0.0001) return [];
+        return $pattern;
+    }
+
+    private function RebuildEVChargingPatternFromStoredDetections(): array
+    {
+        $stored = json_decode($this->ReadAttributeString('EVArchiveDetectionsJSON'), true);
+        if (!is_array($stored)) $stored = [];
+
+        $powers = [];
+        $durations = [];
+        $energies = [];
+        foreach ($stored as $day) {
+            if (!is_array($day) || (int)($day['version'] ?? 0) !== 5) continue;
+            foreach (($day['details'] ?? []) as $detail) {
+                if (!is_array($detail)) continue;
+                $powerKW = max(0.0, (float)($detail['chargePowerW'] ?? 0.0) / 1000.0);
+                $start = (int)($detail['start'] ?? 0);
+                $end = (int)($detail['end'] ?? 0);
+                $kWh = max(0.0, (float)($detail['kWh'] ?? 0.0));
+                if ($powerKW < 1.0 || $powerKW > 22.0 || $end <= $start || $kWh <= 0.0) continue;
+                $powers[] = $powerKW;
+                $durations[] = ($end - $start) / 60.0;
+                $energies[] = $kWh;
+            }
         }
 
-        return $sessions;
+        if (count($powers) === 0) {
+            $pattern = [
+                'version' => 1,
+                'samples' => 0,
+                'thresholdKW' => max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW')),
+                'minRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW')),
+                'updated' => time()
+            ];
+            $this->WriteAttributeString('EVChargingPatternJSON', json_encode($pattern));
+            return $pattern;
+        }
+
+        $pattern = [
+            'version' => 1,
+            'samples' => count($powers),
+            'thresholdKW' => max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW')),
+            'minRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW')),
+            'chargePowerKW' => round($this->Median($powers), 3),
+            'durationMin' => round($this->Median($durations), 1),
+            'sessionKWh' => round($this->Median($energies), 3),
+            'updated' => time()
+        ];
+        $this->WriteAttributeString('EVChargingPatternJSON', json_encode($pattern));
+        return $pattern;
     }
 
     private function BuildFallbackConsumptionProfile(float $dailyKWh, string $source): array

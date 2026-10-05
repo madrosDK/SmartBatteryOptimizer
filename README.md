@@ -17,7 +17,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.50 / Build 221**
+**1.10.51 / Build 222**
 - Neuer Button `Autoladungen im Archiv suchen`: durchsucht abgeschlossene Verbrauchstage nachträglich mit der aktuell eingestellten kW-Schwelle.
 - Eigener Hintergrund-Worker für die Autoladungs-Suche; Börsenpreis-, PV- und Lastprofil-Worker bleiben getrennt.
 - Suchzeitraum einstellbar; `0` durchsucht das gesamte verfügbare Verbrauchsarchiv.
