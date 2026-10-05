@@ -491,7 +491,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.31';
+        $currentModuleVersion = '1.10.32';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -616,7 +616,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.31',
+            'moduleVersion' => '1.10.32',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -6836,22 +6836,53 @@ class SmartBatteryOptimizer extends IPSModule
             }
             if (!$duplicate) $stats[]=$r;
         }
-        $totalDaily=json_decode($this->ReadAttributeString('GridExportDailyJSON'),true); if(!is_array($totalDaily))$totalDaily=[];
+        // GridExportDailyJSON bleibt nur noch als historische Erlös-/Preis-Basis erhalten.
+        // Die kWh-Auswertung der Einspeise-Statistik kommt ausschließlich aus dem Archiv
+        // der konfigurierten Netzleistungsvariable.
+        $legacyDaily=json_decode($this->ReadAttributeString('GridExportDailyJSON'),true); if(!is_array($legacyDaily))$legacyDaily=[];
         $autoByDay=[];
-        foreach($stats as $r){$ts=(int)($r['start']??$r['end']??0);if($ts<=0)continue;$d=date('Y-m-d',$ts);if(!isset($autoByDay[$d]))$autoByDay[$d]=['kWh'=>0.0,'eur'=>0.0,'target'=>0.0,'windows'=>0];$autoByDay[$d]['kWh']+=max(0.0,(float)($r['deliveredKWh']??0));$autoByDay[$d]['eur']+=(float)($r['revenueEUR']??0);$autoByDay[$d]['target']+=max(0.0,(float)($r['targetKWh']??0));$autoByDay[$d]['windows']++;}
-        $dates=array_unique(array_merge(array_keys($autoByDay),array_keys($totalDaily),[date('Y-m-d')])); sort($dates); $first=strtotime($dates[0].' 00:00:00'); $last=strtotime(end($dates).' 00:00:00');
+        foreach($stats as $r){$ts=(int)($r['start']??$r['end']??0);if($ts<=0)continue;$d=date('Y-m-d',$ts);if(!isset($autoByDay[$d]))$autoByDay[$d]=['kWh'=>0.0,'eur'=>0.0,'target'=>0.0,'windows'=>0];$autoByDay[$d]['kWh']+=max(0.0,(float)($r['deliveredKWh']??0));$autoByDay[$d]['eur']+=max(0.0,(float)($r['revenueEUR']??0));$autoByDay[$d]['target']+=max(0.0,(float)($r['targetKWh']??0));$autoByDay[$d]['windows']++;}
+        $dates=array_unique(array_merge(array_keys($autoByDay),array_keys($legacyDaily),[date('Y-m-d')])); sort($dates); $first=strtotime($dates[0].' 00:00:00'); $last=strtotime(end($dates).' 00:00:00');
 
-        // Die kWh der Tages-Gesamteinspeisung werden für den gesamten sichtbaren
-        // Statistikzeitraum direkt aus dem Archiv der konfigurierten Netzvariable
-        // rekonstruiert. Dadurch verschwinden alte, fehlerhafte JSON-Tageswerte
-        // automatisch und Gesamt/Automatik basieren auf derselben Netz-Messgröße.
+        // Für jeden sichtbaren Tag gilt ausschließlich die zeitintegrierte reale
+        // Netzeinspeisung aus dem IP-Symcon-Archiv. Ein fehlender Archivwert bedeutet
+        // 0 kWh und fällt NICHT auf einen alten GridExportDailyJSON-Zähler zurück.
         $archiveDaily = $this->GetGridExportDailyFromArchive($first, min(time(), strtotime('+1 day', $last)));
-        foreach ($archiveDaily as $day => $kWh) {
-            if (!isset($totalDaily[$day]) || !is_array($totalDaily[$day])) $totalDaily[$day] = ['kWh'=>0.0,'eur'=>0.0];
-            $totalDaily[$day]['kWh'] = max(0.0, (float)$kWh);
-        }
 
-        $makeRow=function(int $ts) use($autoByDay,$totalDaily): array {$key=date('Y-m-d',$ts);$a=$autoByDay[$key]??['kWh'=>0,'eur'=>0,'target'=>0,'windows'=>0];$t=$totalDaily[$key]??['kWh'=>0,'eur'=>0];$otherK=max(0.0,(float)$t['kWh']-(float)$a['kWh']);$otherE=max(0.0,(float)$t['eur']-(float)$a['eur']);return ['label'=>date('d',$ts),'weekLabel'=>['So','Mo','Di','Mi','Do','Fr','Sa'][(int)date('w',$ts)].' '.date('d.m.',$ts),'date'=>date('d.m.Y',$ts),'autoKWh'=>round((float)$a['kWh'],3),'autoEUR'=>round((float)$a['eur'],3),'otherKWh'=>round($otherK,3),'otherEUR'=>round($otherE,3),'targetKWh'=>round((float)$a['target'],3),'windows'=>(int)$a['windows']];};
+        $makeRow=function(int $ts) use($autoByDay,$archiveDaily,$legacyDaily): array {
+            $key=date('Y-m-d',$ts);
+            $a=$autoByDay[$key]??['kWh'=>0,'eur'=>0,'target'=>0,'windows'=>0];
+            $totalK=max(0.0,(float)($archiveDaily[$key]??0.0));
+
+            // Automatik-kWh exakt EINMAL von der realen Tages-Gesamteinspeisung
+            // abziehen. Der grüne Automatikanteil bleibt aus den real gemessenen
+            // Automatikfenstern erhalten; Blau ist ausschließlich der verbleibende Rest.
+            $autoK=max(0.0,(float)$a['kWh']);
+            $autoE=max(0.0,(float)$a['eur']);
+            $otherK=max(0.0,$totalK-$autoK);
+
+            // Historischen Erlös auf die korrigierte kWh-Menge umrechnen. Dazu wird nur
+            // der bisherige durchschnittliche Erlös des Nicht-Automatik-Anteils als
+            // Preisbasis benutzt; die alten JSON-kWh selbst werden niemals angezeigt.
+            $legacy=$legacyDaily[$key]??['kWh'=>0.0,'eur'=>0.0];
+            $legacyTotalK=max(0.0,(float)($legacy['kWh']??0.0));
+            $legacyTotalE=max(0.0,(float)($legacy['eur']??0.0));
+            $legacyOtherK=max(0.0,$legacyTotalK-$autoK);
+            $legacyOtherE=max(0.0,$legacyTotalE-$autoE);
+            $otherE=$legacyOtherK>0.0001 ? ($legacyOtherE/$legacyOtherK)*$otherK : 0.0;
+
+            return [
+                'label'=>date('d',$ts),
+                'weekLabel'=>['So','Mo','Di','Mi','Do','Fr','Sa'][(int)date('w',$ts)].' '.date('d.m.',$ts),
+                'date'=>date('d.m.Y',$ts),
+                'autoKWh'=>round($autoK,3),
+                'autoEUR'=>round($autoE,3),
+                'otherKWh'=>round($otherK,3),
+                'otherEUR'=>round(max(0.0,$otherE),3),
+                'targetKWh'=>round((float)$a['target'],3),
+                'windows'=>(int)$a['windows']
+            ];
+        };
         $sumRows=function(array $rows): array {$sum=['autoKWh'=>0.0,'autoEUR'=>0.0,'otherKWh'=>0.0,'otherEUR'=>0.0];foreach($rows as $row)foreach($sum as $k=>$_)$sum[$k]+=(float)$row[$k];return $sum;};
         $monthNames=[1=>'Januar',2=>'Februar',3=>'März',4=>'April',5=>'Mai',6=>'Juni',7=>'Juli',8=>'August',9=>'September',10=>'Oktober',11=>'November',12=>'Dezember']; $months=[];
         $startMonth=strtotime(date('Y-m-01 00:00:00',$first)); $endMonth=strtotime(date('Y-m-01 00:00:00',$last));

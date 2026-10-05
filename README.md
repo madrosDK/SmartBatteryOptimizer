@@ -1,4 +1,4 @@
-> Version 1.10.31 / Build 202: Vollständige Aktualisierungspfade aus v1.10.29 wiederhergestellt; nur ergebnisneutrale RAM-Caches für abgeschlossene Archivtage bleiben als Performance-Optimierung.
+> Version 1.10.32 / Build 203: Einspeise-Statistik korrigiert – Tages-Gesamteinspeisung ausschließlich zeitintegriert aus dem Archiv der Netzleistungsvariable; Automatikanteil einmalig abgezogen; historische Erlöse auf die korrigierten kWh umgerechnet.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 

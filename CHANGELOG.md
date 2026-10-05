@@ -1,3 +1,11 @@
+## 1.10.32 (Build 203)
+
+- Einspeise-Statistik: Tages-Gesamteinspeisung wird ausschließlich aus dem Archiv der konfigurierten Netzleistungsvariable zeitintegriert.
+- Alte `GridExportDailyJSON`-kWh werden nicht mehr als Fallback oder bevorzugte kWh-Quelle verwendet.
+- Automatik-kWh werden exakt einmal von der realen Tages-Gesamteinspeisung abgezogen.
+- Historischer Erlös außerhalb der Automatik wird proportional auf die korrigierte kWh-Menge umgerechnet; der Automatik-Erlös bleibt unverändert.
+- Keine Archivdaten werden gelöscht oder verändert; Woche/Monat, Tooltip, Farben und Layout bleiben unverändert.
+
 ## 1.10.31 (Build 202)
 - Zu aggressive Laufzeitoptimierungen aus v1.10.30 zurückgenommen.
 - Vollrefresh, Providerstatus, PV-/Verbrauchs-Istwerte und Einspeise-Statistik verwenden wieder die vollständigen, bewährten Aktualisierungspfade aus v1.10.29.
