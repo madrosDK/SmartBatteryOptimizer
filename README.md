@@ -1,4 +1,4 @@
-> Version 1.10.40 / Build 211: Korrigiert den Preisarchiv-Import bei deaktiviertem Auto-Logging und schreibt Tarifwerte weiterhin exakt zu ihrer Gültigkeitszeit.
+> Version 1.10.41 / Build 212: Startet die Einspeise-Statistik einmalig ab dem Update-Tag neu und verwendet dafür weiterhin die realen Einspeise-kWh- und Preisarchive.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -17,7 +17,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.40 / Build 211**
+**1.10.41 / Build 212**
 
 ## Neu in 1.2.3
 

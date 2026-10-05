@@ -239,6 +239,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('GridExportTrackLastTs', 0);
         $this->RegisterAttributeFloat('GridExportTrackLastW', 0.0);
         $this->RegisterAttributeInteger('FeedInStatisticsLastRenderTs', 0);
+        $this->RegisterAttributeInteger('FeedInStatisticsResetVersion', 0);
         $this->RegisterAttributeInteger('ActiveFeedInStartedTs', 0);
         $this->RegisterAttributeFloat('ActiveFeedInPriceCt', 0.0);
         $this->RegisterAttributeString('ActiveFeedInReason', '');
@@ -465,6 +466,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Zeitreihen ab 1.9.79 im IP-Symcon Archive Control verwalten.
         // Bestehende JSON-Lerndaten/Statistiken werden beim ersten Lauf einmalig uebernommen.
         $this->EnsureArchiveStorageAndMigration();
+        $this->ResetFeedInStatisticsFromTodayOnce();
 
         $debugMode = $this->ReadPropertyBoolean('DebugMode');
         $lastAppliedDebugMode = $this->ReadAttributeBoolean('LastAppliedDebugMode');
@@ -533,7 +535,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.40';
+        $currentModuleVersion = '1.10.41';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -619,7 +621,7 @@ class SmartBatteryOptimizer extends IPSModule
             'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
             'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
             'PVCalibrationBlockedFromTs','PVCalibrationExclusionActiveFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ActiveFeedInEnergyVariableID','ManualTestUntil',
-            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','PriceArchiveAlignmentVersion','PriceArchiveLastSyncedTs','FeedInStatisticsLastRenderTs'
+            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','PriceArchiveAlignmentVersion','PriceArchiveLastSyncedTs','FeedInStatisticsLastRenderTs','FeedInStatisticsResetVersion'
         ];
         $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInLastEnergyKWh','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
         $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized','FeedInPriceLockActive','FeedInFactorOriginalValid'];
@@ -658,7 +660,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.40',
+            'moduleVersion' => '1.10.41',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -7341,6 +7343,59 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         return $source;
+    }
+
+
+    private function ResetFeedInStatisticsFromTodayOnce(): void
+    {
+        // v1.10.41: Die Einspeise-Statistik beginnt einmalig mit dem Tag des Updates neu.
+        // Roharchive (Einspeise-kWh, CurrentPrice, Netzleistung, Verbrauch usw.) bleiben
+        // vollständig erhalten. Entfernt werden nur abgeleitete Statistikdaten vor heute.
+        if ($this->ReadAttributeInteger('FeedInStatisticsResetVersion') >= 1) return;
+
+        $cutoff = strtotime('today 00:00:00');
+        if ($cutoff <= 0) return;
+
+        try {
+            // Detaillierte Automatikläufe nur ab heute behalten. Ein vor Mitternacht
+            // gestarteter Lauf gehört nach der bestehenden Statistiklogik zum Starttag
+            // und wird deshalb bewusst nicht in den Neustart übernommen.
+            $stats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
+            if (!is_array($stats)) $stats = [];
+            $kept = [];
+            foreach ($stats as $row) {
+                if (!is_array($row)) continue;
+                $ts = (int)($row['start'] ?? $row['end'] ?? 0);
+                if ($ts >= $cutoff) $kept[] = $row;
+            }
+            $this->WriteAttributeString('FeedInStatisticsJSON', json_encode($kept));
+
+            // Den alten fortgeschriebenen Tageszähler vollständig verwerfen. Er ist nur
+            // noch Fallback und soll den sauberen Neustart aus kWh- und Preisarchiv nicht
+            // mit historischen Durchschnittswerten beeinflussen.
+            $this->WriteAttributeString('GridExportDailyJSON', '{}');
+
+            // Die versteckten, vom Modul erzeugten Automatik-Archivwerte vor heute
+            // entfernen. Messarchive des Benutzers werden ausdrücklich nicht verändert.
+            $archiveID = $this->FindArchive();
+            if ($archiveID > 0) {
+                foreach (['FeedInArchiveKWh','FeedInArchiveEUR','FeedInArchiveTargetKWh','FeedInArchiveWindow','FeedInArchiveStartTs','FeedInArchiveEndTs'] as $ident) {
+                    $varID = (int)@$this->GetIDForIdent($ident);
+                    if ($varID > 0 && @IPS_VariableExists($varID)) {
+                        $deleted = @AC_DeleteVariableData($archiveID, $varID, 0, $cutoff - 1);
+                        if ($deleted === false) throw new Exception('Alte Statistik-Archivdaten konnten nicht gelöscht werden: ' . $ident);
+                    }
+                }
+            }
+
+            $this->WriteAttributeInteger('FeedInStatisticsLastRenderTs', 0);
+            $this->WriteAttributeInteger('FeedInStatisticsResetVersion', 1);
+            $this->DebugLog('Einspeise-Statistik', 'v1.10.41: Statistik einmalig ab ' . date('d.m.Y 00:00:00', $cutoff) . ' neu gestartet; Roharchive unverändert.');
+        } catch (Throwable $e) {
+            // Marker absichtlich nicht setzen: Bei einem temporären Archivfehler wird
+            // der einmalige Reset beim nächsten ApplyChanges erneut versucht.
+            $this->DebugLog('Einspeise-Statistik', 'Neustart fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
     }
 
 

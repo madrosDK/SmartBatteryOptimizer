@@ -1,3 +1,9 @@
+## 1.10.41 (Build 212)
+- **Einspeise-Statistik einmalig ab Update-Tag neu gestartet:** Historische abgeleitete Statistikdaten vor dem heutigen Tag werden entfernt, damit Woche/Monat nicht mehr von alten fehlerhaften Werten beeinflusst werden.
+- `GridExportDailyJSON` wird beim einmaligen Neustart geleert; die Statistik verwendet für den Neustart die realen Rohdaten aus Einspeise-kWh-Archiv und Preisarchiv.
+- Historische interne Automatik-Archivpunkte (`FeedInArchive*`) vor heute werden entfernt; Automatikläufe des heutigen Tages bleiben erhalten.
+- **Keine Roharchive werden gelöscht:** Netzeinspeisungs-kWh, Netzleistung, `CurrentPrice`, Verbrauch, PV-Daten und andere Benutzermesswerte bleiben vollständig erhalten.
+
 ## 1.10.40 (Build 211)
 - Fix: Gezielte Archivimporte aktivieren das Logging der Zielvariable nur waehrend `AC_AddLoggedValues()` und stellen den vorherigen Zustand danach wieder her.
 - Dadurch kann die Einspeisepreis-Zeitreihe trotz absichtlich deaktiviertem Auto-Logging rueckwirkend mit exakten Tarif-Startzeiten geschrieben werden.
