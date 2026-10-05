@@ -1,3 +1,12 @@
+# SmartBatteryOptimizer 1.10.47 / Build 218
+
+- Börsenpreis-Refresh entkoppelt: Preise und Börsenpreis-Diagramm werden am Beginn des regulären Rechenlaufs aktualisiert, bevor Nachtverbrauch oder Lastprofil-Lernen ausgeführt werden. Ein langsamer/fehlerhafter Lernlauf kann das Preisdiagramm damit nicht mehr blockieren.
+- Nach einem Modulupdate wird ausschließlich ein eventuell durch einen früheren PHP-Fatalfehler zurückgebliebener `CalculationLockUntil` freigegeben; Lernwerte, Archive, Statistiken und Konfigurationen bleiben unverändert.
+- Lastprofil-Archiv-Neuberechnung arbeitet ohne Rohwert-Vollabfragen: 24 Stundenwerte kommen aus Archiv-Stundenaggregaten, die Autolade-Erkennung verwendet 1-Minuten-Aggregate. Dadurch bleibt die Datenmenge pro Lerntag begrenzt.
+- Der Archiv-Button führt keine synchrone Mehrtagesauswertung mehr aus. Neue Archivläufe beginnen beim jüngsten abgeschlossenen Tag und veröffentlichen bereits nach dem ersten gültigen Tag ein Zwischenprofil.
+- Während eine Archiv-Neuberechnung läuft, startet der normale Refresh keinen parallelen Lastprofil-Komplettscan. Nur der Archiv-Worker liest die historischen Tage.
+- Bestehende, bereits aktive Archiv-Neuberechnungen aus älteren Versionen werden weitergeführt; es werden keine Archiv- oder Lerndaten automatisch gelöscht.
+
 # SmartBatteryOptimizer 1.10.46 / Build 217
 
 - Lastprofil-Archiv-Neuberechnung speicherschonend gemacht: Rohwerte werden nicht mehr als kompletter Tages-/Randbereich auf einmal in den PHP-Speicher geladen.

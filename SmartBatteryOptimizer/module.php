@@ -543,9 +543,15 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.46';
+        $currentModuleVersion = '1.10.47';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
+            // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
+            // PHP den finally-Block bei erschöpftem Speicher nicht zuverlässig erreicht.
+            // Beim Modulupdate darf dieser alte Lock den vorgesehenen Vollrefresh nicht
+            // noch bis zu 15 Minuten blockieren. Es werden keinerlei Lern-/Archivdaten
+            // verändert, nur die Laufzeitsperre wird freigegeben.
+            $this->WriteAttributeInteger('CalculationLockUntil', 0);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
             $this->SetTimerInterval('FullRefreshWorker', 1500);
         }
@@ -668,7 +674,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.46',
+            'moduleVersion' => '1.10.47',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1333,6 +1339,32 @@ class SmartBatteryOptimizer extends IPSModule
         }
     }
 
+    private function RefreshPricesAndChartEarly(): void
+    {
+        try {
+            $prices = $this->FetchPrices();
+            if (!is_array($prices) || count($prices) === 0) return;
+
+            $this->WriteAttributeString('PricesJSON', json_encode($prices));
+            $this->SyncCurrentPriceArchiveTimeline($prices);
+            $this->UpdateCurrentPriceVariable($prices);
+
+            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+            $plan = json_decode($this->ReadAttributeString('PlanJSON'), true);
+            if (is_array($forecast) && !empty($forecast) && is_array($plan) && !empty($plan)) {
+                $priceChartID = (int)@$this->GetIDForIdent('PriceChartHTML');
+                if ($priceChartID > 0) {
+                    SetValue($priceChartID, $this->RenderPriceChartHTML($forecast, $prices, $plan));
+                }
+            }
+            $this->DebugLog('Preise', 'Früher Preis-Refresh abgeschlossen; Slots=' . count($prices));
+        } catch (Throwable $e) {
+            // Der normale Rechenlauf darf durch einen separaten frühen Preis-Refresh
+            // nicht abgebrochen werden; die bestehende Preisstufe versucht es später erneut.
+            $this->DebugLog('Preise', 'Früher Preis-Refresh fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
+    }
+
     private function RecalculateInternal(bool $refreshPVForecast, bool $forceForecastProviders = false)
     {
         $nowCalcLock = time();
@@ -1354,6 +1386,14 @@ class SmartBatteryOptimizer extends IPSModule
             } catch (Throwable $controlError) {
                 $this->DebugLog('Control', 'Steuerpruefung vor Aktualisierung fehlgeschlagen, Aktualisierung laeuft trotzdem weiter: ' . $controlError->getMessage(), 0);
             }
+
+            // Preise und Preisdiagramm bewusst VOR Nachtverbrauch/Lastprofil aktualisieren.
+            // Ein langsamer oder fehlerhafter Lernlauf darf den Börsenpreis-Refresh niemals
+            // mehr blockieren. Für die Farbmarkierungen wird zunächst der zuletzt gültige
+            // Forecast/Plan verwendet; am Ende des Rechenlaufs wird das Diagramm wie bisher
+            // nochmals mit dem frisch berechneten Plan gerendert.
+            $this->RefreshPricesAndChartEarly();
+
             $this->ForecastDiagnosticStep('01 Nachtverbrauch START');
             $night = $this->LearnNightConsumptionInternal();
             $this->ForecastDiagnosticStep('02 Nachtverbrauch ENDE');
@@ -1616,30 +1656,18 @@ class SmartBatteryOptimizer extends IPSModule
                 return;
             }
 
-            // Sofort ein echtes stündliches Profil aus den jüngsten abgeschlossenen
-            // Archivtagen erzeugen. Der vollständige Archivlauf läuft danach weiter und
-            // ersetzt/ergänzt dieses Startprofil. So bleibt die Anzeige nach dem Klick
-            // niemals bis zum Worker-Abschluss auf dem gleichmäßigen Tages-Fallback stehen.
-            $seed = $this->BuildImmediateConsumptionProfileSeed($archiveID, $varID);
-            if (is_array($seed)) {
-                $this->WriteAttributeString('ConsumptionProfileJSON', json_encode($seed));
-                $this->WriteAttributeInteger('ConsumptionProfileUpdated', time());
-                $this->WriteAttributeString('ConsumptionLearningSource', (string)($seed['source'] ?? 'Archiv gelernt'));
-                $chartID = (int)@$this->GetIDForIdent('ConsumptionProfileChartHTML');
-                if ($chartID > 0) SetValue($chartID, $this->RenderConsumptionProfileChartHTML($seed));
-                $forecastID = (int)@$this->GetIDForIdent('ConsumptionForecastTomorrow');
-                if ($forecastID > 0) SetValue($forecastID, round((float)($seed['dailyKWh'] ?? 0.0), 3));
-                $statusID = (int)@$this->GetIDForIdent('ConsumptionLearningStatus');
-                if ($statusID > 0) SetValue($statusID, (string)($seed['source'] ?? 'Archiv gelernt'));
-            }
-
+            // Keine synchrone Mehrtages-Auswertung mehr im Button-Aufruf. Der Worker
+            // beginnt mit dem jüngsten abgeschlossenen Tag und veröffentlicht schon nach
+            // dem ersten gültigen Tag ein Zwischenprofil. Damit bleibt die Oberfläche frei
+            // und der Börsenpreis-/PV-Refresh wird nicht durch den Button blockiert.
             $state = [
                 'active' => true,
                 'archiveID' => $archiveID,
                 'varID' => $varID,
                 'firstDay' => $firstDay,
                 'lastDay' => $lastDay,
-                'cursorDay' => $firstDay,
+                'cursorDay' => $lastDay,
+                'direction' => -1,
                 'started' => time(),
                 'accumulator' => $this->CreateConsumptionAccumulator()
             ];
@@ -1650,8 +1678,7 @@ class SmartBatteryOptimizer extends IPSModule
 
             $text = 'Lastprofil-Neuberechnung aus Archiv gestartet: '
                 . date('d.m.Y', $firstDay) . ' bis ' . date('d.m.Y', $lastDay)
-                . '. ' . (is_array($seed) ? 'Stündliches Startprofil sofort erzeugt; ' : '')
-                . 'Autoladungen werden erkannt und aus dem Grundprofil ausgeschlossen.';
+                . '. Jüngste Archivtage werden zuerst verarbeitet; das erste gültige Zwischenprofil wird automatisch veröffentlicht. Autoladungen werden erkannt und aus dem Grundprofil ausgeschlossen.';
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
             echo $text;
@@ -1676,12 +1703,26 @@ class SmartBatteryOptimizer extends IPSModule
             $archiveID = (int)($state['archiveID'] ?? 0);
             $varID = (int)($state['varID'] ?? 0);
             $cursorDay = (int)($state['cursorDay'] ?? 0);
+            $firstDay = (int)($state['firstDay'] ?? 0);
             $lastDay = (int)($state['lastDay'] ?? 0);
+            // Alte, bereits laufende v1.10.43-1.10.46-Zustände besitzen noch keine
+            // direction. Bereits vorhandener Fortschritt wird unverändert vorwärts
+            // weitergeführt. Falls der alte Lauf wegen des Speicherfehlers noch keinen
+            // einzigen gültigen Tag geschafft hat, darf er ohne Datenverlust direkt mit
+            // dem jüngsten Tag im neuen Verfahren neu ansetzen.
             $acc = is_array($state['accumulator'] ?? null)
                 ? $state['accumulator']
                 : $this->CreateConsumptionAccumulator();
+            if (!isset($state['direction']) && (int)($acc['validDays'] ?? 0) === 0) {
+                $direction = -1;
+                $cursorDay = $lastDay;
+                $state['direction'] = -1;
+                $state['cursorDay'] = $cursorDay;
+            } else {
+                $direction = isset($state['direction']) && (int)$state['direction'] < 0 ? -1 : 1;
+            }
 
-            if ($archiveID <= 0 || $varID <= 0 || $cursorDay <= 0 || $lastDay <= 0) {
+            if ($archiveID <= 0 || $varID <= 0 || $cursorDay <= 0 || $firstDay <= 0 || $lastDay <= 0) {
                 throw new Exception('ungültiger Wiederaufbau-Zustand');
             }
 
@@ -1693,28 +1734,46 @@ class SmartBatteryOptimizer extends IPSModule
                 return;
             }
 
-            // Archivtage nur in sehr kurzen Blöcken verarbeiten. Die vorherige Kombination
-            // aus 1-s-Timer und bis zu 4 s Rechenzeit konnte die übrigen Modul-Timer praktisch
-            // dauerhaft verdrängen. Maximal zwei Tage bzw. ca. 0,75 s pro Lauf lassen
-            // ausreichend Luft für Preis-, PV- und Diagramm-Aktualisierungen.
-            $processed = 0;
-            $chunkStarted = microtime(true);
-            while ($cursorDay <= $lastDay && $processed < 2 && (microtime(true) - $chunkStarted) < 0.75) {
-                $day = $this->GetConsumptionDayForProfileLearning($archiveID, $varID, $cursorDay);
-                if (is_array($day)) {
-                    $this->AddConsumptionDayToAccumulator($acc, $cursorDay, $day);
-                }
-                $cursorDay = strtotime('+1 day', $cursorDay);
-                $processed++;
+            // Pro Worker-Lauf genau einen Tag verarbeiten. Die Tagesauswertung selbst
+            // verwendet nur Archiv-Aggregate (Stunde + Minute), keine Rohwert-Vollabfrage.
+            // Dadurch bleiben Speicherbedarf und Laufzeit klar begrenzt.
+            $day = $this->GetConsumptionDayForProfileLearning($archiveID, $varID, $cursorDay);
+            if (is_array($day)) {
+                $this->AddConsumptionDayToAccumulator($acc, $cursorDay, $day);
             }
+            $cursorDay = strtotime(($direction < 0 ? '-1 day' : '+1 day'), $cursorDay);
 
             $state['cursorDay'] = $cursorDay;
             $state['accumulator'] = $acc;
+
+            // Bereits während des Archivlaufs ein Zwischenprofil veröffentlichen. Das
+            // verhindert, dass die Anzeige bis zum Ende eines langen Archivs auf dem
+            // 45-kWh/24-Fallback stehen bleibt.
+            if ((int)($acc['validDays'] ?? 0) > 0) {
+                $partialModel = $this->FinalizeConsumptionAccumulator($acc);
+                $partial = $this->ComposeConsumptionProfileFromModel($partialModel, strtotime('tomorrow 12:00:00'));
+                $partial['archiveRebuild'] = true;
+                $partial['updated'] = time();
+                $partial['source'] = 'Archiv-Neuberechnung läuft – ' . (int)($acc['validDays'] ?? 0) . ' gültige Tage';
+                $this->WriteAttributeString('ConsumptionProfileJSON', json_encode($partial));
+                $this->WriteAttributeInteger('ConsumptionProfileUpdated', time());
+                $this->WriteAttributeString('ConsumptionLearningSource', $partial['source']);
+                $chartID = (int)@$this->GetIDForIdent('ConsumptionProfileChartHTML');
+                if ($chartID > 0) SetValue($chartID, $this->RenderConsumptionProfileChartHTML($partial));
+                $statusID = (int)@$this->GetIDForIdent('ConsumptionLearningStatus');
+                if ($statusID > 0) SetValue($statusID, $partial['source']);
+            }
+
             $this->WriteAttributeString('ConsumptionArchiveRebuildStateJSON', json_encode($state));
 
-            if ($cursorDay <= $lastDay) {
-                $totalDays = max(1, (int)floor(($lastDay - (int)$state['firstDay']) / 86400) + 1);
-                $doneDays = max(0, (int)floor(($cursorDay - (int)$state['firstDay']) / 86400));
+            $hasMore = $direction < 0 ? ($cursorDay >= $firstDay) : ($cursorDay <= $lastDay);
+            if ($hasMore) {
+                $totalDays = max(1, (int)floor(($lastDay - $firstDay) / 86400) + 1);
+                if ($direction < 0) {
+                    $doneDays = max(0, (int)floor(($lastDay - $cursorDay) / 86400));
+                } else {
+                    $doneDays = max(0, (int)floor(($cursorDay - $firstDay) / 86400));
+                }
                 $pct = min(99, (int)round(($doneDays / $totalDays) * 100));
                 $text = 'Lastprofil Archiv-Neuberechnung: ' . $pct . ' % · '
                     . (int)($acc['validDays'] ?? 0) . ' gültige Tage · '
@@ -5530,6 +5589,19 @@ class SmartBatteryOptimizer extends IPSModule
             $legacyCached = $cached;
         }
 
+        // Während einer expliziten Archiv-Neuberechnung liest der reguläre Refresh
+        // niemals parallel erneut dutzende Archivtage. Er verwendet das zuletzt
+        // veröffentlichte Profil (oder den Fallback), während ausschließlich der
+        // Worker den Archivfortschritt übernimmt.
+        $rebuildState = json_decode($this->ReadAttributeString('ConsumptionArchiveRebuildStateJSON'), true);
+        if (!$force && is_array($rebuildState) && !empty($rebuildState['active'])) {
+            if ($legacyCached !== null) {
+                $this->WriteAttributeString('ConsumptionLearningSource', (string)($legacyCached['source'] ?? 'Archiv-Neuberechnung läuft'));
+                return $legacyCached;
+            }
+            return $this->BuildFallbackConsumptionProfile($fallbackDaily, 'Archiv-Neuberechnung läuft – Fallback bis zum ersten gültigen Archivtag');
+        }
+
         $varID = $this->ReadPropertyInteger('HousePowerVariable');
         if ($varID <= 0 || !@IPS_VariableExists($varID)) {
             return $legacyCached ?? $this->BuildFallbackConsumptionProfile($fallbackDaily, 'Fallback – Hausverbrauchsvariable fehlt');
@@ -6021,28 +6093,17 @@ class SmartBatteryOptimizer extends IPSModule
         $dayEnd = $dayStart + 86400;
         if ($dayEnd > strtotime('today 00:00:00')) return null;
 
-        // Die stündliche Energie wird bevorzugt direkt aus den Archiv-Aggregaten
-        // gelesen. Das liefert nur wenige Datensätze pro Tag und vermeidet die frühere
-        // komplette Rohwertliste im RAM.
+        // Grundprofil ausschließlich aus bereits vorhandenen Stundenaggregaten.
+        // 24 Datensätze pro Tag statt tausender Rohwerte.
         $hourlyRawWh = $this->GetHourlyConsumptionWhFromAggregates($archiveID, $varID, $dayStart, $dayEnd);
-
-        // Für die Erkennung des >6,5-kW-Lastsprungs werden Rohwerte weiterhin genutzt,
-        // aber nur seitenweise gelesen und auf eine kleine Minuten-Zeitreihe verdichtet.
-        // Vier Stunden Rand reichen bei der bekannten 14,4-kWh-Fahrzeugbatterie, um
-        // einen Ladevorgang auch über Mitternacht vollständig zu erkennen.
-        $readStart = max(0, $dayStart - 4 * 3600);
-        $readEnd = $dayEnd + 4 * 3600;
-        $points = $this->GetPagedConsumptionPowerPoints($archiveID, $varID, $readStart, $readEnd);
-
-        // Sollte für eine ältere Archivstruktur kein Stundenaggregat verfügbar sein,
-        // wird die bereits speicherbegrenzte Minuten-Zeitreihe integriert. Auch dieser
-        // Fallback lädt niemals einen kompletten Tag ungefiltert in den Speicher.
-        if (!is_array($hourlyRawWh) || count($hourlyRawWh) !== 24) {
-            if (count($points) < 2) return null;
-            $hourlyRawWh = $this->IntegrateConsumptionPointsToHourlyWh($points, $dayStart, $dayEnd);
-        }
         if (!is_array($hourlyRawWh) || count($hourlyRawWh) !== 24) return null;
 
+        // EV-Erkennung ebenfalls ohne Rohwert-Vollabfrage: IP-Symcon kann 1-Minuten-
+        // Aggregate (Stufe 6) direkt aus dem Archiv liefern. Für 32 Stunden Rand sind
+        // das maximal rund 1.920 kleine Datensätze und damit weit unter dem 32-MB-Limit.
+        $readStart = max(0, $dayStart - 4 * 3600);
+        $readEnd = $dayEnd + 4 * 3600;
+        $points = $this->GetMinuteConsumptionPowerPoints($archiveID, $varID, $readStart, $readEnd);
         $sessions = count($points) >= 2
             ? $this->DetectEVChargingSessions($points, $readStart, $readEnd)
             : [];
@@ -6079,6 +6140,26 @@ class SmartBatteryOptimizer extends IPSModule
             'evSessions' => $overlapSessions,
             'evKWh' => $evKWh
         ];
+    }
+
+    private function GetMinuteConsumptionPowerPoints(int $archiveID, int $varID, int $rangeStart, int $rangeEnd): array
+    {
+        if ($archiveID <= 0 || $varID <= 0 || $rangeEnd <= $rangeStart) return [];
+        // Aggregationsstufe 6 = 1 Minute. Selbst ein 32-Stunden-Fenster bleibt damit
+        // klein und benötigt keine AC_GetLoggedValues-Rohwertliste mehr.
+        $rows = @AC_GetAggregatedValues($archiveID, $varID, 6, $rangeStart, $rangeEnd - 1, 0);
+        if (!is_array($rows) || count($rows) === 0) return [];
+
+        $points = [];
+        foreach (array_reverse($rows) as $row) {
+            $ts = (int)($row['TimeStamp'] ?? 0);
+            if ($ts < $rangeStart || $ts >= $rangeEnd) continue;
+            $points[] = [
+                'ts' => $ts,
+                'value' => max(0.0, (float)($row['Avg'] ?? 0.0))
+            ];
+        }
+        return $points;
     }
 
     private function GetHourlyConsumptionWhFromAggregates(int $archiveID, int $varID, int $dayStart, int $dayEnd): ?array

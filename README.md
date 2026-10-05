@@ -1,4 +1,4 @@
-> Version 1.10.46 / Build 217: Lastprofil-Archiv-Neuberechnung liest hochfrequente Verbrauchsarchive speicherschonend und verhindert den 32-MB-Speicher-Fatalfehler.
+> Version 1.10.47 / Build 218: Börsenpreis-Refresh ist vom Lastprofil-Lernen entkoppelt; Archiv-Lastprofile werden speicherschonend über Stunden-/Minutenaggregate aufgebaut.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -16,6 +16,12 @@ Die PV-Auto-Korrektur verwendet keine Stundenfaktoren mehr. Der Faktor bleibt bi
 IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose, lernendem Nachtverbrauch und Unterstützung mehrerer PV-Flächen.
 
 ## Version
+
+**1.10.47 / Build 218**
+- Börsenpreis-Diagramm wird vor dem Lastprofil-Lernen aktualisiert und kann dadurch nicht mehr von einem Archiv-/Lernlauf blockiert werden.
+- Archiv-Neuberechnung: Stundenaggregate für Energie, 1-Minuten-Aggregate für Autolade-Erkennung; keine vollständige Rohwertliste im Speicher.
+- Neue Archivläufe starten beim jüngsten Tag und veröffentlichen laufend Zwischenprofile.
+- Reguläre Aktualisierungen führen während des Archivlaufs keinen parallelen historischen Komplettscan aus.
 
 **1.10.46 / Build 217**
 
