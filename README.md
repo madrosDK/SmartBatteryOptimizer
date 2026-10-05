@@ -1,4 +1,4 @@
-> Version 1.10.48 / Build 219: Lastprofil-Historie erweitert; Autoladung wird separat orange dargestellt und nur aus dem Lernprofil herausgerechnet.
+> Version 1.10.53 / Build 224: Autolade-Erkennung auf den typischen Leistungsanstieg ausgerichtet; erkannte Ladeanteile werden separat orange dargestellt und zwingend aus dem Lernprofil herausgerechnet.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -127,7 +127,7 @@ Das Modul lernt aus der archivierten Variable **Hausverbrauch Leistung (W)** zus
 
 Ab Version **1.10.43** gibt es für **jeden Wochentag ein eigenes 24-Stunden-Profil**. Zusätzlich werden vier saisonale Stützprofile (Winter, Frühling, Sommer, Herbst) geführt. Zwischen diesen Stützpunkten wird mit einem sanften Verlauf interpoliert, sodass es an Saisonwechseln keine sprunghaften Verbrauchsprognosen gibt. Neuere Vergleichstage werden stärker gewichtet als sehr alte Archivtage. Ab 1.10.48 werden Wochentags-/Saison-Slots mit noch wenigen Vergleichstagen zusätzlich mit dem globalen Stundenprofil stabilisiert; mit wachsender Zahl passender Lerntage steigt das Gewicht des individuellen Wochentags automatisch.
 
-Plötzliche Zusatzlasten des Fahrzeugs (nominell > **6,5 kW**) werden aus 1-Minuten-Aggregaten erkannt. Für den sichtbaren Sprung wird eine Toleranz verwendet, weil Minutenmittel und gleichzeitig wechselnde Hauslast den Messsprung abschwächen können; Mindestdauer und plausible Energie der bekannten 14,4-kWh-Fahrzeugbatterie müssen den Vorgang zusätzlich bestätigen. Der erkannte Zusatzanteil wird minutenweise gegen die unmittelbar vorherige Grundlast integriert und beim Lernen aus dem Grundlastprofil herausgerechnet. Das originale Verbrauchsarchiv bleibt unverändert. Im Lastprofil-Diagramm wird dieser Anteil separat **orange** über dem normalen Ist-Verbrauch dargestellt.
+Autoladung wird primär am deutlichen Leistungsanstieg gegenüber der unmittelbar vorherigen Grundlast erkannt. Standard ist ein typischer Ladeanstieg von **6,5 kW** mit **±2,0 kW Toleranz**; zusätzlich bleibt der Mindestanstieg konfigurierbar. Ein Sprung wie ca. **1,2 kW → 7,3–8,5 kW** wird damit direkt als Ladebeginn bewertet. Danach wird die erhöhte Last bis zur Rückkehr Richtung Grundlast verfolgt. Der erkannte Zusatzanteil wird beim Lernen vollständig aus dem Grundlastprofil herausgerechnet. Das originale Verbrauchsarchiv bleibt unverändert und der Ladeanteil erscheint im Diagramm separat **orange**.
 
 Für die Einspeiseentscheidung wird die PV-Prognose des nächsten Tages zeitgleich mit dem erwarteten Eigenverbrauch verrechnet. Nur der erwartete PV-Überschuss kann zum Wiederaufladen des Speichers verwendet werden. Die Einspeisung wird deshalb so begrenzt, dass der konfigurierte **Ziel-SoC nach dem nächsten PV-Tag** erreichbar bleibt und der Nacht-/Eigenverbrauch berücksichtigt ist.
 

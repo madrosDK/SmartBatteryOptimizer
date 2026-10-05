@@ -487,8 +487,26 @@
                     "suffix": " kW"
                 },
                 {
+                    "type": "NumberSpinner",
+                    "name": "EVChargingExpectedRiseKW",
+                    "caption": "Autoladung typischer Ladeanstieg",
+                    "digits": 1,
+                    "minimum": 0.5,
+                    "maximum": 20.0,
+                    "suffix": " kW"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "EVChargingRiseToleranceKW",
+                    "caption": "Toleranz typischer Ladeanstieg",
+                    "digits": 1,
+                    "minimum": 0.2,
+                    "maximum": 5.0,
+                    "suffix": " kW"
+                },
+                {
                     "type": "Label",
-                    "caption": "Autoladung wird als Muster erkannt: deutlicher kW-Anstieg gegenüber der vorherigen Grundlast, mehrere Minuten Hochlast-Plateau und anschließender Abfall Richtung Grundlast. Der zusätzliche Ladeanteil wird orange dargestellt und aus dem Lernprofil herausgerechnet. Aus gefundenen Ladevorgängen wird zusätzlich die typische Ladeleistung für zukünftige Erkennungen gelernt."
+                    "caption": "Autoladung: Primär wird der deutliche kW-Anstieg gegenüber der vorherigen Grundlast erkannt. Standard ist ein typischer Ladeanstieg von 6,5 kW mit einstellbarer Toleranz. Danach wird die erhöhte Last bis zum Abfall zurück Richtung Grundlast verfolgt. Nur dieser zusätzliche Ladeanteil wird orange dargestellt und aus dem Lernprofil herausgerechnet."
                 },
                 {
                     "type": "NumberSpinner",

@@ -1,3 +1,13 @@
+# Changelog
+
+## 1.10.53 (Build 224)
+- Autolade-Erkennung vereinfacht und auf den real beobachteten Ladeanstieg ausgerichtet: Primärkriterium ist jetzt die zusätzliche Leistung gegenüber der unmittelbar vorherigen Grundlast.
+- Neuer Wert `Autoladung typischer Ladeanstieg`, Standard 6,5 kW, plus `Toleranz typischer Ladeanstieg`, Standard ±2,0 kW. Damit wird z. B. der dokumentierte Sprung von ca. 1,2 kW auf 7,3–8,5 kW direkt als Ladebeginn bewertet.
+- Min/Max innerhalb einer Minute werden für die Höhe der Startflanke verwendet, ohne eine bestimmte Reihenfolge von MinTime/MaxTime vorauszusetzen.
+- Nach einer erkannten Startflanke wird die Ladephase bis zur Rückkehr Richtung Grundlast verfolgt. Starre Plateau-Quoten können einen ansonsten eindeutigen Ladevorgang nicht mehr nachträglich verwerfen.
+- Erkannter Fahrzeug-Ladeanteil wird weiterhin zwingend aus dem Lastprofil herausgerechnet und im Verbrauchsdiagramm orange dargestellt; das originale Verbrauchsarchiv bleibt unverändert.
+- Autoladungs-Erkennungscache und gespeicherte Treffer auf Version 7 angehoben. Außerdem Versionsfehler beim Lernen des Autolade-Musters behoben, sodass erkannte Archivtreffer künftig tatsächlich in das Muster einfließen.
+
 # SmartBatteryOptimizer 1.10.52 / Build 223
 
 - Autolade-Erkennung erkennt jetzt auch sehr schnelle Schaltflanken innerhalb einer einzigen Minute anhand der 1-Minuten-Aggregate `Min/Max` und `MinTime/MaxTime`. Damit wird z. B. ein Sprung von ca. 1,2 kW auf 7,3–8,5 kW innerhalb weniger Sekunden als Ladebeginn erkannt.
