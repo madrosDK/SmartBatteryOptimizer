@@ -1,3 +1,12 @@
+# SmartBatteryOptimizer 1.10.46 / Build 217
+
+- Lastprofil-Archiv-Neuberechnung speicherschonend gemacht: Rohwerte werden nicht mehr als kompletter Tages-/Randbereich auf einmal in den PHP-Speicher geladen.
+- Stündliche Verbrauchsenergie wird bevorzugt aus den vorhandenen Stundenaggregaten des IP-Symcon-Archivs gelesen.
+- Für die Autolade-Erkennung werden Rohwerte seitenweise mit begrenzter Datensatzanzahl gelesen und auf eine kompakte Minuten-Zeitreihe verdichtet; die Erkennung des plötzlichen >6,5-kW-Lastanstiegs bleibt erhalten.
+- Der Lernpfad fällt nicht mehr auf die alte unbegrenzte Ganz-Tages-Rohwertabfrage zurück.
+- Der laufende Archiv-Neuaufbau kann nach dem Update mit dem vorhandenen Zustand fortgesetzt werden; bestehende Archive, Lernwerte, Statistikdaten und Konfigurationen werden nicht gelöscht oder zurückgesetzt.
+- Börsenpreis-, PV-, Planungs- und Diagramm-Aktualisierungsroutinen wurden nicht verändert. Durch das Entfernen des wiederkehrenden Speicher-Fatalfehlers werden die normalen Modul-Timer nicht mehr alle 5 Sekunden durch den Archiv-Worker abgebrochen.
+
 ## 1.10.45 (Build 216)
 - Archiv-Neuberechnung des Lastprofils blockiert die regulären Modul-Timer nicht mehr.
 - Archiv-Worker läuft nur noch in kurzen Blöcken mit 5 Sekunden Pause und gibt aktiven Preis-/PV-/Plan-Berechnungen Vorrang.

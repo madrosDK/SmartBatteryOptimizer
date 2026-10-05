@@ -543,7 +543,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.45';
+        $currentModuleVersion = '1.10.46';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             $this->SetActionFeedback('Modulupdate erkannt – Anzeigen, PV-Quellen und Planung werden aktualisiert ...');
@@ -668,7 +668,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.45',
+            'moduleVersion' => '1.10.46',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -5976,10 +5976,10 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function GetConsumptionDayForProfileLearning(int $archiveID, int $varID, int $dayStart): ?array
     {
-        // Bevorzugt die EV-bereinigte Detailauswertung. Sollte diese wegen einer
-        // ungewöhnlichen Archivstruktur keine verwertbare Tageskurve liefern, wird
-        // auf dieselbe Stundenintegration zurückgegriffen, die auch im Ist-Diagramm
-        // verwendet wird. Dadurch kann vorhandenes Archiv nicht als leer erscheinen.
+        // Die Lernfunktion liest Archiv-Rohwerte ausschließlich speicherschonend in
+        // begrenzten Seiten. Ein Rückfall auf die alte Ganz-Tages-Rohwertabfrage darf
+        // hier nicht mehr stattfinden, da hochfrequent geloggte Verbrauchswerte sonst
+        // das PHP-Speicherlimit der IP-Symcon-Instanz überschreiten können.
         $day = $this->GetHourlyConsumptionForLearningDay($archiveID, $varID, $dayStart);
         if (is_array($day)
             && isset($day['hourlyKWh'])
@@ -5989,19 +5989,7 @@ class SmartBatteryOptimizer extends IPSModule
         ) {
             return $day;
         }
-
-        $raw = $this->GetHourlyConsumptionForDay($archiveID, $varID, $dayStart);
-        if (!is_array($raw) || count($raw) !== 24) return null;
-        $daily = array_sum(array_map('floatval', $raw));
-        if (!is_finite($daily) || $daily <= 0.1) return null;
-
-        return [
-            'hourlyKWh' => array_values($raw),
-            'rawHourlyKWh' => array_values($raw),
-            'evSessions' => 0,
-            'evKWh' => 0.0,
-            'learningFallback' => true
-        ];
+        return null;
     }
 
     private function BuildImmediateConsumptionProfileSeed(int $archiveID, int $varID): ?array
@@ -6033,101 +6021,56 @@ class SmartBatteryOptimizer extends IPSModule
         $dayEnd = $dayStart + 86400;
         if ($dayEnd > strtotime('today 00:00:00')) return null;
 
-        // Vier Stunden Rand reichen bei der bekannten 14,4-kWh-Fahrzeugbatterie,
-        // um einen >6,5-kW-Ladevorgang auch über Mitternacht vollständig zu erkennen.
+        // Die stündliche Energie wird bevorzugt direkt aus den Archiv-Aggregaten
+        // gelesen. Das liefert nur wenige Datensätze pro Tag und vermeidet die frühere
+        // komplette Rohwertliste im RAM.
+        $hourlyRawWh = $this->GetHourlyConsumptionWhFromAggregates($archiveID, $varID, $dayStart, $dayEnd);
+
+        // Für die Erkennung des >6,5-kW-Lastsprungs werden Rohwerte weiterhin genutzt,
+        // aber nur seitenweise gelesen und auf eine kleine Minuten-Zeitreihe verdichtet.
+        // Vier Stunden Rand reichen bei der bekannten 14,4-kWh-Fahrzeugbatterie, um
+        // einen Ladevorgang auch über Mitternacht vollständig zu erkennen.
         $readStart = max(0, $dayStart - 4 * 3600);
         $readEnd = $dayEnd + 4 * 3600;
-        $values = @AC_GetLoggedValues($archiveID, $varID, $readStart, $readEnd, 0);
-        if (!is_array($values) || count($values) === 0) return null;
-        $values = array_reverse($values);
+        $points = $this->GetPagedConsumptionPowerPoints($archiveID, $varID, $readStart, $readEnd);
 
-        $prev = @AC_GetLoggedValues($archiveID, $varID, 0, $readStart - 1, 1);
-        if (is_array($prev) && count($prev) > 0) {
-            array_unshift($values, ['TimeStamp' => $readStart, 'Value' => $prev[0]['Value']]);
-        } elseif ((int)($values[0]['TimeStamp'] ?? 0) > $readStart) {
-            array_unshift($values, ['TimeStamp' => $readStart, 'Value' => $values[0]['Value']]);
+        // Sollte für eine ältere Archivstruktur kein Stundenaggregat verfügbar sein,
+        // wird die bereits speicherbegrenzte Minuten-Zeitreihe integriert. Auch dieser
+        // Fallback lädt niemals einen kompletten Tag ungefiltert in den Speicher.
+        if (!is_array($hourlyRawWh) || count($hourlyRawWh) !== 24) {
+            if (count($points) < 2) return null;
+            $hourlyRawWh = $this->IntegrateConsumptionPointsToHourlyWh($points, $dayStart, $dayEnd);
         }
+        if (!is_array($hourlyRawWh) || count($hourlyRawWh) !== 24) return null;
 
-        $points = [];
-        foreach ($values as $row) {
-            $ts = (int)($row['TimeStamp'] ?? 0);
-            if ($ts <= 0) continue;
-            $points[] = [
-                'ts' => $ts,
-                'value' => max(0.0, (float)($row['Value'] ?? 0.0))
-            ];
-        }
-        usort($points, static fn($a, $b) => $a['ts'] <=> $b['ts']);
-        if (count($points) < 2) return null;
+        $sessions = count($points) >= 2
+            ? $this->DetectEVChargingSessions($points, $readStart, $readEnd)
+            : [];
 
-        // Doppelte Zeitstempel auf den zuletzt gelesenen Wert reduzieren.
-        $dedup = [];
-        foreach ($points as $p) {
-            $dedup[(string)$p['ts']] = $p;
-        }
-        $points = array_values($dedup);
-        usort($points, static fn($a, $b) => $a['ts'] <=> $b['ts']);
-
-        $sessions = $this->DetectEVChargingSessions($points, $readStart, $readEnd);
-
-        $hourlyRawWh = array_fill(0, 24, 0.0);
-        $hourlyCleanWh = array_fill(0, 24, 0.0);
-
-        for ($i = 0; $i < count($points); $i++) {
-            $segmentStart = max($dayStart, (int)$points[$i]['ts']);
-            $segmentEnd = ($i + 1 < count($points))
-                ? min($dayEnd, (int)$points[$i + 1]['ts'])
-                : $dayEnd;
-            if ($segmentEnd <= $segmentStart) continue;
-
-            $rawPowerW = max(0.0, (float)$points[$i]['value']);
-            $boundaries = [$segmentStart, $segmentEnd];
-            foreach ($sessions as $session) {
-                $s = (int)$session['start'];
-                $e = (int)$session['end'];
-                if ($s > $segmentStart && $s < $segmentEnd) $boundaries[] = $s;
-                if ($e > $segmentStart && $e < $segmentEnd) $boundaries[] = $e;
-            }
-            sort($boundaries);
-            $boundaries = array_values(array_unique($boundaries));
-
-            for ($b = 0; $b < count($boundaries) - 1; $b++) {
-                $subStart = (int)$boundaries[$b];
-                $subEnd = (int)$boundaries[$b + 1];
-                if ($subEnd <= $subStart) continue;
-                $mid = (int)floor(($subStart + $subEnd) / 2);
-                $chargePowerW = 0.0;
-                foreach ($sessions as $session) {
-                    if ($mid >= (int)$session['start'] && $mid < (int)$session['end']) {
-                        $chargePowerW = max($chargePowerW, (float)$session['chargePowerW']);
-                    }
-                }
-                $cleanPowerW = max(0.0, $rawPowerW - $chargePowerW);
-
-                $cursor = $subStart;
-                while ($cursor < $subEnd) {
-                    $hour = max(0, min(23, (int)date('G', $cursor)));
-                    $hourEnd = min($subEnd, strtotime(date('Y-m-d H:00:00', $cursor)) + 3600);
-                    if ($hourEnd <= $cursor) break;
-                    $hours = ($hourEnd - $cursor) / 3600.0;
-                    $hourlyRawWh[$hour] += $rawPowerW * $hours;
-                    $hourlyCleanWh[$hour] += $cleanPowerW * $hours;
-                    $cursor = $hourEnd;
-                }
-            }
-        }
-
+        $hourlyCleanWh = array_values($hourlyRawWh);
         $evKWh = 0.0;
         $overlapSessions = 0;
+
         foreach ($sessions as $session) {
             $overlapStart = max($dayStart, (int)$session['start']);
             $overlapEnd = min($dayEnd, (int)$session['end']);
             if ($overlapEnd <= $overlapStart) continue;
+
             if ((int)$session['start'] >= $dayStart && (int)$session['start'] < $dayEnd) {
                 $overlapSessions++;
             }
-            $evKWh += max(0.0, (float)$session['chargePowerW'])
-                * (($overlapEnd - $overlapStart) / 3600.0) / 1000.0;
+
+            $chargePowerW = max(0.0, (float)$session['chargePowerW']);
+            $cursor = $overlapStart;
+            while ($cursor < $overlapEnd) {
+                $hour = max(0, min(23, (int)date('G', $cursor)));
+                $hourEnd = min($overlapEnd, strtotime(date('Y-m-d H:00:00', $cursor)) + 3600);
+                if ($hourEnd <= $cursor) break;
+                $chargeWh = $chargePowerW * (($hourEnd - $cursor) / 3600.0);
+                $hourlyCleanWh[$hour] = max(0.0, (float)$hourlyCleanWh[$hour] - $chargeWh);
+                $evKWh += $chargeWh / 1000.0;
+                $cursor = $hourEnd;
+            }
         }
 
         return [
@@ -6136,6 +6079,146 @@ class SmartBatteryOptimizer extends IPSModule
             'evSessions' => $overlapSessions,
             'evKWh' => $evKWh
         ];
+    }
+
+    private function GetHourlyConsumptionWhFromAggregates(int $archiveID, int $varID, int $dayStart, int $dayEnd): ?array
+    {
+        if ($archiveID <= 0 || $varID <= 0 || $dayEnd <= $dayStart) return null;
+        $rows = @AC_GetAggregatedValues($archiveID, $varID, 0, $dayStart, $dayEnd - 1, 0);
+        if (!is_array($rows) || count($rows) === 0) return null;
+
+        $hourlyWh = array_fill(0, 24, 0.0);
+        $have = false;
+        foreach ($rows as $row) {
+            $ts = (int)($row['TimeStamp'] ?? 0);
+            if ($ts < $dayStart || $ts >= $dayEnd) continue;
+            $duration = max(0, (int)($row['Duration'] ?? 3600));
+            if ($duration <= 0) continue;
+            $avgW = max(0.0, (float)($row['Avg'] ?? 0.0));
+            $hour = max(0, min(23, (int)date('G', $ts)));
+            $hourlyWh[$hour] += $avgW * ($duration / 3600.0);
+            $have = true;
+        }
+        return $have ? $hourlyWh : null;
+    }
+
+    private function GetPagedConsumptionPowerPoints(int $archiveID, int $varID, int $rangeStart, int $rangeEnd): array
+    {
+        if ($archiveID <= 0 || $varID <= 0 || $rangeEnd <= $rangeStart) return [];
+
+        $pageLimit = 1500;
+        $bucketSeconds = 60;
+        $cursorEnd = $rangeEnd;
+        $buckets = [];
+        $guard = 0;
+
+        while ($cursorEnd >= $rangeStart && $guard < 10000) {
+            $guard++;
+            $rows = @AC_GetLoggedValues($archiveID, $varID, $rangeStart, $cursorEnd, $pageLimit);
+            if (!is_array($rows) || count($rows) === 0) break;
+
+            $rowCount = count($rows);
+            $minTs = null;
+            foreach ($rows as $row) {
+                $ts = (int)($row['TimeStamp'] ?? 0);
+                if ($ts < $rangeStart || $ts > $rangeEnd) continue;
+                $value = max(0.0, (float)($row['Value'] ?? 0.0));
+                if ($minTs === null || $ts < $minTs) $minTs = $ts;
+
+                $bucket = (int)floor(($ts - $rangeStart) / $bucketSeconds);
+                if (!isset($buckets[$bucket])) {
+                    $buckets[$bucket] = [
+                        'firstTs' => $ts, 'firstValue' => $value,
+                        'lastTs' => $ts, 'lastValue' => $value,
+                        'minTs' => $ts, 'minValue' => $value,
+                        'maxTs' => $ts, 'maxValue' => $value
+                    ];
+                    continue;
+                }
+
+                if ($ts < $buckets[$bucket]['firstTs']) {
+                    $buckets[$bucket]['firstTs'] = $ts;
+                    $buckets[$bucket]['firstValue'] = $value;
+                }
+                if ($ts > $buckets[$bucket]['lastTs']) {
+                    $buckets[$bucket]['lastTs'] = $ts;
+                    $buckets[$bucket]['lastValue'] = $value;
+                }
+                if ($value < $buckets[$bucket]['minValue']) {
+                    $buckets[$bucket]['minTs'] = $ts;
+                    $buckets[$bucket]['minValue'] = $value;
+                }
+                if ($value > $buckets[$bucket]['maxValue']) {
+                    $buckets[$bucket]['maxTs'] = $ts;
+                    $buckets[$bucket]['maxValue'] = $value;
+                }
+            }
+            unset($rows);
+
+            if ($minTs === null || $minTs <= $rangeStart || $rowCount < $pageLimit) break;
+            $nextEnd = $minTs - 1;
+            if ($nextEnd >= $cursorEnd) break;
+            $cursorEnd = $nextEnd;
+        }
+
+        $pointMap = [];
+        foreach ($buckets as $bucket) {
+            foreach ([
+                ['ts' => $bucket['firstTs'], 'value' => $bucket['firstValue']],
+                ['ts' => $bucket['minTs'], 'value' => $bucket['minValue']],
+                ['ts' => $bucket['maxTs'], 'value' => $bucket['maxValue']],
+                ['ts' => $bucket['lastTs'], 'value' => $bucket['lastValue']]
+            ] as $point) {
+                $pointMap[(string)$point['ts']] = $point;
+            }
+        }
+        unset($buckets);
+
+        $prev = @AC_GetLoggedValues($archiveID, $varID, 0, $rangeStart - 1, 1);
+        if (is_array($prev) && count($prev) > 0) {
+            $pointMap[(string)$rangeStart] = [
+                'ts' => $rangeStart,
+                'value' => max(0.0, (float)($prev[0]['Value'] ?? 0.0))
+            ];
+        }
+
+        if (count($pointMap) === 0) return [];
+        ksort($pointMap, SORT_NUMERIC);
+        $points = array_values($pointMap);
+        if ((int)$points[0]['ts'] > $rangeStart) {
+            array_unshift($points, [
+                'ts' => $rangeStart,
+                'value' => max(0.0, (float)$points[0]['value'])
+            ]);
+        }
+        return $points;
+    }
+
+    private function IntegrateConsumptionPointsToHourlyWh(array $points, int $dayStart, int $dayEnd): ?array
+    {
+        if (count($points) < 2 || $dayEnd <= $dayStart) return null;
+        $hourlyWh = array_fill(0, 24, 0.0);
+        $have = false;
+
+        for ($i = 0; $i < count($points); $i++) {
+            $segmentStart = max($dayStart, (int)$points[$i]['ts']);
+            $segmentEnd = ($i + 1 < count($points))
+                ? min($dayEnd, (int)$points[$i + 1]['ts'])
+                : $dayEnd;
+            if ($segmentEnd <= $segmentStart) continue;
+
+            $powerW = max(0.0, (float)$points[$i]['value']);
+            $cursor = $segmentStart;
+            while ($cursor < $segmentEnd) {
+                $hour = max(0, min(23, (int)date('G', $cursor)));
+                $hourEnd = min($segmentEnd, strtotime(date('Y-m-d H:00:00', $cursor)) + 3600);
+                if ($hourEnd <= $cursor) break;
+                $hourlyWh[$hour] += $powerW * (($hourEnd - $cursor) / 3600.0);
+                $cursor = $hourEnd;
+                $have = true;
+            }
+        }
+        return $have ? $hourlyWh : null;
     }
 
     private function DetectEVChargingSessions(array $points, int $rangeStart, int $rangeEnd): array

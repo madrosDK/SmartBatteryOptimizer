@@ -1,4 +1,4 @@
-> Version 1.10.45 / Build 216: Lastprofil-Archiv-Neuberechnung läuft timerfreundlich in kurzen Blöcken und blockiert Preis-/PV-/Diagramm-Aktualisierungen nicht mehr.
+> Version 1.10.46 / Build 217: Lastprofil-Archiv-Neuberechnung liest hochfrequente Verbrauchsarchive speicherschonend und verhindert den 32-MB-Speicher-Fatalfehler.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -17,7 +17,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.45 / Build 216**
+**1.10.46 / Build 217**
 
 ## Neu in 1.2.3
 
