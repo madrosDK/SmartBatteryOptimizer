@@ -277,7 +277,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         IPS_SetVariableProfileDigits('SBO.PriceCt', 2);
         IPS_SetVariableProfileText('SBO.PriceCt', '', ' ct/kWh');
-        IPS_SetVariableProfileValues('SBO.PriceCt', -100, 500, 0.1);
+        IPS_SetVariableProfileValues('SBO.PriceCt', -100, 500, 1.0);
 
         if (!IPS_VariableProfileExists('SBO.CurrencyEUR')) {
             IPS_CreateVariableProfile('SBO.CurrencyEUR', 2);
@@ -397,7 +397,17 @@ class SmartBatteryOptimizer extends IPSModule
         // Der bisherige Laufzeitwert bleibt aus Kompatibilitätsgründen unter demselben Ident,
         // ist funktional aber ab dieser Version die zentrale Preisuntergrenze für JEDE Netzeinspeisung.
         $minimumPriceVarID = @$this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt');
-        if ($minimumPriceVarID > 0) @IPS_SetName($minimumPriceVarID, 'Mindestpreis Einspeisung');
+        if ($minimumPriceVarID > 0) {
+            @IPS_SetName($minimumPriceVarID, 'Mindestpreis Einspeisung');
+            // Symcon >= 8: kompakte Werteingabe statt Kreis-/Legacy-Regler.
+            // RequestAction rundet zusätzlich auf volle 1,00 ct/kWh.
+            if (function_exists('IPS_SetVariableCustomPresentation')) {
+                @IPS_SetVariableCustomPresentation($minimumPriceVarID, [
+                    'PRESENTATION' => '{6F477326-1683-A2FD-D2E7-477F366ECB62}',
+                    'SUFFIX' => ' ct/kWh'
+                ]);
+            }
+        }
         $currentPriceVarID = (int)@$this->GetIDForIdent('CurrentPrice');
         if ($currentPriceVarID > 0) {
             @IPS_SetVariableCustomProfile($currentPriceVarID, 'SBO.PriceCt');
@@ -523,7 +533,10 @@ class SmartBatteryOptimizer extends IPSModule
             'ForecastSolarStatus' => !$extendedMode,
             'PVCalibrationDiagnosisHTML' => !$extendedMode,
             'FeedInDebugHTML' => !$debugMode,
-            'ProviderDebugHTML' => !$debugMode
+            'ProviderDebugHTML' => !$debugMode,
+            'TestDischargePowerW' => !$debugMode,
+            'TestDischarge' => !$debugMode,
+            'TestDischargeStatus' => !$debugMode
         ] as $ident => $hidden) {
             $id = (int)@$this->GetIDForIdent($ident);
             if ($id > 0) @IPS_SetHidden($id, $hidden);
@@ -605,7 +618,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.66';
+        $currentModuleVersion = '1.10.67';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -767,7 +780,8 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->RecalculateInternal(false);
                 break;
             case 'RuntimePVSpaceMinimumPriceCt':
-                SetValue($this->GetIDForIdent($Ident), (float)$Value);
+                $wholeCent = max(-100.0, min(500.0, round((float)$Value)));
+                SetValue($this->GetIDForIdent($Ident), $wholeCent);
                 $this->UpdateFeedInPriceLock();
                 $this->RecalculateInternal(false);
                 break;
@@ -9040,7 +9054,10 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '<td></td><td></td>';
         $html .= '</tr>';
 
-        $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">Verbrauch bis morgen Abend</td></tr>';
+        $consumptionSafetyPct = max(0.0, $this->ReadPropertyFloat('ConsumptionForecastSafetyPct'));
+        $consumptionSafetyText = rtrim(rtrim(number_format($consumptionSafetyPct, 1, ',', ''), '0'), ',');
+        $consumptionHeading = 'Planungsverbrauch bis morgen Abend' . ($consumptionSafetyPct > 0.0 ? ' (+' . $consumptionSafetyText . ' % Reserve)' : '');
+        $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">' . htmlspecialchars($consumptionHeading, ENT_QUOTES, 'UTF-8') . '</td></tr>';
         $html .= '<tr>';
         $html .= '<td style="' . $cellLabel . '">Gesamt</td><td style="' . $cellValue . '">' . number_format($total, 2, ',', '.') . ' kWh</td>';
         $html .= '<td style="' . $cellLabel . '">Kommende Nacht</td><td style="' . $cellValue . '">' . number_format($nightPart, 2, ',', '.') . ' kWh</td>';

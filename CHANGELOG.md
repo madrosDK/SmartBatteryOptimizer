@@ -1,3 +1,11 @@
+## 1.10.67 / Build 238
+
+- Konfiguration: neuer erster Bereich „IP-Symcon Variablen“ bündelt die externen Variablenzuordnungen.
+- PV-Flächen samt PV-String-Variablen in den neuen Variablenbereich verschoben; fachliche Einstellungen bleiben in ihren bisherigen Bereichen.
+- Mindestpreis Einspeisung: Schrittweite auf 1,00 ct/kWh geändert; auf Symcon >= 8 kompakte Werteingabe statt Kreisregler. Eingaben werden auf volle Cent gerundet.
+- Test Entladeleistung, Test Entladung/Einspeisung und Test Entladung Status sind nur noch im Darstellungsmodus Debug sichtbar.
+- Übersicht: „Verbrauch bis morgen Abend“ als Planungsverbrauch mit dynamisch angezeigtem Sicherheitsaufschlag gekennzeichnet.
+
 ## 1.10.66 / Build 237
 
 - Neuer Konfigurationswert `Darstellungsmodus` mit `Standard`, `Erweitert` und `Debug`; der bisherige separate Debug-Schalter entfällt.

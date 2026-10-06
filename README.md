@@ -565,3 +565,10 @@ Die Einspeise-Statistik kann zwischen Woche (Montag bis Sonntag) und Monat umges
 
 ### Sichtbare Instanzansicht ab 1.10.64
 Die normale Instanzansicht zeigt nur noch fachlich relevante Prognose-, Speicher- und Einspeisewerte. Reine Legacy-/Diagnosevariablen wurden entfernt. Die dynamische Tarif-Zeitreihe bleibt ausschließlich als verstecktes technisches Archiv für die historische Erlösstatistik bestehen. Abschnittsüberschriften in der HTML-Übersicht sind reine HTML-Elemente und keine Dummy-Instanzen.
+
+### Konfiguration ab 1.10.67
+
+- **IP-Symcon Variablen** ist der erste Konfigurationsbereich und bündelt die externen Variablenzuordnungen.
+- **Darstellungsmodus**: Standard / Erweitert / Debug; die direkte AlphaESS-Testentladung ist nur in Debug sichtbar.
+- **Mindestpreis Einspeisung** wird in vollen 1,00 ct/kWh geführt.
+
