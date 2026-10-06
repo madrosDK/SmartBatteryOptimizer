@@ -1,4 +1,4 @@
-> Version 1.10.55 / Build 226: Autoladungs-Archivsuche liest jede Archivstunde direkt in kleinen Rohwertblöcken und erkennt echte Sekunden-Sprünge ohne Aggregat-Vorfilter; Ladeanteile werden orange dargestellt und aus dem Lastprofil ausgeschlossen.
+> Version 1.10.59 / Build 230: Erkannte Autoladungen werden mit dem eingestellten Plausibilitätswert als fester Ladeleistung aus dem Lastprofil herausgerechnet; neue einstellbare Maximalenergie pro Ladevorgang, Standard 14,4 kWh.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -16,6 +16,12 @@ Die PV-Auto-Korrektur verwendet keine Stundenfaktoren mehr. Der Faktor bleibt bi
 IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose, lernendem Nachtverbrauch und Unterstützung mehrerer PV-Flächen.
 
 ## Version
+
+**1.10.59 / Build 230**
+- Plausibilitätswert ist nach erkannter Startflanke zugleich die feste Fahrzeug-Ladeleistung.
+- Neue Maximalenergie pro Autoladung, Standard 14,4 kWh; danach endet der Ladeanteil-Abzug auch bei längerer Hochlastphase.
+- Mindestdauer und separat schaltbare zukünftige Erkennung bleiben erhalten.
+- Erkannter Ladeanteil wird orange dargestellt und aus dem Lastprofil ausgeschlossen.
 
 **1.10.51 / Build 222**
 - Neuer Button `Autoladungen im Archiv suchen`: durchsucht abgeschlossene Verbrauchstage nachträglich mit der aktuell eingestellten kW-Schwelle.
@@ -127,7 +133,7 @@ Das Modul lernt aus der archivierten Variable **Hausverbrauch Leistung (W)** zus
 
 Ab Version **1.10.43** gibt es für **jeden Wochentag ein eigenes 24-Stunden-Profil**. Zusätzlich werden vier saisonale Stützprofile (Winter, Frühling, Sommer, Herbst) geführt. Zwischen diesen Stützpunkten wird mit einem sanften Verlauf interpoliert, sodass es an Saisonwechseln keine sprunghaften Verbrauchsprognosen gibt. Neuere Vergleichstage werden stärker gewichtet als sehr alte Archivtage. Ab 1.10.48 werden Wochentags-/Saison-Slots mit noch wenigen Vergleichstagen zusätzlich mit dem globalen Stundenprofil stabilisiert; mit wachsender Zahl passender Lerntage steigt das Gewicht des individuellen Wochentags automatisch.
 
-Autoladung wird primär am deutlichen Leistungsanstieg gegenüber der unmittelbar vorherigen Grundlast erkannt. Standard ist ein typischer Ladeanstieg von **6,5 kW** mit **±2,0 kW Toleranz**; zusätzlich bleibt der Mindestanstieg konfigurierbar. Ein Sprung wie ca. **1,2 kW → 7,3–8,5 kW** wird damit direkt als Ladebeginn bewertet. Danach wird die erhöhte Last bis zur Rückkehr Richtung Grundlast verfolgt. Der erkannte Zusatzanteil wird beim Lernen vollständig aus dem Grundlastprofil herausgerechnet. Das originale Verbrauchsarchiv bleibt unverändert und der Ladeanteil erscheint im Diagramm separat **orange**.
+Autoladung wird primär am deutlichen Leistungsanstieg gegenüber der unmittelbar vorherigen Grundlast erkannt. Standard ist ein typischer Ladeanstieg von **6,5 kW** mit **±2,0 kW Toleranz**; zusätzlich bleibt der Mindestanstieg konfigurierbar. Ein Sprung wie ca. **1,2 kW → 7,3–8,5 kW** wird damit direkt als Ladebeginn bewertet. Danach wird die erhöhte Last bis zur Rückkehr Richtung Grundlast verfolgt. Eine Ladephase wird nur übernommen, wenn sie mindestens die konfigurierbare **Autoladung Mindestdauer** erreicht; Standard sind **20 Minuten**. Damit werden kurze Fremdspitzen verworfen. Die automatische Erkennung zukünftiger Ladevorgänge kann separat ein- oder ausgeschaltet werden; die manuelle Archivsuche bleibt davon unabhängig. Der erkannte Zusatzanteil wird beim Lernen vollständig aus dem Grundlastprofil herausgerechnet. Das originale Verbrauchsarchiv bleibt unverändert und der Ladeanteil erscheint im Diagramm separat **orange**.
 
 Für die Einspeiseentscheidung wird die PV-Prognose des nächsten Tages zeitgleich mit dem erwarteten Eigenverbrauch verrechnet. Nur der erwartete PV-Überschuss kann zum Wiederaufladen des Speichers verwendet werden. Die Einspeisung wird deshalb so begrenzt, dass der konfigurierte **Ziel-SoC nach dem nächsten PV-Tag** erreichbar bleibt und der Nacht-/Eigenverbrauch berücksichtigt ist.
 

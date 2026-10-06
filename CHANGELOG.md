@@ -1,3 +1,20 @@
+## 1.10.59 / Build 230
+- Der Wert `Autoladung Plausibilitätswert / feste Ladeleistung` wird nach erkannter Startflanke als konstante Fahrzeug-Ladeleistung verwendet. Nicht mehr die schwankende gemessene Zusatzlast bestimmt den Abzug.
+- Neuer Parameter `Max. Energie pro Autoladung`, Standard 14,4 kWh. Pro erkanntem Ladevorgang wird höchstens diese Energiemenge als Fahrzeugladung aus dem Lastprofil herausgerechnet.
+- Beispiel: 6,5 kW feste Ladeleistung und 14,4 kWh Maximalenergie ergeben maximal rund 133 Minuten anrechenbare Autoladung.
+- Der orange Autolade-Anteil wird stundenweise mit der festen Ladeleistung verteilt; nur der verbleibende Verbrauch wird ins Lastprofil eingelernt.
+- Mindestdauer (Standard 20 min), Archivsuche und separat schaltbare zukünftige Autolade-Erkennung bleiben erhalten.
+- EV-Treffercache auf Version 12 angehoben, damit vorhandene Treffer mit der neuen festen Ladeleistung und Maximalenergie neu ausgewertet werden.
+- Keine Preis-, PV-, Einspeise- oder Dispatch-Logik geändert.
+
+## 1.10.58 / Build 229
+- Neuer Parameter `Autoladung Mindestdauer`, Standard 20 Minuten. Eine erkannte Lastflanke wird nur als Fahrzeugladung übernommen, wenn die daraus verfolgte Hochlastphase mindestens so lange anhält. Kurze Lastspitzen werden dadurch verworfen.
+- Die Mindestdauer gilt sowohl für die manuelle Archivsuche als auch für die automatische Erkennung neuer Ladevorgänge.
+- Neuer Schalter `Zukünftige Autoladungen automatisch erkennen`. Er steuert ausschließlich die automatische Erkennung neuer Ladevorgänge; die manuelle Archivsuche bleibt immer verfügbar.
+- Bereits per Archivsuche gespeicherte Ladeanteile bleiben auch bei ausgeschalteter Zukunftserkennung wirksam und werden weiterhin aus dem Lastprofil herausgerechnet sowie orange dargestellt.
+- EV-Treffer-/Analysecache auf Version 11 angehoben, damit Änderungen der Mindestdauer sauber neu ausgewertet werden.
+- Preis-, PV-, Einspeise-, Dispatch- und sonstige bestehende Logik unverändert.
+
 ## 1.10.57 / Build 228
 - Autoladungs-Archivsuche nutzt gefundene Roh-Flanken jetzt direkt als Ladebeginn; die nachgelagerte Trefferentscheidung hängt nicht mehr von Minutenaggregaten ab.
 - Nach einer Roh-Flanke wird Variable `HousePowerVariable` (z. B. #50354) ausschließlich in kleinen 15-Minuten-Rohwertblöcken vorwärts verfolgt, bis die Zusatzlast mindestens 60 s wieder nahe der vorherigen Grundlast liegt.

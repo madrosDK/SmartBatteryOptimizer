@@ -471,11 +471,20 @@
                 {
                     "type": "NumberSpinner",
                     "name": "EVChargingDetectionThresholdKW",
-                    "caption": "Autoladung Plausibilitätsgrenze Gesamtverbrauch",
+                    "caption": "Autoladung Plausibilitätswert / feste Ladeleistung",
                     "digits": 1,
                     "minimum": 1.0,
                     "maximum": 20.0,
                     "suffix": " kW"
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "EVChargingMaxEnergyKWh",
+                    "caption": "Max. Energie pro Autoladung",
+                    "digits": 1,
+                    "minimum": 0.1,
+                    "maximum": 100.0,
+                    "suffix": " kWh"
                 },
                 {
                     "type": "NumberSpinner",
@@ -505,8 +514,22 @@
                     "suffix": " kW"
                 },
                 {
+                    "type": "NumberSpinner",
+                    "name": "EVChargingMinimumDurationMinutes",
+                    "caption": "Autoladung Mindestdauer",
+                    "digits": 0,
+                    "minimum": 1,
+                    "maximum": 240,
+                    "suffix": " min"
+                },
+                {
+                    "type": "CheckBox",
+                    "name": "EVFutureDetectionEnabled",
+                    "caption": "Zukünftige Autoladungen automatisch erkennen"
+                },
+                {
                     "type": "Label",
-                    "caption": "Autoladung: Primär wird der deutliche kW-Anstieg gegenüber der vorherigen Grundlast erkannt. Standard ist ein typischer Ladeanstieg von 6,5 kW mit einstellbarer Toleranz. Danach wird die erhöhte Last bis zum Abfall zurück Richtung Grundlast verfolgt. Nur dieser zusätzliche Ladeanteil wird orange dargestellt und aus dem Lernprofil herausgerechnet."
+                    "caption": "Autoladung: Primär wird der deutliche kW-Anstieg gegenüber der vorherigen Grundlast erkannt. Eine Ladephase wird nur übernommen, wenn sie mindestens die eingestellte Mindestdauer erreicht. Nach der Erkennung wird der Plausibilitätswert als feste Fahrzeug-Ladeleistung vom Verbrauch abgezogen. Der Abzug endet beim erkannten Ladeende oder spätestens bei der eingestellten maximalen Energie pro Autoladung. Standard: 20 Minuten Mindestdauer und 14,4 kWh Maximalenergie. Die automatische Erkennung zukünftiger Ladevorgänge kann separat deaktiviert werden; manuelle Archivsuche und gespeicherte Ladeanteile bleiben davon unberührt."
                 },
                 {
                     "type": "NumberSpinner",
