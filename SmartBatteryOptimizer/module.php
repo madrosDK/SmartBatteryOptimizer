@@ -561,7 +561,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.61';
+        $currentModuleVersion = '1.10.62';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -692,7 +692,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.61',
+            'moduleVersion' => '1.10.62',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1512,13 +1512,10 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('ExpectedRevenue'), round($plan['expectedRevenueEUR'], 3));
             SetValue($this->GetIDForIdent('NextFeedInWindow'), $plan['nextWindow']);
             if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
-                $nextPlannedKWh = 0.0;
-                $nowPlan = time();
-                foreach (($plan['slots'] ?? []) as $plannedSlot) {
-                    if ((int)($plannedSlot['end'] ?? 0) <= $nowPlan) continue;
-                    $nextPlannedKWh = max(0.0, (float)($plannedSlot['energyKWh'] ?? 0.0));
-                    break;
-                }
+                // Vor dem Start ist die Zielvariable direkt mit "Einspeisung verfügbar"
+                // vergleichbar: angezeigt wird die Summe ALLER noch zukünftigen
+                // geplanten Netz-kWh, nicht nur die Energiemenge des ersten Slots.
+                $nextPlannedKWh = $this->GetFuturePlannedFeedInEnergyKWh($plan, time());
                 SetValue($this->GetIDForIdent('FeedInTargetEnergy'), round($nextPlannedKWh, 3));
                 SetValue($this->GetIDForIdent('FeedInDeliveredEnergy'), 0.0);
             }
@@ -1561,13 +1558,7 @@ class SmartBatteryOptimizer extends IPSModule
                         SetValue($this->GetIDForIdent('ExpectedRevenue'), round((float)($safePlan['expectedRevenueEUR'] ?? 0.0), 3));
                         SetValue($this->GetIDForIdent('NextFeedInWindow'), (string)($safePlan['nextWindow'] ?? '-'));
 
-                        $nextPlannedKWh = 0.0;
-                        $nowPlan = time();
-                        foreach (($safePlan['slots'] ?? []) as $plannedSlot) {
-                            if ((int)($plannedSlot['end'] ?? 0) <= $nowPlan) continue;
-                            $nextPlannedKWh = max(0.0, (float)($plannedSlot['energyKWh'] ?? 0.0));
-                            break;
-                        }
+                        $nextPlannedKWh = $this->GetFuturePlannedFeedInEnergyKWh($safePlan, time());
                         SetValue($this->GetIDForIdent('FeedInTargetEnergy'), round($nextPlannedKWh, 3));
 
                         $cachedForecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
@@ -5635,25 +5626,30 @@ class SmartBatteryOptimizer extends IPSModule
             foreach ($committed as $slot) {
                 if ($remainingTargetKWh <= 0.001) break;
 
-                $start = max($now, (int)($slot['start'] ?? 0));
+                // Die Energiemenge wird innerhalb des bereits verbindlich gewählten
+                // Preisintervalls angepasst. Das gute FensterENDE bleibt erhalten;
+                // die notwendige Laufzeit wird nach vorne aufgezogen bzw. bei kleinerer
+                // Menge nach hinten verkürzt. Beispiel: 18:52–20:00 wird bei höherer
+                // Freigabe etwa zu 18:40–20:00 statt fälschlich zu 18:00–19:20.
+                $intervalStart = max($now, (int)($slot['priceIntervalStart'] ?? ($slot['start'] ?? 0)));
                 $intervalEnd = (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0));
-                if ($intervalEnd <= $start) continue;
+                if ($intervalEnd <= $intervalStart) continue;
 
                 $expectedGridExportW = max(0.0, (float)($slot['expectedGridExportW'] ?? 0.0));
                 if ($expectedGridExportW <= 1.0) {
-                    $duration = max(1, (int)($slot['end'] ?? $intervalEnd) - (int)($slot['start'] ?? $start));
+                    $duration = max(1, (int)($slot['end'] ?? $intervalEnd) - (int)($slot['start'] ?? $intervalStart));
                     $oldEnergy = max(0.0, (float)($slot['energyKWh'] ?? 0.0));
                     if ($oldEnergy > 0.0) $expectedGridExportW = ($oldEnergy / ($duration / 3600.0)) * 1000.0;
                 }
                 if ($expectedGridExportW <= 1.0) continue;
 
-                $capacityKWh = ($expectedGridExportW / 1000.0) * (($intervalEnd - $start) / 3600.0);
+                $capacityKWh = ($expectedGridExportW / 1000.0) * (($intervalEnd - $intervalStart) / 3600.0);
                 $slotEnergyKWh = min($remainingTargetKWh, max(0.0, $capacityKWh));
                 if ($slotEnergyKWh <= 0.001) continue;
 
                 $requiredSeconds = max(1, (int)ceil(($slotEnergyKWh / ($expectedGridExportW / 1000.0)) * 3600.0));
-                $slot['start'] = $start;
-                $slot['end'] = min($intervalEnd, $start + $requiredSeconds);
+                $slot['end'] = $intervalEnd;
+                $slot['start'] = max($intervalStart, $intervalEnd - $requiredSeconds);
                 $slot['energyKWh'] = $slotEnergyKWh;
                 $slot['expectedGridExportW'] = $expectedGridExportW;
                 $slot['segments'] = [[
@@ -5684,11 +5680,69 @@ class SmartBatteryOptimizer extends IPSModule
                 . ' | neu=' . round($adjustedTotalKWh, 3) . ' kWh'
             );
 
-            // Kann innerhalb des bereits verbindlichen Fensters nicht die komplette
-            // aktuelle Freigabemenge untergebracht werden, bleibt die physikalisch
-            // mögliche Menge bestehen; ein neues Preisfenster wird nicht erzwungen.
+            // Reicht selbst das vollständig nutzbare verbindliche Preisintervall
+            // nicht aus, werden ausschließlich die vom FRISCHEN Optimierer bereits
+            // ausgewählten zusätzlichen Preisfenster ergänzt. Bestehende Fenster
+            // bleiben dabei erhalten; es wird nichts auf beliebige schlechte Preise
+            // verschoben. Damit bleibt die Gesamtplanmenge zur aktuellen Freigabe
+            // innerhalb der geforderten +/-10-%-Toleranz, sofern dies im aktuellen
+            // Planungshorizont physikalisch möglich ist.
             if ($remainingTargetKWh > 0.001) {
-                $this->DebugLog('Einspeiseplan', 'Verbindliches Fenster kann ' . round($remainingTargetKWh, 3) . ' kWh der aktuellen Freigabe nicht mehr aufnehmen');
+                $freshSlots = isset($newPlan['slots']) && is_array($newPlan['slots']) ? $newPlan['slots'] : [];
+                usort($freshSlots, static fn($a, $b) => ((int)($a['start'] ?? 0)) <=> ((int)($b['start'] ?? 0)));
+
+                foreach ($freshSlots as $fresh) {
+                    if ($remainingTargetKWh <= 0.001) break;
+                    $freshStart = max($now, (int)($fresh['start'] ?? 0));
+                    $freshEnd = (int)($fresh['end'] ?? 0);
+                    if ($freshEnd <= $freshStart) continue;
+
+                    // Keine Zeit doppelt einplanen. Überlappende frische Slots sind
+                    // bereits durch das verbindliche Fenster abgedeckt.
+                    $overlaps = false;
+                    foreach ($committed as $existing) {
+                        if ($freshStart < (int)($existing['end'] ?? 0) && $freshEnd > (int)($existing['start'] ?? 0)) {
+                            $overlaps = true;
+                            break;
+                        }
+                    }
+                    if ($overlaps) continue;
+
+                    $freshEnergy = max(0.0, (float)($fresh['energyKWh'] ?? 0.0));
+                    $freshExportW = max(0.0, (float)($fresh['expectedGridExportW'] ?? 0.0));
+                    if ($freshEnergy <= 0.001 || $freshExportW <= 1.0) continue;
+
+                    $takeKWh = min($remainingTargetKWh, $freshEnergy);
+                    $durationSeconds = max(1, (int)ceil(($takeKWh / ($freshExportW / 1000.0)) * 3600.0));
+                    $fresh['start'] = $freshStart;
+                    $fresh['end'] = min($freshEnd, $freshStart + $durationSeconds);
+                    $fresh['energyKWh'] = $takeKWh;
+                    $fresh['planKey'] = (string)($fresh['planKey'] ?? ((int)($fresh['priceIntervalStart'] ?? $freshStart) . ':' . (int)($fresh['priceIntervalEnd'] ?? $freshEnd)));
+                    $fresh['segments'] = [[
+                        'start' => $fresh['start'],
+                        'end' => $fresh['end'],
+                        'priceIntervalStart' => (int)($fresh['priceIntervalStart'] ?? $fresh['start']),
+                        'priceIntervalEnd' => (int)($fresh['priceIntervalEnd'] ?? $freshEnd),
+                        'energyKWh' => $takeKWh,
+                        'gridTargetW' => (float)($fresh['gridTargetW'] ?? $this->GetConfiguredGridFeedInTargetW()),
+                        'powerW' => (float)($fresh['powerW'] ?? 0.0),
+                        'expectedGridExportW' => $freshExportW,
+                        'expectedLoadW' => (float)($fresh['expectedLoadW'] ?? 0.0),
+                        'priceCt' => (float)($fresh['priceCt'] ?? 0.0),
+                        'reason' => (string)($fresh['reason'] ?? 'price')
+                    ]];
+                    $committed[] = $fresh;
+                    $remainingTargetKWh = max(0.0, $remainingTargetKWh - $takeKWh);
+                }
+                usort($committed, static fn($a, $b) => ((int)($a['start'] ?? 0)) <=> ((int)($b['start'] ?? 0)));
+
+                if ($remainingTargetKWh > 0.001) {
+                    $this->DebugLog(
+                        'Einspeiseplan',
+                        'WARNUNG: aktuelle Freigabe physikalisch nicht vollständig planbar | Rest='
+                        . round($remainingTargetKWh, 3) . ' kWh'
+                    );
+                }
             }
         } else {
             // Innerhalb der +/-10-%-Toleranz bleibt der komplette bereits gewählte
@@ -5722,6 +5776,22 @@ class SmartBatteryOptimizer extends IPSModule
             );
         }
         return $newPlan;
+    }
+
+    private function GetFuturePlannedFeedInEnergyKWh(array $plan, ?int $now = null): float
+    {
+        $now = $now ?? time();
+        $completed = json_decode($this->ReadAttributeString('CompletedFeedInPlanKeysJSON'), true);
+        if (!is_array($completed)) $completed = [];
+        $sum = 0.0;
+        foreach (($plan['slots'] ?? []) as $slot) {
+            if (!is_array($slot)) continue;
+            if ((int)($slot['end'] ?? 0) <= $now) continue;
+            $key = (string)($slot['planKey'] ?? ((int)($slot['start'] ?? 0) . ':' . (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0))));
+            if ($key !== '' && isset($completed[$key])) continue;
+            $sum += max(0.0, (float)($slot['energyKWh'] ?? 0.0));
+        }
+        return max(0.0, $sum);
     }
 
     private function EstimateConsumptionEnergyBetween(array $consumptionProfile, int $fromTs, int $toTs): float

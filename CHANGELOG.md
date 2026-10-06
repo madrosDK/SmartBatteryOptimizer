@@ -1,3 +1,10 @@
+## 1.10.62 / Build 233
+- Korrektur der +/-10-%-Toleranz zwischen freigegebener und geplanter Einspeisemenge.
+- Ein verbindliches Preisintervall darf bei gestiegener Freigabe innerhalb desselben Preisblocks früher beginnen, statt die Planmenge zu klein zu lassen.
+- Reicht das bestehende Preisfenster nicht aus, werden nur bereits vom frischen Optimierer ausgewählte Zusatzfenster ergänzt.
+- „Geplante Einspeisemenge aktuell“ zeigt vor dem Start die Summe aller noch geplanten zukünftigen Netz-kWh und ist damit direkt mit „Einspeisung verfügbar“ vergleichbar.
+- Keine Änderungen an Preisabruf, PV-Prognose, Dispatch-Reihenfolge oder Autolade-Erkennung.
+
 ## 1.10.61 / Build 232
 
 - Verbrauchsprognose vereinheitlicht: Nachtreserve, PV-Zeit, übriger Tag und Gesamtverbrauch werden ausschließlich aus dem gelernten stündlichen Lastprofil berechnet.

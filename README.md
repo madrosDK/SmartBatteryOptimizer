@@ -1,3 +1,5 @@
+> Version 1.10.62 / Build 233: Einspeiseplan-Mengenabgleich korrigiert; geplante Gesamtmenge bleibt zur aktuellen Freigabe innerhalb +/-10 %, sofern physikalisch planbar.
+
 > Version 1.10.61 / Build 232: Sämtliche Verbrauchsprognosen und Reserven werden aus einem gemeinsamen gelernten Stunden-Lastprofil berechnet; der separate Nachtverbrauch-Lernpfad entfällt.
 
 > Version 1.10.59 / Build 230: Erkannte Autoladungen werden mit dem eingestellten Plausibilitätswert als fester Ladeleistung aus dem Lastprofil herausgerechnet; neue einstellbare Maximalenergie pro Ladevorgang, Standard 14,4 kWh.
