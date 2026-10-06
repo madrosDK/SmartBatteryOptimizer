@@ -105,7 +105,8 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('RefreshMinutes', 30);
         $this->RegisterPropertyInteger('PVForecastRefreshMinutes', 30);
         $this->RegisterPropertyInteger('PVActualRefreshMinutes', 5);
-        $this->RegisterPropertyBoolean('DebugMode', false);
+        // 0 = Standard, 1 = Erweitert, 2 = Debug. Nur Debug aktiviert SendDebug/Provider-Rohdiagnose.
+        $this->RegisterPropertyInteger('DisplayMode', 0);
 
         $this->RegisterVariableFloat('PVForecastToday', 'PV Prognose heute', '~Electricity', 9);
         $this->RegisterVariableFloat('PVForecastTomorrow', 'PV Prognose morgen', '~Electricity', 10);
@@ -122,15 +123,11 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableBoolean('AutomaticEnabled', 'Einspeiseautomatik', '~Switch', 55);
         $this->EnableAction('AutomaticEnabled');
 
-        // Laufzeitwerte für den Netzlimit-Schutz. Diese Werte können direkt im
-        // IP-Symcon Frontend geändert werden, ohne die Instanzkonfiguration zu öffnen.
+        // Laufzeitwerte für Schalter und bewusst direkt bedienbare Grenzwerte.
+        // PV-Ziel-SoC und PV-Prognoseanteil kommen ausschließlich aus der Instanzkonfiguration.
         $this->EnsureRuntimeProfiles();
         $this->RegisterVariableBoolean('PVCurtailmentProtectionEnabled', 'PV-Abregelung vermeiden', '~Switch', 56);
         $this->EnableAction('PVCurtailmentProtectionEnabled');
-        $this->RegisterVariableFloat('RuntimePVHeadroomTargetSOC', 'Maximaler Ziel-SoC bei starker PV', 'SBO.Percent', 60);
-        $this->EnableAction('RuntimePVHeadroomTargetSOC');
-        $this->RegisterVariableFloat('RuntimePVStorageSharePct', 'PV-Prognose als möglicher Batterieüberschuss', 'SBO.Percent', 61);
-        $this->EnableAction('RuntimePVStorageSharePct');
         $this->RegisterVariableFloat('RuntimePVSpaceMinimumPriceCt', 'Mindestpreis Einspeisung', 'SBO.PriceCt', 62);
         $this->EnableAction('RuntimePVSpaceMinimumPriceCt');
         $this->RegisterVariableFloat('RuntimeMinimumSOC', 'Mindest-SoC', 'SBO.Percent', 67);
@@ -156,13 +153,11 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('ConsumptionProfileChartHTML', 'Verbrauch Lastprofil Diagramm', '~HTMLBox', 151);
         $this->RegisterVariableString('FeedInStatisticsHTML', 'Einspeise-Statistik', '~HTMLBox', 152);
         $this->RegisterVariableString('FeedInDebugHTML', 'Einspeise-Debug 24 h', '~HTMLBox', 153);
-        $this->RegisterVariableString('EVArchiveSearchStatus', 'Autoladung Archivsuche', '', 154);
         $this->RegisterVariableString('PVCalibrationDiagnosisHTML', 'PV-Kalibrierung Diagnose', '~HTMLBox', 190);
         $this->RegisterVariableString('ActionFeedback', 'Letzte Aktionen', '~HTMLBox', 118);
         $this->RegisterVariableString('ForecastSolarStatus', 'PV-Prognose Anbieter', '~HTMLBox', 119);
         $this->RegisterVariableString('ProviderDebugHTML', 'Prognose Provider Debug', '~HTMLBox', 191);
         $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 123);
-        $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 123);
 
         $this->RegisterAttributeString('ForecastJSON', '{}');
         $this->RegisterAttributeString('PVForecastHistoryJSON', '{}');
@@ -182,7 +177,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('PVNodeNextPollTs', 0);
         $this->RegisterAttributeString('PVNodeRequestDay', '');
         $this->RegisterAttributeInteger('PVNodeRequestCount', 0);
-        $this->RegisterAttributeBoolean('LastAppliedDebugMode', false);
+        $this->RegisterAttributeInteger('LastAppliedDisplayMode', -1);
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('ArchiveStorageMigrationVersion', 0);
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
@@ -379,7 +374,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Oberfläche aufgeräumt: Status zuerst, danach Diagramme, Debug ganz unten.
         $positions = [
             'ActionFeedback'=>118, 'ForecastSolarStatus'=>119,
-            'OverviewHTML'=>120, 'PlanHTML'=>130, 'PriceChartHTML'=>149,
+            'OverviewHTML'=>120, 'PriceChartHTML'=>149,
             'PVForecastChartHTML'=>150, 'ConsumptionProfileChartHTML'=>151,
             'PVCalibrationDiagnosisHTML'=>190, 'ProviderDebugHTML'=>191
         ];
@@ -389,8 +384,6 @@ class SmartBatteryOptimizer extends IPSModule
 
         if (!$this->ReadAttributeBoolean('RuntimePVSettingsInitialized')) {
             SetValue($this->GetIDForIdent('PVCurtailmentProtectionEnabled'), $this->ReadPropertyBoolean('PreventPVCurtailment'));
-            SetValue($this->GetIDForIdent('RuntimePVHeadroomTargetSOC'), $this->ReadPropertyFloat('PVHeadroomTargetSOC'));
-            SetValue($this->GetIDForIdent('RuntimePVStorageSharePct'), $this->ReadPropertyFloat('PVStorageSharePct'));
             SetValue($this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt'), $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
             SetValue($this->GetIDForIdent('RuntimeMinimumSOC'), $this->GetRuntimeMinimumSOC());
             SetValue($this->GetIDForIdent('TestDischargePowerW'), min(1000, max(0, $this->ReadPropertyInteger('MaxDischargePowerW'))));
@@ -427,6 +420,10 @@ class SmartBatteryOptimizer extends IPSModule
             'RuntimeGridFeedInLimitW',
             'RuntimeGridLimitSafetyW',
             'RuntimeMaxBatteryChargePowerW',
+            'RuntimePVHeadroomTargetSOC',
+            'RuntimePVStorageSharePct',
+            'EVArchiveSearchStatus',
+            'PlanHTML',
             'PVDebugVisibilityState',
             'DataExportStatus',
             'ArchiveStorageStatus',
@@ -515,14 +512,28 @@ class SmartBatteryOptimizer extends IPSModule
         // Ab v1.10.42 werden bei Updates keine Statistikdaten mehr automatisch
         // zurückgesetzt oder entfernt. Der einmalige v1.10.41-Reset wird nicht erneut aufgerufen.
 
-        $debugMode = $this->ReadPropertyBoolean('DebugMode');
-        $lastAppliedDebugMode = $this->ReadAttributeBoolean('LastAppliedDebugMode');
-        $debugModeChanged = ($debugMode !== $lastAppliedDebugMode);
-        @IPS_SetHidden($this->GetIDForIdent('ProviderDebugHTML'), !$debugMode);
-        @IPS_SetHidden($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), !$debugMode);
-        if (!$debugMode) SetValue($this->GetIDForIdent('ProviderDebugHTML'), '');
-        if ($debugModeChanged) {
-            $this->WriteAttributeBoolean('LastAppliedDebugMode', $debugMode);
+        $displayMode = $this->GetDisplayMode();
+        $lastAppliedDisplayMode = $this->ReadAttributeInteger('LastAppliedDisplayMode');
+        $displayModeChanged = ($displayMode !== $lastAppliedDisplayMode);
+        $extendedMode = ($displayMode >= 1);
+        $debugMode = ($displayMode >= 2);
+
+        // Darstellungsstufen: Standard = Kernanzeigen, Erweitert = zusätzliche Diagnose, Debug = vollständige Debugansicht.
+        foreach ([
+            'ForecastSolarStatus' => !$extendedMode,
+            'PVCalibrationDiagnosisHTML' => !$extendedMode,
+            'FeedInDebugHTML' => !$debugMode,
+            'ProviderDebugHTML' => !$debugMode
+        ] as $ident => $hidden) {
+            $id = (int)@$this->GetIDForIdent($ident);
+            if ($id > 0) @IPS_SetHidden($id, $hidden);
+        }
+        if (!$debugMode) {
+            $providerDebugID = (int)@$this->GetIDForIdent('ProviderDebugHTML');
+            if ($providerDebugID > 0) SetValue($providerDebugID, '');
+        }
+        if ($displayModeChanged) {
+            $this->WriteAttributeInteger('LastAppliedDisplayMode', $displayMode);
         }
 
         // Wurde pvnode nach einer automatischen Sperre vom Benutzer wieder angehakt,
@@ -587,14 +598,14 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         // Externe API-Abfragen duerfen ApplyChanges nicht blockieren.
-        if ($debugModeChanged) {
+        if ($displayModeChanged) {
             if ($debugMode) {
-                $this->DebugLog('ApplyChanges', 'Debug-Modus geaendert -> asynchroner Neuaufbau wird gestartet.');
+                $this->DebugLog('ApplyChanges', 'Darstellungsmodus Debug aktiviert -> asynchroner Neuaufbau wird gestartet.');
             }
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.65';
+        $currentModuleVersion = '1.10.66';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -661,7 +672,6 @@ class SmartBatteryOptimizer extends IPSModule
                     $night = $nightId > 0 ? (float)GetValue($nightId) : 0.0;
                     SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
                     SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
-                    SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
                 }
             }
 
@@ -754,11 +764,6 @@ class SmartBatteryOptimizer extends IPSModule
                 break;
             case 'PVCurtailmentProtectionEnabled':
                 SetValue($this->GetIDForIdent($Ident), (bool)$Value);
-                $this->RecalculateInternal(false);
-                break;
-            case 'RuntimePVHeadroomTargetSOC':
-            case 'RuntimePVStorageSharePct':
-                SetValue($this->GetIDForIdent($Ident), max(0.0, min(100.0, (float)$Value)));
                 $this->RecalculateInternal(false);
                 break;
             case 'RuntimePVSpaceMinimumPriceCt':
@@ -974,9 +979,19 @@ class SmartBatteryOptimizer extends IPSModule
         return $info;
     }
 
+    private function GetDisplayMode(): int
+    {
+        return max(0, min(2, $this->ReadPropertyInteger('DisplayMode')));
+    }
+
+    private function IsDebugDisplayMode(): bool
+    {
+        return $this->GetDisplayMode() >= 2;
+    }
+
     private function DebugLog(string $area, $message, int $format = 0): void
     {
-        if (!$this->ReadPropertyBoolean('DebugMode')) return;
+        if (!$this->IsDebugDisplayMode()) return;
         if (is_array($message) || is_object($message)) {
             $encoded = json_encode($message, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
             $message = $encoded === false ? 'JSON-Darstellung fehlgeschlagen' : $encoded;
@@ -1451,7 +1466,6 @@ class SmartBatteryOptimizer extends IPSModule
             SetValue($this->GetIDForIdent('FeedInDebugHTML'), $this->RenderFeedInDebugHTML());
             SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
             SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
-            SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
             $this->SetStatus(($this->IsAutomaticEnabled() && !$gate['ready']) ? 202 : 102);
             $this->DebugLog('Recalculate', 'Berechnung abgeschlossen, Steuerprüfung folgt');
             $this->Control();
@@ -1485,7 +1499,6 @@ class SmartBatteryOptimizer extends IPSModule
                             SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($cachedForecast, $safePlan, (float)($safePlan['nightConsumptionKWh'] ?? 0.0)));
                             if (is_array($cachedPrices)) {
                                 SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($cachedForecast, $cachedPrices, $safePlan));
-                                SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($cachedForecast, $cachedPrices, $safePlan));
                             }
                         }
                         $this->DebugLog('Einspeiseplan', 'Fallback-Sicherheitsabgleich trotz Rechenfehler ausgefuehrt | Ziel=' . round($nextPlannedKWh, 3) . ' kWh');
@@ -1634,14 +1647,12 @@ class SmartBatteryOptimizer extends IPSModule
                 . ', Ladeleistung ' . number_format($thresholdKW, 1, ',', '.') . ' kW'
                 . ' ± ' . number_format($riseToleranceKW, 1, ',', '.') . ' kW Toleranz'
                 . ' (Mindestdauer ' . $minimumDurationMinutes . ' min, max. Energie ' . number_format($maxEnergyKWh, 1, ',', '.') . ' kWh).';
-            SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $text);
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
             echo $text;
         } catch (Throwable $e) {
             $this->SetTimerInterval('EVArchiveSearchWorker', 0);
             $text = 'Autoladungs-Archivsuche konnte nicht gestartet werden: ' . $e->getMessage();
-            SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $text);
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
             echo $text;
@@ -1736,7 +1747,6 @@ class SmartBatteryOptimizer extends IPSModule
                 . ' · max. Anstieg ' . number_format(((float)($state['maxRawRiseW'] ?? 0.0)) / 1000.0, 2, ',', '.') . ' kW'
                 . ((int)($state['latestRawEdgeTs'] ?? 0) > 0 ? ' (letzte Flanke ' . date('d.m. H:i:s', (int)$state['latestRawEdgeTs']) . ')' : '')
                 . ' · ' . number_format((float)($state['kWh'] ?? 0.0), 2, ',', '.') . ' kWh erkannt.';
-            SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $progress);
             $this->SetActionFeedback($progress);
 
             if ($cursorDay < $firstDay) {
@@ -1783,7 +1793,6 @@ class SmartBatteryOptimizer extends IPSModule
                     . ($latest > 0 ? ' Letzter Fund: ' . date('d.m.Y H:i', $latest) . '.' : '')
                     . ((int)($pattern['samples'] ?? 0) > 0 ? ' Gelerntes Lademuster: ca. ' . number_format((float)($pattern['chargePowerKW'] ?? 0.0), 1, ',', '.') . ' kW Zusatzlast.' : '')
                     . $profileText;
-                SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $done);
                 SetValue($this->GetIDForIdent('StatusText'), $done);
                 $this->SetActionFeedback($done);
                 return;
@@ -1797,7 +1806,6 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteAttributeString('EVArchiveSearchStateJSON', json_encode($state));
             $this->SetTimerInterval('EVArchiveSearchWorker', 0);
             $text = 'Autoladungs-Archivsuche FEHLER: ' . $e->getMessage();
-            SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $text);
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
         }
@@ -2488,7 +2496,7 @@ class SmartBatteryOptimizer extends IPSModule
                 if ($pvProtectionEnabled) {
                     $socVariableID = $this->ReadPropertyInteger('SOCVariable');
                     $soc = $socVariableID > 0 ? (float)GetValue($socVariableID) : 0.0;
-                    $targetSOC = max($this->GetRuntimeMinimumSOC(), min(100.0, $this->GetRuntimeFloat('RuntimePVHeadroomTargetSOC', $this->ReadPropertyFloat('PVHeadroomTargetSOC'))));
+                    $targetSOC = max($this->GetRuntimeMinimumSOC(), min(100.0, $this->ReadPropertyFloat('PVHeadroomTargetSOC')));
                     if ($soc > $targetSOC + 0.01) {
                         $powerW = max(0, $this->ReadPropertyInteger('MaxDischargePowerW'));
                         $this->SetFeedIn(true, (float)$powerW, $now + 120);
@@ -5075,10 +5083,10 @@ class SmartBatteryOptimizer extends IPSModule
         // Speicherplatz für den erwarteten PV-Überschuss freihalten. Der lernende
         // Verbrauch wird vorab von der PV-Prognose abgezogen.
         $pvSpaceRequired = 0.0;
-        $pvTargetSOC = max($this->GetRuntimeMinimumSOC(), min(100.0, $this->GetRuntimeFloat('RuntimePVHeadroomTargetSOC', $this->ReadPropertyFloat('PVHeadroomTargetSOC'))));
+        $pvTargetSOC = max($this->GetRuntimeMinimumSOC(), min(100.0, $this->ReadPropertyFloat('PVHeadroomTargetSOC')));
         $expectedMorningStored = max($minEnergy, $projectedStoredAtNightStart - max(0.0, $nightReserve));
         $targetMaxEnergy = $capacity * $pvTargetSOC / 100.0;
-        $expectedPVToBattery = $pvSurplusTomorrow * max(0.0, min(100.0, $this->GetRuntimeFloat('RuntimePVStorageSharePct', $this->ReadPropertyFloat('PVStorageSharePct')))) / 100.0;
+        $expectedPVToBattery = $pvSurplusTomorrow * max(0.0, min(100.0, $this->ReadPropertyFloat('PVStorageSharePct'))) / 100.0;
         $morningHeadroom = max(0.0, $targetMaxEnergy - $expectedMorningStored);
 
         $normalPVSpaceRequired = max(0.0, $expectedPVToBattery - $morningHeadroom);
@@ -5794,7 +5802,6 @@ class SmartBatteryOptimizer extends IPSModule
         if (!is_array($forecast)) $forecast = [];
         $prices = json_decode($this->ReadAttributeString('PricesJSON'), true);
         if (!is_array($prices)) $prices = [];
-        SetValue($this->GetIDForIdent('PlanHTML'), $this->RenderPlanHTML($forecast, $prices, $plan));
     }
 
     private function LearnConsumptionProfileInternal(bool $force = false): array
@@ -8800,7 +8807,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function AddProviderDebug(string $provider, string $request, array $meta, $response, int $status = 200, float $durationMs = 0.0): void
     {
-        if (!$this->ReadPropertyBoolean('DebugMode')) return;
+        if (!$this->IsDebugDisplayMode()) return;
         $entries = json_decode($this->ReadAttributeString('ProviderDebugLogJSON'), true);
         if (!is_array($entries)) $entries = [];
         // Zugangsdaten niemals in der HTMLBox anzeigen.
@@ -8858,7 +8865,7 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderProviderDebugHTML(array $entries): string
     {
-        if (!$this->ReadPropertyBoolean('DebugMode')) return '';
+        if (!$this->IsDebugDisplayMode()) return '';
         $e = static function ($v): string { return htmlspecialchars((string)$v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); };
         $html = '<div style="margin-top:3px">';
         // Diagnosezeilen direkt sichtbar darstellen. Provider-Rohantworten bleiben aufklappbar.
@@ -8955,124 +8962,6 @@ class SmartBatteryOptimizer extends IPSModule
         return $data;
     }
 
-
-    private function RenderPlanHTML(array $forecast, array $prices, array $plan): string
-    {
-        $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px">';
-        $html .= '<details><summary style="cursor:pointer;font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;font-weight:bold;padding:6px 0">Einspeiseplan anzeigen / ausblenden</summary>';
-
-        $displayHours = max(24, min(72, $this->ReadPropertyInteger('PriceDisplayHours')));
-        $now = time();
-        $displayStart = strtotime(date('Y-m-d H:00:00', $now));
-        $displayEnd = $displayStart + $displayHours * 3600;
-
-        $hours = [];
-        for ($i = 0; $i < $displayHours; $i++) {
-            $hStart = $displayStart + $i * 3600;
-            $hours[$hStart] = [
-                'start' => $hStart,
-                'end' => $hStart + 3600,
-                'marketWeighted' => 0.0,
-                'tariffWeighted' => 0.0,
-                'priceSeconds' => 0,
-                'energyKWh' => 0.0,
-                'reasonPrice' => false,
-                'reasonPVSpace' => false
-            ];
-        }
-
-        // Preiswerte auf volle Stunden zusammenfassen. Bei 15-Minuten-Daten entsteht
-        // daraus der zeitgewichtete Stundenmittelwert.
-        foreach ($prices as $p) {
-            foreach ($hours as $hStart => &$h) {
-                $overlapStart = max((int)$p['start'], $h['start']);
-                $overlapEnd = min((int)$p['end'], $h['end']);
-                if ($overlapEnd <= $overlapStart) continue;
-                $seconds = $overlapEnd - $overlapStart;
-                $h['marketWeighted'] += (float)$p['marketCt'] * $seconds;
-                $h['tariffWeighted'] += (float)$p['priceCt'] * $seconds;
-                $h['priceSeconds'] += $seconds;
-            }
-            unset($h);
-        }
-
-        // Plansegmente für die Anzeige zu Stundenwerten addieren. Bei einem über mehrere
-        // Preisstunden zusammengefassten Plan darf nicht die Gesamtenergie in jedem Balken erscheinen.
-        foreach (($plan['slots'] ?? []) as $slot) {
-            $segments = isset($slot['segments']) && is_array($slot['segments']) ? $slot['segments'] : [$slot];
-            foreach ($segments as $segment) {
-                $slotStart = (int)($segment['start'] ?? 0);
-                $slotEnd = isset($segment['end']) ? (int)$segment['end'] : ($slotStart + 900);
-                if ($slotEnd <= $slotStart) continue;
-                foreach ($hours as $hStart => &$h) {
-                    $overlapStart = max($slotStart, $h['start']);
-                    $overlapEnd = min($slotEnd, $h['end']);
-                    if ($overlapEnd <= $overlapStart) continue;
-
-                    $slotDuration = max(1, $slotEnd - $slotStart);
-                    $fraction = ($overlapEnd - $overlapStart) / $slotDuration;
-                    $h['energyKWh'] += (float)($segment['energyKWh'] ?? 0.0) * $fraction;
-
-                    if (($segment['reason'] ?? 'price') === 'pv_space') {
-                        $h['reasonPVSpace'] = true;
-                    } else {
-                        $h['reasonPrice'] = true;
-                    }
-                }
-                unset($h);
-            }
-        }
-
-        $html .= '<div style="padding-top:6px"><b>Einspeiseplan / Preise – nächste ' . $displayHours . ' Stunden (Stundenwerte)</b><br>';
-        $html .= '<span style="font-size:11px">Die Anzeige ist auf volle Stunden zusammengefasst. Die Batteriesteuerung arbeitet intern weiterhin im feineren Raster.</span><br><br>';
-        $html .= '<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Zeit</th><th>Markt</th><th>Tarif</th><th>Leistung Ø</th><th>Energie</th><th>Grund</th></tr>';
-
-        foreach ($hours as $h) {
-            if ($h['end'] <= $now) continue;
-
-            $hasPrice = $h['priceSeconds'] > 0;
-            $marketCt = $hasPrice ? $h['marketWeighted'] / $h['priceSeconds'] : null;
-            $tariffCt = $hasPrice ? $h['tariffWeighted'] / $h['priceSeconds'] : null;
-            $energy = (float)$h['energyKWh'];
-            $hasPlan = $energy > 0.0001;
-
-            // kWh innerhalb einer Stunde entsprechen der über die ganze Stunde
-            // gemittelten geplanten Leistung in kW.
-            $avgPowerKW = $energy;
-
-            if ($h['reasonPVSpace'] && $h['reasonPrice']) {
-                $reason = 'Preis + PV-Speicher';
-            } elseif ($h['reasonPVSpace']) {
-                $reason = 'PV-Speicher';
-            } elseif ($h['reasonPrice']) {
-                $reason = 'Preis';
-            } else {
-                $reason = '-';
-            }
-
-            $html .= '<tr style="border-top:1px solid #555"><td>' . date('d.m. H:i', $h['start']) . '–' . date('H:i', $h['end']) . '</td>';
-            $html .= '<td style="text-align:right">' . ($marketCt === null ? '-' : number_format($marketCt, 2, ',', '.') . ' ct') . '</td>';
-            $html .= '<td style="text-align:right"><b>' . ($tariffCt === null ? '-' : number_format($tariffCt, 2, ',', '.') . ' ct') . '</b></td>';
-            $html .= '<td style="text-align:right">' . ($hasPlan ? number_format($avgPowerKW, 2, ',', '.') . ' kW' : '-') . '</td>';
-            $html .= '<td style="text-align:right">' . ($hasPlan ? number_format($energy, 2, ',', '.') . ' kWh' : '-') . '</td>';
-            $html .= '<td style="text-align:right">' . $reason . '</td></tr>';
-        }
-
-        $html .= '</table><br><b>PV-Flächen morgen</b><br>';
-        foreach (($forecast['surfaceTotals'] ?? []) as $name => $kwh) {
-            $html .= htmlspecialchars((string)$name) . ': ' . number_format((float)$kwh, 2, ',', '.') . ' kWh<br>';
-        }
-        if (isset($forecast['surfaceCalibration']) && is_array($forecast['surfaceCalibration'])) {
-            $html .= '<br><b>PV-Flächen Kalibrierung</b><br>';
-            foreach ($forecast['surfaceCalibration'] as $name => $c) {
-                $actual = ($c['actualW'] ?? null) === null ? '-' : number_format((float)$c['actualW'], 0, ',', '.') . ' W';
-                $expected = number_format((float)($c['expectedBaseW'] ?? 0), 0, ',', '.') . ' W';
-                $mode = empty($c['autoEnabled']) ? 'manuell' : ('Auto-Faktor ' . number_format((float)($c['autoFactor'] ?? 1.0), 3, ',', '.'));
-                $html .= htmlspecialchars((string)$name) . ': erwartet ' . $expected . ' | Ist ' . $actual . ' | ' . $mode . ' | ' . (int)($c['sampleCount'] ?? 0) . ' Werte<br>';
-            }
-        }
-        return $html . '</div></details></div>';
-    }
 
     private function BuildPriceChartRows(array $forecast, array $prices, array $plan): array
     {
@@ -9634,7 +9523,7 @@ class SmartBatteryOptimizer extends IPSModule
         $todayDate = date('Y-m-d');
         $tomorrowDate = date('Y-m-d', strtotime('tomorrow'));
         $history = json_decode($this->ReadAttributeString('PVForecastHistoryJSON'), true);
-        $debugMode = $this->ReadPropertyBoolean('DebugMode');
+        $debugMode = $this->IsDebugDisplayMode();
         $sourceHistory = json_decode($this->ReadAttributeString('PVSourceForecastHistoryJSON'), true);
         if (!is_array($sourceHistory)) $sourceHistory = [];
         $sourceWeights = is_array($forecast['forecastSourceWeights'] ?? null) ? $forecast['forecastSourceWeights'] : [];
@@ -9819,7 +9708,7 @@ class SmartBatteryOptimizer extends IPSModule
         $html = '<div style="font-family:Tahoma, Arial, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;font-size:12px;color:#fff">';
         $html .= '<b>PV-Kalibrierung Diagnose</b><br><span style="font-size:11px">Auto-Faktor = tatsächlich erzeugte Energie / prognostizierte Energie vor Auto-Faktor. Der berechnete Faktor wird ab dem ersten gültigen abgeschlossenen Stundenpaar angezeigt. Bis ' . $days . ' gültige Lerntage erreicht sind, bleibt der angewendete Auto-Faktor 1,000. Danach werden immer die neuesten ' . $days . ' gültigen Tage rollierend verwendet.</span><br>';
         $gate = $this->GetPVCalibrationFeedInGate();
-        if ($this->ReadPropertyBoolean('DebugMode')) {
+        if ($this->IsDebugDisplayMode()) {
             $html .= '<div style="margin:8px 0;padding:6px;border:1px solid #666"><b>PV-Abregelung / Kalibriersperre</b><br>';
             $html .= 'Netz: ' . ($gate['feedInW'] === null ? '-' : number_format((float)$gate['feedInW'],0,',','.') . ' W') . ' | ';
             $html .= 'Sperre ab: ' . ($gate['thresholdW'] === null ? '-' : number_format((float)$gate['thresholdW'],0,',','.') . ' W') . ' | ';

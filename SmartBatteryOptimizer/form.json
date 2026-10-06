@@ -785,7 +785,7 @@
                 {
                     "type": "NumberSpinner",
                     "name": "PVHeadroomTargetSOC",
-                    "caption": "Maximaler Ziel-SoC bei erwarteter starker PV (Startwert)",
+                    "caption": "Maximaler Ziel-SoC bei erwarteter starker PV",
                     "digits": 1,
                     "minimum": 20,
                     "maximum": 100,
@@ -794,7 +794,7 @@
                 {
                     "type": "NumberSpinner",
                     "name": "PVStorageSharePct",
-                    "caption": "Anteil der PV-Prognose als möglicher Batterieüberschuss (Startwert)",
+                    "caption": "Anteil der PV-Prognose als möglicher Batterieüberschuss",
                     "digits": 0,
                     "minimum": 0,
                     "maximum": 100,
@@ -853,13 +853,27 @@
                     "maximum": 1440
                 },
                 {
-                    "type": "CheckBox",
-                    "name": "DebugMode",
-                    "caption": "Debug-Ausgaben aktivieren"
+                    "type": "Select",
+                    "name": "DisplayMode",
+                    "caption": "Darstellungsmodus",
+                    "options": [
+                        {
+                            "caption": "Standard",
+                            "value": 0
+                        },
+                        {
+                            "caption": "Erweitert",
+                            "value": 1
+                        },
+                        {
+                            "caption": "Debug",
+                            "value": 2
+                        }
+                    ]
                 },
                 {
                     "type": "Label",
-                    "caption": "Debug protokolliert Berechnung, Prognosequellen, Quellengewichtung, Lernfunktionen, Preise, Einspeiseplanung und Batteriesteuerung. In der PV-Grafik können bei aktivem Debug die einzelnen Anbieterprognosen über die Legende eingeblendet werden; die aktuelle gelernte Gewichtung steht beim Anbieternamen."
+                    "caption": "Standard zeigt die Kernanzeigen. Erweitert blendet zusätzliche Provider- und PV-Kalibrierungsdiagnosen ein. Debug aktiviert zusätzlich Einspeise-/Provider-Debug, Debug-Serien in der PV-Grafik und interne Debug-Ausgaben."
                 }
             ]
         }

@@ -1,3 +1,13 @@
+## 1.10.66 / Build 237
+
+- Neuer Konfigurationswert `Darstellungsmodus` mit `Standard`, `Erweitert` und `Debug`; der bisherige separate Debug-Schalter entfällt.
+- Standard zeigt die Kernanzeigen, Erweitert zusätzlich Providerstatus und PV-Kalibrierungsdiagnose, Debug zusätzlich Einspeise-/Provider-Debug sowie die bisherigen Debug-Serien und internen Debug-Ausgaben.
+- Reine Anzeige `Einspeiseplan` samt HTML-Tabelle und Renderfunktion entfernt; Preisfenster und geplante Stunden bleiben im Börsenpreis-Highchart sichtbar, die interne Planung bleibt unverändert aktiv.
+- Sichtbare Statusvariable `Autoladung Archivsuche` entfernt; Fortschritt und Ergebnis werden weiterhin unter `Letzte Aktionen` und im Optimierungsstatus protokolliert.
+- Laufzeitregler `Maximaler Ziel-SoC bei starker PV` und `PV-Prognose als möglicher Batterieüberschuss` entfernt. Beide Werte werden jetzt ausschließlich aus der Instanzkonfiguration gelesen.
+- Beim Update werden die vier nicht mehr benötigten Altvariablen (`Einspeiseplan`, `Autoladung Archivsuche` und die beiden PV-Laufzeitregler) aus dem Objektbaum entfernt.
+- Keine Änderung an Einspeiseplanung, Dispatch, Preisbeschaffung, Lastprofil, Autolade-Erkennung oder PV-Berechnung.
+
 ## 1.10.65 / Build 236
 
 - Aufräumen: komplette JSON-Datenexportfunktion inklusive Button und Statusvariable entfernt.

@@ -107,7 +107,7 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 ## Änderungen v1.3.1
 - Preisdiagramm wieder auf die bewährte reine Highcharts-Balkengrafik zurückgestellt. Die Balken zeigen Stundenmittel aus den vier echten 15-Minuten-Werten; die Optimierung bleibt 15-minütig.
 - Bei fehlendem oder fehlerhaftem Highcharts wird automatisch die Fallback-Grafik eingeblendet.
-- Der Einspeiseplan ist über „Einspeiseplan anzeigen / ausblenden“ auf- und zuklappbar.
+- Die Auswahl der Einspeisestunden und Preisfenster wird im Börsenpreis-Highchart dargestellt; eine zusätzliche Einspeiseplan-HTML-Tabelle wird nicht mehr erzeugt.
 
 
 ## Änderungen v1.3.2
@@ -242,10 +242,10 @@ Sind Open-Meteo, Forecast.Solar und/oder pvnode gemeinsam aktiv, nimmt pvnode an
 Schutz vor falschen Zugangsdaten: Nur echte API-Ablehnungen wegen Authentifizierung oder ungültiger Site-Konfiguration zählen als Fehlversuch. Nach drei aufeinanderfolgenden Ablehnungen wird `pvnode verwenden` automatisch ausgeschaltet und der Konfigurationshaken entfernt. Erst wenn der Benutzer pvnode erneut anhakt und die Konfiguration übernimmt, werden weitere pvnode-Abfragen zugelassen. Netzwerkfehler, Serverfehler und Rate-Limits lösen diese Sperre nicht aus.
 
 
-## Debug-Modus (ab 1.5.7)
-Über `Debug-Ausgaben aktivieren` kann eine ausführliche Diagnose zugeschaltet werden. Protokolliert werden unter anderem Aktualisierungsläufe, Prognosequellen und empfangene Datenmengen, PV-Quellengewichtung inklusive Anzahl historischer Vergleichswerte und MAE, PV-/Verbrauchslernen, Preisabruf, Einspeiseplanung, Steuerentscheidung und AlphaESS-Befehle. Zugangsschlüssel werden nicht ins Debug geschrieben.
+## Darstellungsmodus / Debug
+Über `Darstellungsmodus` stehen `Standard`, `Erweitert` und `Debug` zur Verfügung. Standard zeigt die Kernanzeigen, Erweitert zusätzlich Provider- und PV-Kalibrierungsdiagnosen. Nur Debug aktiviert Einspeise-/Provider-Debug, zusätzliche Anbieterlinien in der PV-Grafik sowie interne Debug-Ausgaben. Zugangsschlüssel werden nicht ins Debug geschrieben.
 
-Bei aktivem Debug enthält das PV-Prognosediagramm zusätzlich je aktive Quelle eine separat über die Legende einblendbare Prognoseserie. Die Anbieterreihen sind standardmäßig ausgeblendet, damit die bisherige kombinierte Prognose übersichtlich bleibt. Beim Namen jeder Anbieterreihe wird die aktuell gelernte Gewichtung in Prozent angezeigt. Vergangene Stundenwerte stammen weiterhin aus den eingefrorenen Quellprognosen und werden nicht nachträglich geändert.
+Im Darstellungsmodus `Debug` enthält das PV-Prognosediagramm zusätzlich je aktive Quelle eine separat über die Legende einblendbare Prognoseserie. Die Anbieterreihen sind standardmäßig ausgeblendet, damit die bisherige kombinierte Prognose übersichtlich bleibt. Beim Namen jeder Anbieterreihe wird die aktuell gelernte Gewichtung in Prozent angezeigt. Vergangene Stundenwerte stammen weiterhin aus den eingefrorenen Quellprognosen und werden nicht nachträglich geändert.
 
 ### Debug-Modus anwenden
 Ab Version 1.5.8 wird ein Wechsel des Debug-Modus beim Klick auf **Übernehmen** sofort erkannt. Das Modul führt dann eine vollständige Neuberechnung durch und baut die HTML-Ausgaben und Diagramme unmittelbar neu auf. Dadurch werden die zusätzlichen Einzelprognosen der Anbieter beim Aktivieren sofort eingeblendet bzw. beim Deaktivieren sofort wieder entfernt; ein Warten auf den nächsten Aktualisierungstimer ist nicht erforderlich.
