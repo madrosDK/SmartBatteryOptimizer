@@ -1,3 +1,104 @@
+## 1.10.54 / Build 225
+- Autoladungs-Archivsuche erkennt Ladebeginn jetzt direkt aus den originalen Rohwerten: Stundenaggregate dienen nur zur Vorauswahl auffälliger Stunden; ausschließlich diese kleinen Zeitfenster werden roh gelesen.
+- Dadurch wird ein realer Sprung wie ca. 1,25 kW auf 7,3–8,5 kW innerhalb weniger Sekunden direkt erkannt und nicht mehr von Minutenmitteln abhängig gemacht.
+- Neue Diagnose in der Archivsuche: Anzahl gefundener `Roh-Flanken`.
+- Erkannte Ladeanteile werden weiterhin separat gespeichert, orange dargestellt und vollständig aus dem Lernprofil herausgerechnet; das originale Verbrauchsarchiv bleibt unverändert.
+- EV-Erkennungs-/Treffercache auf Version 8 angehoben.
+
+# Changelog
+
+## 1.10.53 (Build 224)
+- Autolade-Erkennung vereinfacht und auf den real beobachteten Ladeanstieg ausgerichtet: Primärkriterium ist jetzt die zusätzliche Leistung gegenüber der unmittelbar vorherigen Grundlast.
+- Neuer Wert `Autoladung typischer Ladeanstieg`, Standard 6,5 kW, plus `Toleranz typischer Ladeanstieg`, Standard ±2,0 kW. Damit wird z. B. der dokumentierte Sprung von ca. 1,2 kW auf 7,3–8,5 kW direkt als Ladebeginn bewertet.
+- Min/Max innerhalb einer Minute werden für die Höhe der Startflanke verwendet, ohne eine bestimmte Reihenfolge von MinTime/MaxTime vorauszusetzen.
+- Nach einer erkannten Startflanke wird die Ladephase bis zur Rückkehr Richtung Grundlast verfolgt. Starre Plateau-Quoten können einen ansonsten eindeutigen Ladevorgang nicht mehr nachträglich verwerfen.
+- Erkannter Fahrzeug-Ladeanteil wird weiterhin zwingend aus dem Lastprofil herausgerechnet und im Verbrauchsdiagramm orange dargestellt; das originale Verbrauchsarchiv bleibt unverändert.
+- Autoladungs-Erkennungscache und gespeicherte Treffer auf Version 7 angehoben. Außerdem Versionsfehler beim Lernen des Autolade-Musters behoben, sodass erkannte Archivtreffer künftig tatsächlich in das Muster einfließen.
+
+# SmartBatteryOptimizer 1.10.52 / Build 223
+
+- Autolade-Erkennung erkennt jetzt auch sehr schnelle Schaltflanken innerhalb einer einzigen Minute anhand der 1-Minuten-Aggregate `Min/Max` und `MinTime/MaxTime`. Damit wird z. B. ein Sprung von ca. 1,2 kW auf 7,3–8,5 kW innerhalb weniger Sekunden als Ladebeginn erkannt.
+- Die Minutenaggregation dient nur zur Kandidatensuche. Für erkannte Kandidaten werden anschließend ausschließlich kleine Rohdatenfenster von jeweils ±5 Minuten um Start und Ende gelesen, um die tatsächliche Aufwärts- bzw. Abwärtsflanke sekundengenauer zu bestätigen. Es werden weiterhin keine kompletten Tages-Rohwertlisten geladen.
+- Hochlast-Plateau und Rückkehr Richtung Grundlast bleiben Pflicht für historische Ladevorgänge; einzelne kurze Lastspitzen werden dadurch weiterhin nicht als Autoladung klassifiziert.
+- Erkennungscache und gespeicherte Autoladungs-Treffer auf Version 6 angehoben, damit ältere Nicht-Treffer mit der neuen Flankenerkennung nicht wiederverwendet werden.
+- Erkannter Ladeanteil wird weiterhin orange dargestellt und vollständig aus dem gelernten Lastprofil herausgerechnet; das originale Verbrauchsarchiv bleibt unverändert.
+- Keine Preis-, PV-, Einspeise-, Dispatch- oder Statistiklogik geändert.
+
+# SmartBatteryOptimizer 1.10.51 / Build 222
+
+- Autolade-Erkennung grundlegend auf Lastmuster umgestellt: deutlicher kW-Anstieg gegen die vorherige Grundlast, mehrere Minuten Hochlast-Plateau und anschließender deutlicher Lastabfall.
+- Neuer einstellbarer Parameter `Autoladung Mindestanstieg`, Standard 4,0 kW. Damit kann z. B. ein Anstieg von 3 kW Grundlast auf 8,5 kW sicher erkannt werden, obwohl die bisherige absolute Schwelle allein nicht ausreichte.
+- Die bisherige 6,5-kW-Einstellung bleibt als Plausibilitätsgrenze für den Gesamtverbrauch erhalten, ist aber nicht mehr das primäre Startkriterium.
+- Ladeende wird über Rückkehr Richtung Grundlast oder einen deutlichen Abfall gegenüber dem erkannten Lade-Plateau bestätigt. Kurze Schwankungen während des Ladens werden toleriert.
+- Aus den im Archiv gefundenen Ladevorgängen wird ein robustes Muster aus typischer Zusatz-Ladeleistung, Dauer und Ladeenergie gelernt. Bei zukünftigen Erkennungen wird dieses Muster zusätzlich zur Anstieg/Plateau/Abfall-Logik verwendet.
+- Das gelernte Muster ist nur eine Plausibilisierung und kein hartes Ausschlusskriterium; neue oder abweichende Ladevorgänge können weiterhin erkannt werden.
+- Erkennungscache und gespeicherte Treffer auf Version 5 angehoben. Alte Fehlklassifikationen werden nach einem neuen Archiv-Suchlauf nicht weiterverwendet; vorhandene Verbrauchsarchive werden nicht verändert oder gelöscht.
+- Orange Darstellung und Abzug aus dem Lastprofil bleiben auf den tatsächlich erkannten Zusatzanteil oberhalb der Grundlast begrenzt.
+- Keine Preis-, PV-, Einspeise-, Dispatch- oder Statistiklogik geändert.
+
+# SmartBatteryOptimizer 1.10.50 / Build 221
+
+- Neuer separater Button `Autoladungen im Archiv suchen` für eine nachträgliche Suche in abgeschlossenen Verbrauchstagen.
+- Neuer Parameter `Autoladung Archiv-Suchzeitraum`: 0 = gesamtes verfügbares Archiv, ansonsten die gewünschte Anzahl vergangener Tage.
+- Die Suche verwendet die bereits konfigurierbare Schwelle `Autoladung erkennen ab Hausverbrauch` und bewertet jeden Tag mit der aktuell eingestellten kW-Grenze neu; alte Negativ-Cacheergebnisse werden dabei nicht übernommen.
+- Eigener `EVArchiveSearchWorker` verarbeitet maximal zwei Tage pro Lauf und arbeitet unabhängig von Börsenpreis-, PV- und Lastprofil-Workern.
+- Positive Treffer werden dauerhaft mit Tages-/Stundenanteilen und Sitzungsdetails gespeichert. Das originale IP-Symcon-Verbrauchsarchiv bleibt unverändert.
+- Nach Abschluss wird das aktuelle Lastprofil-Lernfenster automatisch mit den neu gefundenen Ladeanteilen neu gelernt; Treffer außerhalb des Lernfensters bleiben für spätere Archiv-Neuberechnungen gespeichert.
+- Suchstatus zeigt Fortschritt, Anzahl der Ladevorgänge, erkannte kWh sowie den letzten Fund.
+- Gleichzeitiger Start von Lastprofil-Archiv-Neuberechnung und Autoladungs-Archivsuche wird verhindert, damit sich die beiden Archiv-Worker nicht gegenseitig belasten.
+- Keine Preis-, PV-, Einspeise-, Dispatch-, Statistik- oder Archivdaten werden beim Update zurückgesetzt oder gelöscht.
+
+# SmartBatteryOptimizer 1.10.49 / Build 220
+
+- Autolade-Erkennung auf die tatsächliche Hausverbrauchsleistung umgestellt: Nicht mehr die Größe eines einzelnen Lastsprungs ist entscheidend, sondern ob der gemessene Verbrauch die konfigurierte kW-Schwelle erreicht.
+- Neuer einstellbarer Wert `Autoladung erkennen ab Hausverbrauch` im Bereich `Eigenverbrauch lernen`, Standard 6,5 kW.
+- Eine Hochlastphase muss mindestens fünf Minuten anliegen; kurze Unterschreitungen bis drei Minuten werden toleriert.
+- Der Autolade-Anteil wird als Differenz zwischen gemessenem Verbrauch und der Median-Grundlast der 20 Minuten vor Ladebeginn berechnet. Nur dieser Zusatzanteil wird aus dem Lernprofil abgezogen und im Diagramm orange dargestellt.
+- Die Plausibilitätsprüfung für die bekannte 14,4-kWh-Fahrzeugbatterie bleibt erhalten; erkannte Ladeenergie wird nicht in das normale Lastprofil eingelernt.
+- Cache-Version der Autolade-Erkennung angehoben und um den konfigurierten kW-Schwellwert erweitert. Dadurch werden frühere `keine Autoladung erkannt`-Cacheeinträge nach dem Update nicht weiterverwendet.
+- Keine Preis-, PV-, Einspeise-, Dispatch- oder sonstigen bestehenden Funktionspfade geändert. Keine Archive, Lernwerte, Statistiken oder Konfigurationen werden beim Update gelöscht.
+
+# SmartBatteryOptimizer 1.10.48 / Build 219
+
+- Lastprofil-Diagramm nicht mehr auf sechs Tage Vergangenheit begrenzt: Es kann jetzt über das konfigurierte Verbrauchs-Lernfenster (bis 90 Tage) zurückgeblättert werden; bei kürzerem Archiv beginnt die Anzeige am tatsächlich gelernten Archivbeginn.
+- Autoladungen werden im Diagramm separat **orange** dargestellt. Der orange Ladeanteil wird ausschließlich aus dem Lernprofil herausgerechnet; das originale Verbrauchsarchiv bleibt unverändert.
+- Die Autolade-Erkennung wurde für 1-Minuten-Aggregate robuster gemacht: Kandidaten werden mit Toleranz für Minutenmittel/wechselnde Grundlast erkannt und zusätzlich über Mindestdauer und plausible Energie der 14,4-kWh-Fahrzeugbatterie geprüft.
+- Beim Abzug wird nicht mehr pauschal mit einer konstanten Ladeleistung gerechnet. Stattdessen wird der tatsächlich erkannte Zusatzanteil minutenweise gegen die Grundlast integriert und stündlich abgezogen.
+- Das Diagramm zeigt als blaues `Gelerntes Lastprofil` jetzt das reine gelernte Grundprofil ohne Verbrauchs-Sicherheitsaufschlag. Der Sicherheitsaufschlag bleibt in Batterie-/Einspeiseplanung unverändert aktiv.
+- Die Quellenzeile im Lastprofil-Diagramm folgt beim Blättern jetzt dem tatsächlich ausgewählten Kalendertag (Wochentag/Saison) statt statisch dem morgigen Profil.
+- Wochentags-/Saisonprofile mit erst wenigen Vergleichstagen werden kontrolliert mit dem globalen Stundenprofil gemischt. Dadurch kann ein einzelner ungewöhnlicher Tag das Profil nicht mehr so stark verzerren; mit wachsender Datenbasis steigt das Gewicht des individuellen Wochentags automatisch.
+- Historische Ist-Verbrauchswerte des Lastprofil-Diagramms werden ebenfalls über Archiv-Aggregate gelesen; dadurch bleibt die längere Historie speicherschonend und lädt keine kompletten hochfrequenten Tages-Rohwertlisten in PHP.
+- Keine vorhandenen Archive, Lernwerte, Statistiken oder Konfigurationen werden beim Update gelöscht oder zurückgesetzt.
+
+# SmartBatteryOptimizer 1.10.47 / Build 218
+
+- Börsenpreis-Refresh entkoppelt: Preise und Börsenpreis-Diagramm werden am Beginn des regulären Rechenlaufs aktualisiert, bevor Nachtverbrauch oder Lastprofil-Lernen ausgeführt werden. Ein langsamer/fehlerhafter Lernlauf kann das Preisdiagramm damit nicht mehr blockieren.
+- Nach einem Modulupdate wird ausschließlich ein eventuell durch einen früheren PHP-Fatalfehler zurückgebliebener `CalculationLockUntil` freigegeben; Lernwerte, Archive, Statistiken und Konfigurationen bleiben unverändert.
+- Lastprofil-Archiv-Neuberechnung arbeitet ohne Rohwert-Vollabfragen: 24 Stundenwerte kommen aus Archiv-Stundenaggregaten, die Autolade-Erkennung verwendet 1-Minuten-Aggregate. Dadurch bleibt die Datenmenge pro Lerntag begrenzt.
+- Der Archiv-Button führt keine synchrone Mehrtagesauswertung mehr aus. Neue Archivläufe beginnen beim jüngsten abgeschlossenen Tag und veröffentlichen bereits nach dem ersten gültigen Tag ein Zwischenprofil.
+- Während eine Archiv-Neuberechnung läuft, startet der normale Refresh keinen parallelen Lastprofil-Komplettscan. Nur der Archiv-Worker liest die historischen Tage.
+- Bestehende, bereits aktive Archiv-Neuberechnungen aus älteren Versionen werden weitergeführt; es werden keine Archiv- oder Lerndaten automatisch gelöscht.
+
+# SmartBatteryOptimizer 1.10.46 / Build 217
+
+- Lastprofil-Archiv-Neuberechnung speicherschonend gemacht: Rohwerte werden nicht mehr als kompletter Tages-/Randbereich auf einmal in den PHP-Speicher geladen.
+- Stündliche Verbrauchsenergie wird bevorzugt aus den vorhandenen Stundenaggregaten des IP-Symcon-Archivs gelesen.
+- Für die Autolade-Erkennung werden Rohwerte seitenweise mit begrenzter Datensatzanzahl gelesen und auf eine kompakte Minuten-Zeitreihe verdichtet; die Erkennung des plötzlichen >6,5-kW-Lastanstiegs bleibt erhalten.
+- Der Lernpfad fällt nicht mehr auf die alte unbegrenzte Ganz-Tages-Rohwertabfrage zurück.
+- Der laufende Archiv-Neuaufbau kann nach dem Update mit dem vorhandenen Zustand fortgesetzt werden; bestehende Archive, Lernwerte, Statistikdaten und Konfigurationen werden nicht gelöscht oder zurückgesetzt.
+- Börsenpreis-, PV-, Planungs- und Diagramm-Aktualisierungsroutinen wurden nicht verändert. Durch das Entfernen des wiederkehrenden Speicher-Fatalfehlers werden die normalen Modul-Timer nicht mehr alle 5 Sekunden durch den Archiv-Worker abgebrochen.
+
+## 1.10.45 (Build 216)
+- Archiv-Neuberechnung des Lastprofils blockiert die regulären Modul-Timer nicht mehr.
+- Archiv-Worker läuft nur noch in kurzen Blöcken mit 5 Sekunden Pause und gibt aktiven Preis-/PV-/Plan-Berechnungen Vorrang.
+- Bestehende Preis-, Diagramm-, PV- und Planungslogik unverändert.
+
+## 1.10.44 (Build 215)
+- **Lastprofil-Neuberechnung sichtbar wirksam:** Beim Klick auf `Lastprofil neu berechnen (inkl. Archiv)` wird sofort aus den jüngsten abgeschlossenen Archivtagen ein echtes stündliches Startprofil erzeugt und gespeichert. Der vollständige Archivlauf erweitert dieses Profil anschließend blockweise.
+- **Kein 45-kWh/24-Fallback trotz vorhandener Daten:** Falls die EV-bereinigte Detailauswertung eines Tages keine verwertbare Stundenkurve liefert, verwendet das Lernen für diesen Tag die bereits bewährte Stundenintegration aus dem Ist-Verbrauchsdiagramm.
+- **Diagnose direkt im Diagramm:** Unter der Überschrift wird nun die aktuell verwendete Lastprofil-Quelle angezeigt, damit sofort erkennbar ist, ob Archivprofil, Startprofil oder Fallback aktiv ist.
+- Keine anderen Funktionsbereiche geändert; bestehende Archive, Statistikwerte, Konfigurationen und Lernwerte werden beim Update nicht gelöscht oder zurückgesetzt.
+
 ## 1.10.43 (Build 214)
 - **Lastprofil erweitert:** Eigenes 24-Stunden-Profil für jeden Wochentag statt nur eines gemeinsamen Stundenprofils.
 - **Saisonabhängiges Lernen mit sanftem Verlauf:** Winter, Frühling, Sommer und Herbst werden als Stützprofile gelernt und per Cosinus-Interpolation weich ineinander überführt.

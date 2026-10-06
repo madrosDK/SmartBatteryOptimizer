@@ -1,4 +1,4 @@
-> Version 1.10.43 / Build 214: Lastprofil mit eigenem 24-h-Profil je Wochentag, sanfter saisonaler Interpolation, Archiv-Neuberechnung, Autolade-Erkennung und manuellem Lastprofil-Reset.
+> Version 1.10.54 / Build 225: Autoladungs-Archivsuche prüft echte Rohwert-Anstiege in gezielt ausgewählten Stunden; erkannte Ladeanteile werden orange dargestellt und aus dem Lernprofil ausgeschlossen.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 
@@ -17,7 +17,31 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.43 / Build 214**
+**1.10.51 / Build 222**
+- Neuer Button `Autoladungen im Archiv suchen`: durchsucht abgeschlossene Verbrauchstage nachträglich mit der aktuell eingestellten kW-Schwelle.
+- Eigener Hintergrund-Worker für die Autoladungs-Suche; Börsenpreis-, PV- und Lastprofil-Worker bleiben getrennt.
+- Suchzeitraum einstellbar; `0` durchsucht das gesamte verfügbare Verbrauchsarchiv.
+- Gefundene Ladeanteile werden dauerhaft als Sonderlast-Markierungen gespeichert, im Lastprofil orange dargestellt und beim Lernen abgezogen.
+- Nach Abschluss wird das aktuelle Lernfenster automatisch mit den gefundenen Ladeanteilen neu gelernt.
+- Bestehende Verbrauchsarchive werden nicht verändert oder gelöscht.
+
+**1.10.49 / Build 220**
+- Autolade-Erkennung verwendet die tatsächliche Hausverbrauchsleistung und den einstellbaren kW-Schwellwert.
+
+**1.10.48 / Build 219**
+- Lastprofil-Diagramm zeigt das konfigurierte Lernfenster statt nur sechs vergangener Tage.
+- Autoladung wird als eigener orangefarbener Anteil des Ist-Verbrauchs dargestellt und nur aus dem Lernprofil abgezogen.
+- Reines gelerntes Grundprofil wird ohne Planungs-Sicherheitsaufschlag dargestellt; Planung selbst bleibt unverändert.
+- Wochentagsprofile mit wenigen Vergleichstagen werden gegen das globale Stundenprofil stabilisiert.
+- Historische Diagrammdaten werden speicherschonend aus Archiv-Aggregaten gelesen.
+
+**1.10.47 / Build 218**
+- Börsenpreis-Diagramm wird vor dem Lastprofil-Lernen aktualisiert und kann dadurch nicht mehr von einem Archiv-/Lernlauf blockiert werden.
+- Archiv-Neuberechnung: Stundenaggregate für Energie, 1-Minuten-Aggregate für Autolade-Erkennung; keine vollständige Rohwertliste im Speicher.
+- Neue Archivläufe starten beim jüngsten Tag und veröffentlichen laufend Zwischenprofile.
+- Reguläre Aktualisierungen führen während des Archivlaufs keinen parallelen historischen Komplettscan aus.
+
+**1.10.46 / Build 217**
 
 ## Neu in 1.2.3
 
@@ -101,13 +125,13 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 
 Das Modul lernt aus der archivierten Variable **Hausverbrauch Leistung (W)** zusätzlich zum Nachtverbrauch ein stündliches Lastprofil.
 
-Ab Version **1.10.43** gibt es für **jeden Wochentag ein eigenes 24-Stunden-Profil**. Zusätzlich werden vier saisonale Stützprofile (Winter, Frühling, Sommer, Herbst) geführt. Zwischen diesen Stützpunkten wird mit einem sanften Verlauf interpoliert, sodass es an Saisonwechseln keine sprunghaften Verbrauchsprognosen gibt. Neuere Vergleichstage werden stärker gewichtet als sehr alte Archivtage.
+Ab Version **1.10.43** gibt es für **jeden Wochentag ein eigenes 24-Stunden-Profil**. Zusätzlich werden vier saisonale Stützprofile (Winter, Frühling, Sommer, Herbst) geführt. Zwischen diesen Stützpunkten wird mit einem sanften Verlauf interpoliert, sodass es an Saisonwechseln keine sprunghaften Verbrauchsprognosen gibt. Neuere Vergleichstage werden stärker gewichtet als sehr alte Archivtage. Ab 1.10.48 werden Wochentags-/Saison-Slots mit noch wenigen Vergleichstagen zusätzlich mit dem globalen Stundenprofil stabilisiert; mit wachsender Zahl passender Lerntage steigt das Gewicht des individuellen Wochentags automatisch.
 
-Plötzliche Zusatzlasten ab etwa **6,5 kW**, die mindestens fünf Minuten bestehen und energetisch zu einem Ladevorgang der bekannten 14,4-kWh-Fahrzeugbatterie passen, werden als Autoladung erkannt. Diese Zusatzenergie wird beim Lernen aus dem Grundlastprofil herausgerechnet; der tatsächliche Verbrauch im Archiv und im Ist-Diagramm bleibt unverändert.
+Autoladung wird primär am deutlichen Leistungsanstieg gegenüber der unmittelbar vorherigen Grundlast erkannt. Standard ist ein typischer Ladeanstieg von **6,5 kW** mit **±2,0 kW Toleranz**; zusätzlich bleibt der Mindestanstieg konfigurierbar. Ein Sprung wie ca. **1,2 kW → 7,3–8,5 kW** wird damit direkt als Ladebeginn bewertet. Danach wird die erhöhte Last bis zur Rückkehr Richtung Grundlast verfolgt. Der erkannte Zusatzanteil wird beim Lernen vollständig aus dem Grundlastprofil herausgerechnet. Das originale Verbrauchsarchiv bleibt unverändert und der Ladeanteil erscheint im Diagramm separat **orange**.
 
 Für die Einspeiseentscheidung wird die PV-Prognose des nächsten Tages zeitgleich mit dem erwarteten Eigenverbrauch verrechnet. Nur der erwartete PV-Überschuss kann zum Wiederaufladen des Speichers verwendet werden. Die Einspeisung wird deshalb so begrenzt, dass der konfigurierte **Ziel-SoC nach dem nächsten PV-Tag** erreichbar bleibt und der Nacht-/Eigenverbrauch berücksichtigt ist.
 
-Der normale Lernlauf aktualisiert nur die vorhandenen aktuellen Saison-/Wochentag-Slots. Über **Lastprofil neu berechnen (inkl. Archiv)** kann das komplette vorhandene Verbrauchsarchiv rückwirkend ausgewertet werden. Der Wiederaufbau läuft in kleinen Blöcken über den bestehenden Modul-Worker, damit die übrigen Modul-Timer nicht durch einen langen Archivlauf blockiert werden.
+Der normale Lernlauf aktualisiert nur die vorhandenen aktuellen Saison-/Wochentag-Slots. Über **Lastprofil neu berechnen (inkl. Archiv)** kann das komplette vorhandene Verbrauchsarchiv rückwirkend ausgewertet werden. Der Wiederaufbau läuft in kleinen Blöcken über den bestehenden Modul-Worker, damit die übrigen Modul-Timer nicht durch einen langen Archivlauf blockiert werden. Das Lastprofil-Diagramm kann über das konfigurierte Lernfenster (maximal 90 Tage) zurückgeblättert werden und zeigt pro Tag das passende Wochentags-/Saisonprofil.
 
 **Lastprofil zurücksetzen** entfernt ausschließlich die intern gelernten Lastprofilwerte. Verbrauchsarchive und alle anderen Modul-Daten bleiben erhalten. Es erfolgt niemals ein automatischer Lastprofil-Reset bei einem Modulupdate.
 
