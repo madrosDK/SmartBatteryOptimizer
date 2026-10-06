@@ -1,3 +1,10 @@
+## 1.10.60 / Build 231
+- Autoladungs-Erkennung vereinheitlicht: `Autoladung Ladeleistung` ist jetzt der zentrale Wert für Startflanke, Mindest-Gesamtleistung während des Starts und den festen Abzug aus dem Lastprofil.
+- Deutlich kleinere Lastanstiege werden nicht mehr als Autoladung akzeptiert. Bei 7,1 kW Ladeleistung liegt die harte Untergrenze bei mindestens 85 % der Ladeleistung bzw. innerhalb der eingestellten Toleranz; ein Anstieg um etwa 5 kW wird dadurch verworfen.
+- Die absolute Leistung nach der Startflanke muss mindestens die eingestellte Fahrzeug-Ladeleistung erreichen. Grundlast liegt zusätzlich darüber und wird nicht als Fahrzeuganteil abgezogen.
+- Die redundanten Bedienfelder `Autoladung Mindestanstieg` und `Autoladung typischer Ladeanstieg` wurden aus der Oberfläche entfernt; die alten Eigenschaften bleiben intern zur nicht-destruktiven Kompatibilität registriert, beeinflussen die Erkennung aber nicht mehr.
+- Treffercache auf Version 13 angehoben; Archivsuche muss dadurch mit der neuen Leistungslogik neu bewerten.
+
 ## 1.10.59 / Build 230
 - Der Wert `Autoladung Plausibilitätswert / feste Ladeleistung` wird nach erkannter Startflanke als konstante Fahrzeug-Ladeleistung verwendet. Nicht mehr die schwankende gemessene Zusatzlast bestimmt den Abzug.
 - Neuer Parameter `Max. Energie pro Autoladung`, Standard 14,4 kWh. Pro erkanntem Ladevorgang wird höchstens diese Energiemenge als Fahrzeugladung aus dem Lastprofil herausgerechnet.

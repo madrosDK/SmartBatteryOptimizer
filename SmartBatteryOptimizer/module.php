@@ -58,7 +58,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('LearningDays', 30);
         $this->RegisterPropertyFloat('FallbackNightConsumptionKWh', 4.0);
         $this->RegisterPropertyBoolean('ConsumptionProfileLearningEnabled', true);
-        $this->RegisterPropertyFloat('EVChargingDetectionThresholdKW', 6.5);
+        $this->RegisterPropertyFloat('EVChargingDetectionThresholdKW', 7.1);
         $this->RegisterPropertyFloat('EVChargingMaxEnergyKWh', 14.4);
         $this->RegisterPropertyFloat('EVChargingMinRiseKW', 4.0);
         $this->RegisterPropertyFloat('EVChargingExpectedRiseKW', 6.5);
@@ -561,7 +561,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.59';
+        $currentModuleVersion = '1.10.60';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -692,7 +692,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.59',
+            'moduleVersion' => '1.10.60',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1681,8 +1681,6 @@ class SmartBatteryOptimizer extends IPSModule
             }
             $thresholdKW = max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW'));
             $maxEnergyKWh = max(0.1, $this->ReadPropertyFloat('EVChargingMaxEnergyKWh'));
-            $minRiseKW = max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW'));
-            $expectedRiseKW = max(0.5, $this->ReadPropertyFloat('EVChargingExpectedRiseKW'));
             $riseToleranceKW = max(0.2, $this->ReadPropertyFloat('EVChargingRiseToleranceKW'));
             $minimumDurationMinutes = max(1, $this->ReadPropertyInteger('EVChargingMinimumDurationMinutes'));
             $totalDays = max(1, (int)floor(($lastDay - $firstDay) / 86400) + 1);
@@ -1696,8 +1694,6 @@ class SmartBatteryOptimizer extends IPSModule
                 'started' => time(),
                 'thresholdKW' => $thresholdKW,
                 'maxEnergyKWh' => $maxEnergyKWh,
-                'minRiseKW' => $minRiseKW,
-                'expectedRiseKW' => $expectedRiseKW,
                 'riseToleranceKW' => $riseToleranceKW,
                 'minimumDurationMinutes' => $minimumDurationMinutes,
                 'totalDays' => $totalDays,
@@ -1720,8 +1716,9 @@ class SmartBatteryOptimizer extends IPSModule
             $rangeText = $searchDays <= 0 ? 'gesamtes verfügbares Archiv' : $totalDays . ' abgeschlossene Tage';
             $text = 'Autoladungs-Archivsuche gestartet: Verbrauchsvariable #' . $varID . ', ' . $rangeText
                 . ' (' . date('d.m.Y', $firstDay) . ' bis ' . date('d.m.Y', $lastDay) . ')'
-                . ', typischer Ladeanstieg ' . number_format($expectedRiseKW, 1, ',', '.') . ' ± ' . number_format($riseToleranceKW, 1, ',', '.') . ' kW'
-                . ' (Mindestanstieg ' . number_format($minRiseKW, 1, ',', '.') . ' kW, Mindestdauer ' . $minimumDurationMinutes . ' min, feste Ladeleistung ' . number_format($thresholdKW, 1, ',', '.') . ' kW, max. Energie ' . number_format($maxEnergyKWh, 1, ',', '.') . ' kWh).';
+                . ', Ladeleistung ' . number_format($thresholdKW, 1, ',', '.') . ' kW'
+                . ' ± ' . number_format($riseToleranceKW, 1, ',', '.') . ' kW Toleranz'
+                . ' (Mindestdauer ' . $minimumDurationMinutes . ' min, max. Energie ' . number_format($maxEnergyKWh, 1, ',', '.') . ' kWh).';
             SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $text);
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
@@ -1777,11 +1774,9 @@ class SmartBatteryOptimizer extends IPSModule
                 }
                 if ($kWh > 0.01) {
                     $stored[$dateKey] = [
-                        'version' => 12,
+                        'version' => 13,
                         'thresholdKW' => max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW')),
                         'maxEnergyKWh' => max(0.1, $this->ReadPropertyFloat('EVChargingMaxEnergyKWh')),
-                        'minRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW')),
-                        'expectedRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingExpectedRiseKW')),
                         'riseToleranceKW' => max(0.2, $this->ReadPropertyFloat('EVChargingRiseToleranceKW')),
                         'minimumDurationMinutes' => max(1, $this->ReadPropertyInteger('EVChargingMinimumDurationMinutes')),
                         'hourlyWh' => array_values($ev['hourlyWh'] ?? array_fill(0, 24, 0.0)),
@@ -6450,19 +6445,15 @@ class SmartBatteryOptimizer extends IPSModule
         $isPastDay = $fullDayEnd <= strtotime('today 00:00:00');
         $evThresholdKW = max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW'));
         $evMaxEnergyKWh = max(0.1, $this->ReadPropertyFloat('EVChargingMaxEnergyKWh'));
-        $evMinRiseKW = max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW'));
         $pattern = $this->GetEVChargingPattern();
         $patternUpdated = (int)($pattern['updated'] ?? 0);
-        $evExpectedRiseKW = max(0.5, $this->ReadPropertyFloat('EVChargingExpectedRiseKW'));
         $evRiseToleranceKW = max(0.2, $this->ReadPropertyFloat('EVChargingRiseToleranceKW'));
         $evMinimumDurationMinutes = max(1, $this->ReadPropertyInteger('EVChargingMinimumDurationMinutes'));
         $futureDetectionEnabled = $this->ReadPropertyBoolean('EVFutureDetectionEnabled');
         $dateKey = date('Y-m-d', $dayStart);
         $cacheKey = $dateKey . '|' . $archiveID . '|' . $varID
-            . '|v12|threshold=' . number_format($evThresholdKW, 3, '.', '')
+            . '|v13|chargepower=' . number_format($evThresholdKW, 3, '.', '')
             . '|maxenergy=' . number_format($evMaxEnergyKWh, 3, '.', '')
-            . '|rise=' . number_format($evMinRiseKW, 3, '.', '')
-            . '|expected=' . number_format($evExpectedRiseKW, 3, '.', '')
             . '|tolerance=' . number_format($evRiseToleranceKW, 3, '.', '')
             . '|duration=' . $evMinimumDurationMinutes
             . '|future=' . ($futureDetectionEnabled ? '1' : '0')
@@ -6475,11 +6466,9 @@ class SmartBatteryOptimizer extends IPSModule
             $stored = json_decode($this->ReadAttributeString('EVArchiveDetectionsJSON'), true);
             $saved = is_array($stored) ? ($stored[$dateKey] ?? null) : null;
             if (is_array($saved)
-                && (int)($saved['version'] ?? 0) === 12
+                && (int)($saved['version'] ?? 0) === 13
                 && abs((float)($saved['thresholdKW'] ?? 0.0) - $evThresholdKW) < 0.0001
                 && abs((float)($saved['maxEnergyKWh'] ?? 0.0) - $evMaxEnergyKWh) < 0.0001
-                && abs((float)($saved['minRiseKW'] ?? 0.0) - $evMinRiseKW) < 0.0001
-                && abs((float)($saved['expectedRiseKW'] ?? 0.0) - $evExpectedRiseKW) < 0.0001
                 && abs((float)($saved['riseToleranceKW'] ?? 0.0) - $evRiseToleranceKW) < 0.0001
                 && (int)($saved['minimumDurationMinutes'] ?? 0) === $evMinimumDurationMinutes
                 && isset($saved['hourlyWh']) && is_array($saved['hourlyWh']) && count($saved['hourlyWh']) === 24
@@ -6538,12 +6527,13 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         $points = $this->GetMinuteConsumptionPowerPoints($archiveID, $varID, $readStart, $readEnd);
-        $sessions = count($points) >= 2
-            ? $this->DetectEVChargingSessions($points, $readStart, $readEnd, $pattern)
-            : [];
-        if (count($rawSessions) > 0) {
-            $sessions = $this->MergeEVChargingSessions($sessions, $rawSessions);
-        }
+        // Bei der manuellen Archivsuche sind die direkten Rohwerte die alleinige
+        // Trefferquelle. Dadurch koennen geglaettete Minutenwerte keine zusaetzlichen
+        // Fremdspitzen als Autoladung einschleusen. Fuer die laufende Zukunftserkennung
+        // bleibt die speicherschonende Minutenanalyse aktiv.
+        $sessions = $forceRefresh
+            ? $rawSessions
+            : (count($points) >= 2 ? $this->DetectEVChargingSessions($points, $readStart, $readEnd, $pattern) : []);
         if (count($points) < 2 && count($sessions) === 0) {
             $empty['rawEdges'] = count($rawEdges);
             $empty['rawTrackedSessions'] = count($rawSessions);
@@ -6675,10 +6665,14 @@ class SmartBatteryOptimizer extends IPSModule
             return [];
         }
 
-        $minRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingMinRiseKW') * 1000.0);
-        $expectedRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingExpectedRiseKW') * 1000.0);
+        $chargePowerW = max(1000.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW') * 1000.0);
         $toleranceW = max(200.0, $this->ReadPropertyFloat('EVChargingRiseToleranceKW') * 1000.0);
-        $edgeFloorW = max(1500.0, $minRiseW);
+        // Die bekannte Fahrzeug-Ladeleistung ist das eigentliche Startkriterium.
+        // Bei 7,1 kW muss der Anstieg mindestens ca. 85 % davon erreichen. Dadurch
+        // kann z. B. ein 5-kW-Haushaltsanstieg nicht als Autoladung gelten, selbst wenn
+        // die alte Toleranz sehr groß eingestellt war.
+        $edgeFloorW = max(1500.0, $chargePowerW * 0.85, $chargePowerW - $toleranceW);
+        $edgeCeilingW = $chargePowerW + $toleranceW;
 
         // Direkte Rohwertsuche in 30-Minuten-Bloecken. Keine Stunden-/Minuten-
         // Vorauswahl und kein 5.000er-Limit mehr. Damit werden die tatsaechlichen
@@ -6735,7 +6729,11 @@ class SmartBatteryOptimizer extends IPSModule
                     $riseVsBaselineW = $highW - $baselineW;
                     $effectiveRiseW = max($riseW, $riseVsBaselineW);
                     $maxObservedRiseW = max($maxObservedRiseW, $effectiveRiseW);
-                    if ($effectiveRiseW < $edgeFloorW) continue;
+                    if ($effectiveRiseW < $edgeFloorW || $effectiveRiseW > $edgeCeilingW) continue;
+                    // Auch der absolute Verbrauch nach der Flanke muss mindestens die
+                    // bekannte Fahrzeug-Ladeleistung erreichen. Bei 7,1 kW kann ein
+                    // Plateau um 5 kW deshalb niemals als Fahrzeugladung starten.
+                    if ($highW < $chargePowerW) continue;
 
                     // Gleiche Startphase nicht mehrfach zaehlen; mehrstufige Starts
                     // innerhalb von 20 s werden auf die hoechste Stufe aktualisiert.
@@ -6748,7 +6746,7 @@ class SmartBatteryOptimizer extends IPSModule
                         'toW' => $highW,
                         'baselineW' => max(0.0, $baselineW),
                         'riseW' => $effectiveRiseW,
-                        'expectedMatch' => abs($effectiveRiseW - $expectedRiseW) <= max($toleranceW, $expectedRiseW * 0.45)
+                        'expectedMatch' => true
                     ];
 
                     if ($lastAcceptedTs > 0 && ($ts - $lastAcceptedTs) < 20 && $lastAcceptedIndex >= 0) {
@@ -6785,9 +6783,10 @@ class SmartBatteryOptimizer extends IPSModule
         usort($edges, static fn($a, $b) => ((int)($a['start'] ?? 0)) <=> ((int)($b['start'] ?? 0)));
 
         $sessions = [];
-        $minRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingMinRiseKW') * 1000.0);
-        $expectedRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingExpectedRiseKW') * 1000.0);
+        $chargePowerW = max(1000.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW') * 1000.0);
         $toleranceW = max(200.0, $this->ReadPropertyFloat('EVChargingRiseToleranceKW') * 1000.0);
+        $minRequiredRiseW = max(1500.0, $chargePowerW * 0.85, $chargePowerW - $toleranceW);
+        $maxAllowedRiseW = $chargePowerW + $toleranceW;
         $minDurationS = max(60, $this->ReadPropertyInteger('EVChargingMinimumDurationMinutes') * 60);
         $maxDurationS = 8 * 3600;
         $lowConfirmS = 60;
@@ -6798,7 +6797,7 @@ class SmartBatteryOptimizer extends IPSModule
             $baselineW = max(0.0, (float)($edge['baselineW'] ?? 0.0));
             $initialRiseW = max(0.0, (float)($edge['riseW'] ?? 0.0));
             if ($startTs <= 0 || $startTs < $rangeStart || $startTs >= $rangeEnd) continue;
-            if ($initialRiseW < $minRiseW) continue;
+            if ($initialRiseW < $minRequiredRiseW || $initialRiseW > $maxAllowedRiseW) continue;
 
             // Eine zweite Flanke innerhalb eines bereits gefundenen Ladevorgangs ist kein
             // neuer Start. Das ist z. B. bei mehrstufigem Hochfahren des Onboard-Laders
@@ -6816,8 +6815,8 @@ class SmartBatteryOptimizer extends IPSModule
             // sind hier bewusst nicht mehr Teil der Trefferentscheidung. Dadurch kann eine
             // eindeutig gefundene Startflanke nicht nachträglich durch eine geglättete
             // Minutenprüfung wieder verworfen werden.
-            $activeExtraW = max(1800.0, min($minRiseW * 0.55, $expectedRiseW * 0.45));
-            $returnExtraW = max(900.0, min(1800.0, $expectedRiseW * 0.25));
+            $activeTotalW = $chargePowerW;
+            $returnExtraW = max(900.0, min(1800.0, $chargePowerW * 0.25));
             $scanEnd = min($rangeEnd, $startTs + $maxDurationS);
             $cursor = max($rangeStart, $startTs - 5);
             $endTs = 0;
@@ -6864,7 +6863,7 @@ class SmartBatteryOptimizer extends IPSModule
                     if ($segEnd > $segStart) {
                         $dt = $segEnd - $segStart;
                         $prevExtraW = max(0.0, $prevW - $baselineW);
-                        $capW = max($minRiseW, $expectedRiseW + $toleranceW);
+                        $capW = $chargePowerW;
                         $integratedExtraW = min($prevExtraW, $capW);
                         $extraWh += $integratedExtraW * ($dt / 3600.0);
                         if ($integratedExtraW > 0.0) {
@@ -6878,7 +6877,7 @@ class SmartBatteryOptimizer extends IPSModule
                                 $hourCursor = $hourEnd;
                             }
                         }
-                        if ($prevExtraW >= $activeExtraW) {
+                        if ($prevW >= $activeTotalW) {
                             $highSeconds += $dt;
                             $lastHighTs = $segEnd;
                             if (count($highExtras) < 2000) $highExtras[] = $prevExtraW;
@@ -6897,7 +6896,7 @@ class SmartBatteryOptimizer extends IPSModule
                         // Ladephase beenden. Zwischenstufen oder normale Hauslast während
                         // des Ladens setzen die Niedrigphase zurück.
                         $lowSince = 0;
-                        if ($extraW >= $activeExtraW) {
+                        if ($valueW >= $activeTotalW) {
                             $lastHighTs = $ts;
                             if (count($highExtras) < 2000) $highExtras[] = $extraW;
                         }
@@ -6922,18 +6921,15 @@ class SmartBatteryOptimizer extends IPSModule
             if ($durationS < $minDurationS || $highSeconds < 120) continue;
 
             $usable = array_values(array_filter($highExtras, static fn($v) => $v >= 1000.0));
-            $chargePowerW = count($usable) > 0 ? $this->Median($usable) : $initialRiseW;
-            // Zusätzliche Hausverbraucher während des Ladens dürfen die gelernte
-            // Fahrzeugleistung nicht nach oben ziehen. Die typische konfigurierte
-            // Ladeleistung plus Toleranz ist deshalb die Obergrenze für den Abzug.
-            $chargePowerW = min($chargePowerW, max($minRiseW, $expectedRiseW + $toleranceW));
-            if ($chargePowerW < max(1500.0, $minRiseW * 0.50)) continue;
+            // Die Fahrzeug-Ladeleistung ist bekannt und wird nicht aus dem Plateau
+            // geschätzt. Gemessene Zusatzverbraucher dürfen diesen Wert nicht verändern.
+            $detectedChargePowerW = $chargePowerW;
 
             $extraKWh = max(0.0, $extraWh / 1000.0);
             if ($extraKWh < 0.20) {
                 // Falls der letzte Integrationsabschnitt wegen Blockgrenze fehlt, aus
                 // Dauer und robuster Ladeleistung konservativ abschätzen.
-                $extraKWh = ($chargePowerW * ($durationS / 3600.0)) / 1000.0;
+                $extraKWh = ($detectedChargePowerW * ($durationS / 3600.0)) / 1000.0;
             }
             if ($extraKWh < 0.20 || $extraKWh > 22.0) continue;
 
@@ -6941,11 +6937,11 @@ class SmartBatteryOptimizer extends IPSModule
                 'start' => $startTs,
                 'end' => $endTs,
                 'baselineW' => $baselineW,
-                'chargePowerW' => $chargePowerW,
+                'chargePowerW' => $detectedChargePowerW,
                 'initialRiseW' => $initialRiseW,
                 'plateauCoverage' => 1.0,
                 'confirmedDrop' => $lowSince > 0 && $endTs === $lowSince,
-                'patternMatch' => abs($chargePowerW - $expectedRiseW) <= max($toleranceW, $expectedRiseW * 0.40),
+                'patternMatch' => true,
                 'extraKWh' => $extraKWh,
                 'hourlyWhByKey' => $hourlyWhByKey,
                 'edgeType' => 'raw-rise-tracked'
@@ -6971,7 +6967,7 @@ class SmartBatteryOptimizer extends IPSModule
                 if ($start <= $prevEnd + 5 * 60 && $end >= $prevStart - 5 * 60) {
                     // Bei doppelter Erkennung desselben Ladevorgangs die Variante mit der
                     // echten Rohwert-Startflanke bevorzugen.
-                    if (($session['edgeType'] ?? '') === 'raw-archive-rise') $merged[$n - 1] = $session;
+                    if (strpos((string)($session['edgeType'] ?? ''), 'raw-') === 0) $merged[$n - 1] = $session;
                     continue;
                 }
             }
@@ -7033,8 +7029,10 @@ class SmartBatteryOptimizer extends IPSModule
         $start = (int)($session['start'] ?? 0);
         $end = (int)($session['end'] ?? 0);
         $baselineW = max(0.0, (float)($session['baselineW'] ?? 0.0));
-        $chargePowerW = max(0.0, (float)($session['chargePowerW'] ?? 0.0));
-        $configuredRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingMinRiseKW') * 1000.0);
+        $chargePowerW = max(1000.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW') * 1000.0);
+        $riseToleranceW = max(200.0, $this->ReadPropertyFloat('EVChargingRiseToleranceKW') * 1000.0);
+        $minimumRiseW = max(1500.0, $chargePowerW * 0.85, $chargePowerW - $riseToleranceW);
+        $maximumRiseW = $chargePowerW + $riseToleranceW;
         if ($start <= 0 || $end <= $start) return $session;
 
         // Start: im kleinen Rohdatenfenster die erste echte Aufwärtsflanke suchen.
@@ -7043,12 +7041,13 @@ class SmartBatteryOptimizer extends IPSModule
             max($rangeStart, $start - 5 * 60),
             min($rangeEnd, $start + 5 * 60)
         );
-        $highThreshold = $baselineW + max(2200.0, min($configuredRiseW * 0.60, max(2200.0, $chargePowerW * 0.55)));
-        $lowThreshold = $baselineW + max(1000.0, min(1800.0, $configuredRiseW * 0.30));
+        $highThreshold = max($chargePowerW, $baselineW + $minimumRiseW);
+        $lowThreshold = $baselineW + max(1000.0, min(1800.0, $chargePowerW * 0.25));
         for ($i = 1; $i < count($startRows); $i++) {
             $prevW = (float)$startRows[$i - 1]['value'];
             $curW = (float)$startRows[$i]['value'];
-            if ($prevW <= $lowThreshold && $curW >= $highThreshold && ($curW - $prevW) >= max(1800.0, $configuredRiseW * 0.55)) {
+            $rawRiseW = $curW - $prevW;
+            if ($prevW <= $lowThreshold && $curW >= $highThreshold && $rawRiseW >= $minimumRiseW && $rawRiseW <= $maximumRiseW) {
                 $start = (int)$startRows[$i]['ts'];
                 $session['rawStartConfirmed'] = true;
                 $session['rawStartFromW'] = $prevW;
@@ -7067,7 +7066,7 @@ class SmartBatteryOptimizer extends IPSModule
         for ($i = 1; $i < count($endRows); $i++) {
             $prevW = (float)$endRows[$i - 1]['value'];
             $curW = (float)$endRows[$i]['value'];
-            if ($prevW >= $highThreshold && $curW <= $endLowThreshold && ($prevW - $curW) >= max(1800.0, $configuredRiseW * 0.50)) {
+            if ($prevW >= $highThreshold && $curW <= $endLowThreshold && ($prevW - $curW) >= max(1800.0, $minimumRiseW * 0.70)) {
                 $end = (int)$endRows[$i]['ts'];
                 $session['rawEndConfirmed'] = true;
                 $session['rawEndFromW'] = $prevW;
@@ -7230,20 +7229,17 @@ class SmartBatteryOptimizer extends IPSModule
         if ($count < 6) return $sessions;
 
         $absoluteThresholdW = max(1000.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW') * 1000.0);
-        $minimumRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingMinRiseKW') * 1000.0);
-        $expectedRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingExpectedRiseKW') * 1000.0);
         $riseToleranceW = max(200.0, $this->ReadPropertyFloat('EVChargingRiseToleranceKW') * 1000.0);
+        $minimumRiseW = max(1500.0, $absoluteThresholdW * 0.85, $absoluteThresholdW - $riseToleranceW);
+        $maximumRiseW = $absoluteThresholdW + $riseToleranceW;
         $minDurationS = max(60, $this->ReadPropertyInteger('EVChargingMinimumDurationMinutes') * 60);
         $baselineWindowS = 20 * 60;
         $maxSessionKWh = 20.0;
         $minSessionKWh = 0.25;
 
-        $patternSamples = max(0, (int)($learnedPattern['samples'] ?? 0));
-        $patternPowerW = max(0.0, (float)($learnedPattern['chargePowerKW'] ?? 0.0) * 1000.0);
-        $targetRiseW = ($patternSamples >= 2 && $patternPowerW >= 2000.0) ? $patternPowerW : $expectedRiseW;
-        // Das gelernte Muster darf die vom Benutzer konfigurierte typische Ladeleistung
-        // nur sanft nachführen. Es darf niemals eine klare Startflanke ausfiltern.
-        $targetRiseW = max($expectedRiseW - $riseToleranceW, min($expectedRiseW + $riseToleranceW, $targetRiseW));
+        // Die Ladeleistung ist bekannt. Das gelernte Muster darf die Leistungsgrenze
+        // nicht verschieben; es bleibt nur als Statistik fuer zukuenftige Treffer erhalten.
+        $targetRiseW = $absoluteThresholdW;
 
         $i = 1;
         while ($i < $count - 2) {
@@ -7278,9 +7274,8 @@ class SmartBatteryOptimizer extends IPSModule
             $edgeVsPreviousMinuteW = max(0.0, $avgW - $prevAvgW);
             $candidateRiseW = max($edgeInsideMinuteW, $edgeVsBaselineW, $edgeVsPreviousMinuteW);
 
-            $matchesExpectedRise = abs($candidateRiseW - $targetRiseW) <= $riseToleranceW;
-            $isStrongRise = $candidateRiseW >= $minimumRiseW;
-            if (!$matchesExpectedRise && !$isStrongRise) { $i++; continue; }
+            $matchesExpectedRise = $candidateRiseW >= $minimumRiseW && $candidateRiseW <= $maximumRiseW;
+            if (!$matchesExpectedRise || $maxW < $absoluteThresholdW) { $i++; continue; }
 
             // Direkt nach dem Sprung muss die Last mehrere Minuten deutlich über der
             // vorherigen Grundlast bleiben. Das verhindert Fehlalarme durch kurze Spitzen.
@@ -7290,7 +7285,7 @@ class SmartBatteryOptimizer extends IPSModule
             for ($k = $i; $k < min($count, $i + 6); $k++) {
                 $v = max(0.0, (float)($points[$k]['value'] ?? 0.0));
                 $vMax = max($v, (float)($points[$k]['max'] ?? $v));
-                if ($v >= $baselineW + $holdExtraW || $vMax >= $baselineW + $minimumRiseW) $highMinutes++;
+                if ($v >= $baselineW + $holdExtraW || $vMax >= $absoluteThresholdW) $highMinutes++;
             }
             if ($highMinutes < 2) { $i++; continue; }
 
@@ -7312,7 +7307,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $pMinTime = (int)($points[$j]['minTime'] ?? $pTs);
 
                 $extraAvg = max(0.0, $pAvg - $baselineW);
-                if ($extraAvg >= max(1200.0, $targetRiseW * 0.35) || $pMax >= $baselineW + $minimumRiseW) {
+                if ($extraAvg >= max(1200.0, $targetRiseW * 0.35) || $pMax >= $absoluteThresholdW) {
                     $sessionHighValues[] = $extraAvg > 0 ? $extraAvg : max(0.0, $pMax - $baselineW);
                     $lowMinutes = 0;
                 } elseif ($pAvg <= $baselineW + $returnBandW || $pMin <= $baselineW + $returnBandW) {
@@ -7351,14 +7346,17 @@ class SmartBatteryOptimizer extends IPSModule
             // Die typische Zusatzleistung muss zum konfigurierten/erlernten Ladeanstieg
             // passen oder zumindest oberhalb des Mindestanstiegs liegen. Keine weitere
             // Plateau-Quote kann einen klaren Ladevorgang wieder verwerfen.
-            $powerMatches = abs($medianExtraW - $targetRiseW) <= max($riseToleranceW, $targetRiseW * 0.35);
-            if (!$powerMatches && $medianExtraW < $minimumRiseW * 0.75) {
+            // Waerend der Phase muss der Gesamtverbrauch plausibel ueber der bekannten
+            // Fahrzeug-Ladeleistung liegen. Ein 5-kW-Plateau kann bei 7,1 kW Ladeleistung
+            // deshalb nicht als Fahrzeugladung bestehen bleiben.
+            $powerMatches = $medianExtraW >= $minimumRiseW && $medianExtraW <= $maximumRiseW;
+            if (!$powerMatches) {
                 $i = max($i + 1, $endIndex > 0 ? $endIndex : $i + 1);
                 continue;
             }
 
             $extraWh = 0.0;
-            $capW = max($minimumRiseW, $targetRiseW + $riseToleranceW);
+            $capW = $absoluteThresholdW;
             for ($k = $startIndex; $k < $count; $k++) {
                 $segStart = max($startTs, (int)($points[$k]['ts'] ?? 0));
                 if ($segStart >= $endTs) break;
@@ -7387,7 +7385,7 @@ class SmartBatteryOptimizer extends IPSModule
                 'extraKWh' => $extraKWh,
                 'thresholdW' => $absoluteThresholdW,
                 'minRiseW' => $minimumRiseW,
-                'expectedRiseW' => $expectedRiseW,
+                'expectedRiseW' => $absoluteThresholdW,
                 'riseToleranceW' => $riseToleranceW,
                 'edgeType' => $matchesExpectedRise ? 'expected-rise' : 'strong-rise'
             ];
@@ -7402,18 +7400,14 @@ class SmartBatteryOptimizer extends IPSModule
         $pattern = json_decode($this->ReadAttributeString('EVChargingPatternJSON'), true);
         if (!is_array($pattern)) return [];
         // Ein Muster ist nur fuer die Einstellungen gueltig, mit denen es gelernt wurde.
-        // Aendert der Benutzer Schwelle oder Mindestanstieg, beeinflusst das alte Muster
+        // Aendert der Benutzer Ladeleistung oder Toleranz, beeinflusst das alte Muster
         // die neue Archivsuche nicht; nach dem Suchlauf wird automatisch neu gelernt.
         $thresholdKW = max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW'));
         $maxEnergyKWh = max(0.1, $this->ReadPropertyFloat('EVChargingMaxEnergyKWh'));
-        $minRiseKW = max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW'));
-        $expectedRiseKW = max(0.5, $this->ReadPropertyFloat('EVChargingExpectedRiseKW'));
         $riseToleranceKW = max(0.2, $this->ReadPropertyFloat('EVChargingRiseToleranceKW'));
         $minimumDurationMinutes = max(1, $this->ReadPropertyInteger('EVChargingMinimumDurationMinutes'));
         if (isset($pattern['thresholdKW']) && abs((float)$pattern['thresholdKW'] - $thresholdKW) > 0.0001) return [];
         if (isset($pattern['maxEnergyKWh']) && abs((float)$pattern['maxEnergyKWh'] - $maxEnergyKWh) > 0.0001) return [];
-        if (isset($pattern['minRiseKW']) && abs((float)$pattern['minRiseKW'] - $minRiseKW) > 0.0001) return [];
-        if (isset($pattern['expectedRiseKW']) && abs((float)$pattern['expectedRiseKW'] - $expectedRiseKW) > 0.0001) return [];
         if (isset($pattern['riseToleranceKW']) && abs((float)$pattern['riseToleranceKW'] - $riseToleranceKW) > 0.0001) return [];
         if (isset($pattern['minimumDurationMinutes']) && (int)$pattern['minimumDurationMinutes'] !== $minimumDurationMinutes) return [];
         return $pattern;
@@ -7428,7 +7422,7 @@ class SmartBatteryOptimizer extends IPSModule
         $durations = [];
         $energies = [];
         foreach ($stored as $day) {
-            if (!is_array($day) || (int)($day['version'] ?? 0) !== 12) continue;
+            if (!is_array($day) || (int)($day['version'] ?? 0) !== 13) continue;
             foreach (($day['details'] ?? []) as $detail) {
                 if (!is_array($detail)) continue;
                 $powerKW = max(0.0, (float)($detail['chargePowerW'] ?? 0.0) / 1000.0);
@@ -7448,8 +7442,6 @@ class SmartBatteryOptimizer extends IPSModule
                 'samples' => 0,
                 'thresholdKW' => max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW')),
                 'maxEnergyKWh' => max(0.1, $this->ReadPropertyFloat('EVChargingMaxEnergyKWh')),
-                'minRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW')),
-                'expectedRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingExpectedRiseKW')),
                 'riseToleranceKW' => max(0.2, $this->ReadPropertyFloat('EVChargingRiseToleranceKW')),
                 'minimumDurationMinutes' => max(1, $this->ReadPropertyInteger('EVChargingMinimumDurationMinutes')),
                 'updated' => time()
@@ -7463,8 +7455,6 @@ class SmartBatteryOptimizer extends IPSModule
             'samples' => count($powers),
             'thresholdKW' => max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW')),
             'maxEnergyKWh' => max(0.1, $this->ReadPropertyFloat('EVChargingMaxEnergyKWh')),
-            'minRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW')),
-            'expectedRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingExpectedRiseKW')),
             'riseToleranceKW' => max(0.2, $this->ReadPropertyFloat('EVChargingRiseToleranceKW')),
             'minimumDurationMinutes' => max(1, $this->ReadPropertyInteger('EVChargingMinimumDurationMinutes')),
             'chargePowerKW' => round($this->Median($powers), 3),

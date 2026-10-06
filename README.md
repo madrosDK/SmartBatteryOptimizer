@@ -1,3 +1,5 @@
+> Version 1.10.60 / Build 231: Autoladung wird nur noch erkannt, wenn Startanstieg und Gesamtleistung zur bekannten Fahrzeug-Ladeleistung passen; diese Ladeleistung ist zugleich der feste Abzugswert.
+
 > Version 1.10.59 / Build 230: Erkannte Autoladungen werden mit dem eingestellten Plausibilitätswert als fester Ladeleistung aus dem Lastprofil herausgerechnet; neue einstellbare Maximalenergie pro Ladevorgang, Standard 14,4 kWh.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
@@ -17,7 +19,7 @@ IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose,
 
 ## Version
 
-**1.10.59 / Build 230**
+**1.10.60 / Build 231**
 - Plausibilitätswert ist nach erkannter Startflanke zugleich die feste Fahrzeug-Ladeleistung.
 - Neue Maximalenergie pro Autoladung, Standard 14,4 kWh; danach endet der Ladeanteil-Abzug auch bei längerer Hochlastphase.
 - Mindestdauer und separat schaltbare zukünftige Erkennung bleiben erhalten.
