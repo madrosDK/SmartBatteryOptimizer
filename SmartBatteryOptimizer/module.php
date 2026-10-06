@@ -558,7 +558,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.56';
+        $currentModuleVersion = '1.10.57';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -689,7 +689,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.56',
+            'moduleVersion' => '1.10.57',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1699,6 +1699,7 @@ class SmartBatteryOptimizer extends IPSModule
                 'sessions' => 0,
                 'kWh' => 0.0,
                 'rawEdges' => 0,
+                'rawTrackedSessions' => 0,
                 'rawRows' => 0,
                 'daysWithRawData' => 0,
                 'maxRawRiseW' => 0.0,
@@ -1758,6 +1759,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $sessionCount = (int)($ev['sessions'] ?? 0);
                 $kWh = max(0.0, (float)($ev['kWh'] ?? 0.0));
                 $state['rawEdges'] = (int)($state['rawEdges'] ?? 0) + max(0, (int)($ev['rawEdges'] ?? 0));
+                $state['rawTrackedSessions'] = (int)($state['rawTrackedSessions'] ?? 0) + max(0, (int)($ev['rawTrackedSessions'] ?? 0));
                 $dayRawRows = max(0, (int)($ev['rawScannedRows'] ?? 0));
                 $state['rawRows'] = (int)($state['rawRows'] ?? 0) + $dayRawRows;
                 if ($dayRawRows > 0) $state['daysWithRawData'] = (int)($state['daysWithRawData'] ?? 0) + 1;
@@ -1768,7 +1770,7 @@ class SmartBatteryOptimizer extends IPSModule
                 }
                 if ($kWh > 0.01) {
                     $stored[$dateKey] = [
-                        'version' => 9,
+                        'version' => 10,
                         'thresholdKW' => max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW')),
                         'minRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW')),
                         'expectedRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingExpectedRiseKW')),
@@ -1810,6 +1812,7 @@ class SmartBatteryOptimizer extends IPSModule
                 . ' · ' . $processed . '/' . $total . ' Tage (' . $pct . ' %)'
                 . ' · ' . (int)($state['sessions'] ?? 0) . ' Ladungen'
                 . ' · ' . (int)($state['rawEdges'] ?? 0) . ' Roh-Flanken'
+                . ' · ' . (int)($state['rawTrackedSessions'] ?? 0) . ' Roh-Phasen'
                 . ' · ' . (int)($state['rawRows'] ?? 0) . ' Rohwerte'
                 . ' · max. Anstieg ' . number_format(((float)($state['maxRawRiseW'] ?? 0.0)) / 1000.0, 2, ',', '.') . ' kW'
                 . ((int)($state['latestRawEdgeTs'] ?? 0) > 0 ? ' (letzte Flanke ' . date('d.m. H:i:s', (int)$state['latestRawEdgeTs']) . ')' : '')
@@ -1853,6 +1856,7 @@ class SmartBatteryOptimizer extends IPSModule
                     . number_format((float)($state['kWh'] ?? 0.0), 2, ',', '.') . ' kWh Ladeanteil.'
                     . ' Verbrauchsvariable #' . (int)($state['varID'] ?? 0) . '.'
                     . ' Roh-Flanken im Archiv: ' . (int)($state['rawEdges'] ?? 0)
+                    . ', daraus Roh-Phasen: ' . (int)($state['rawTrackedSessions'] ?? 0)
                     . ', gelesene Rohwerte: ' . (int)($state['rawRows'] ?? 0)
                     . ' an ' . (int)($state['daysWithRawData'] ?? 0) . ' Tagen'
                     . ', größter Roh-Anstieg: ' . number_format(((float)($state['maxRawRiseW'] ?? 0.0)) / 1000.0, 2, ',', '.') . ' kW'
@@ -6422,7 +6426,8 @@ class SmartBatteryOptimizer extends IPSModule
             'hourlyWh' => array_fill(0, 24, 0.0),
             'sessions' => 0,
             'kWh' => 0.0,
-            'rawEdges' => 0
+            'rawEdges' => 0,
+            'rawTrackedSessions' => 0
         ];
         if ($archiveID <= 0 || $varID <= 0 || $dayStart <= 0) return $empty;
 
@@ -6442,7 +6447,7 @@ class SmartBatteryOptimizer extends IPSModule
         $evRiseToleranceKW = max(0.2, $this->ReadPropertyFloat('EVChargingRiseToleranceKW'));
         $dateKey = date('Y-m-d', $dayStart);
         $cacheKey = $dateKey . '|' . $archiveID . '|' . $varID
-            . '|v9|threshold=' . number_format($evThresholdKW, 3, '.', '')
+            . '|v10|threshold=' . number_format($evThresholdKW, 3, '.', '')
             . '|rise=' . number_format($evMinRiseKW, 3, '.', '')
             . '|expected=' . number_format($evExpectedRiseKW, 3, '.', '')
             . '|tolerance=' . number_format($evRiseToleranceKW, 3, '.', '')
@@ -6455,7 +6460,7 @@ class SmartBatteryOptimizer extends IPSModule
             $stored = json_decode($this->ReadAttributeString('EVArchiveDetectionsJSON'), true);
             $saved = is_array($stored) ? ($stored[$dateKey] ?? null) : null;
             if (is_array($saved)
-                && (int)($saved['version'] ?? 0) === 9
+                && (int)($saved['version'] ?? 0) === 10
                 && abs((float)($saved['thresholdKW'] ?? 0.0) - $evThresholdKW) < 0.0001
                 && abs((float)($saved['minRiseKW'] ?? 0.0) - $evMinRiseKW) < 0.0001
                 && abs((float)($saved['expectedRiseKW'] ?? 0.0) - $evExpectedRiseKW) < 0.0001
@@ -6498,20 +6503,31 @@ class SmartBatteryOptimizer extends IPSModule
             if (is_array($diag)) $rawScanStats = array_merge($rawScanStats, $diag);
         }
 
+        // Die explizite Archivsuche darf NICHT von Minutenaggregaten abhängen.
+        // Die Roh-Flanken wurden bereits direkt aus HousePowerVariable gelesen; deshalb
+        // werden daraus jetzt auch die vollständigen Ladephasen direkt aus Rohwerten
+        // verfolgt. Genau der alte Frühabbruch bei fehlenden 1-Minuten-Aggregaten führte
+        // zu "Roh-Flanken gefunden, aber 0 Ladungen".
+        $rawSessions = [];
+        if ($forceRefresh && count($rawEdges) > 0) {
+            $rawSessions = $this->BuildEVChargingSessionsFromRawEdges($archiveID, $varID, $rawEdges, $readStart, $readEnd);
+        }
+
         $points = $this->GetMinuteConsumptionPowerPoints($archiveID, $varID, $readStart, $readEnd);
-        if (count($points) < 2) {
+        $sessions = count($points) >= 2
+            ? $this->DetectEVChargingSessions($points, $readStart, $readEnd, $pattern)
+            : [];
+        if (count($rawSessions) > 0) {
+            $sessions = $this->MergeEVChargingSessions($sessions, $rawSessions);
+        }
+        if (count($points) < 2 && count($sessions) === 0) {
             $empty['rawEdges'] = count($rawEdges);
+            $empty['rawTrackedSessions'] = count($rawSessions);
             $empty['rawEdgeTimestamps'] = array_values(array_map(static fn($edge) => (int)($edge['start'] ?? 0), $rawEdges));
             $empty['rawScannedRows'] = (int)($rawScanStats['rows'] ?? 0);
             $empty['maxRawRiseW'] = (float)($rawScanStats['maxRiseW'] ?? 0.0);
             $empty['latestRawValueTs'] = (int)($rawScanStats['latestTs'] ?? 0);
             return $empty;
-        }
-
-        $sessions = $this->DetectEVChargingSessions($points, $readStart, $readEnd, $pattern);
-        if ($forceRefresh && count($rawEdges) > 0) {
-            $rawSessions = $this->BuildEVChargingSessionsFromRawEdges($rawEdges, $points, $readStart, $readEnd);
-            $sessions = $this->MergeEVChargingSessions($sessions, $rawSessions);
         }
 
         if (count($sessions) > 0) {
@@ -6523,6 +6539,11 @@ class SmartBatteryOptimizer extends IPSModule
         }
         if (count($sessions) === 0) {
             $empty['rawEdges'] = count($rawEdges);
+            $empty['rawTrackedSessions'] = count($rawSessions);
+            $empty['rawEdgeTimestamps'] = array_values(array_map(static fn($edge) => (int)($edge['start'] ?? 0), $rawEdges));
+            $empty['rawScannedRows'] = (int)($rawScanStats['rows'] ?? 0);
+            $empty['maxRawRiseW'] = (float)($rawScanStats['maxRiseW'] ?? 0.0);
+            $empty['latestRawValueTs'] = (int)($rawScanStats['latestTs'] ?? 0);
             if ($isPastDay) {
                 $cache = json_decode((string)$this->GetBuffer('ConsumptionEVAnalysisCache'), true);
                 if (!is_array($cache)) $cache = [];
@@ -6560,9 +6581,26 @@ class SmartBatteryOptimizer extends IPSModule
                 'kWh' => max(0.0, (float)($session['extraKWh'] ?? 0.0))
             ];
 
-            // Den tatsächlichen Zusatzanteil minutenweise gegen die unmittelbar vor
-            // Ladebeginn ermittelte Grundlast integrieren. Dadurch wird nicht pauschal
-            // eine konstante Ladeleistung abgezogen, sondern exakt nur der erkannte Anteil.
+            // Bei einer direkt aus Rohwerten verfolgten Ladephase wurde der Ladeanteil
+            // bereits sekundengenau und stundenweise integriert. Dies ist der bevorzugte
+            // Pfad der expliziten Archivsuche und funktioniert auch ohne Minutenaggregate.
+            $rawHourly = is_array($session['hourlyWhByKey'] ?? null) ? $session['hourlyWhByKey'] : [];
+            if (count($rawHourly) > 0) {
+                $dayPrefix = date('Y-m-d-', $dayStart);
+                foreach ($rawHourly as $hourKey => $wh) {
+                    if (strpos((string)$hourKey, $dayPrefix) !== 0) continue;
+                    $hour = (int)substr((string)$hourKey, -2);
+                    if ($hour < 0 || $hour > 23) continue;
+                    $valueWh = max(0.0, (float)$wh);
+                    $hourlyEVWh[$hour] += $valueWh;
+                    $evWh += $valueWh;
+                }
+                continue;
+            }
+
+            // Fallback für die bestehende Live-/Minuten-Erkennung: den tatsächlichen
+            // Zusatzanteil minutenweise gegen die unmittelbar vor Ladebeginn ermittelte
+            // Grundlast integrieren.
             for ($i = 0; $i < $pointCount; $i++) {
                 $segStart = max($overlapStart, (int)($points[$i]['ts'] ?? 0));
                 $segEnd = ($i + 1 < $pointCount)
@@ -6601,6 +6639,7 @@ class SmartBatteryOptimizer extends IPSModule
             'kWh' => $evWh / 1000.0,
             'details' => $details,
             'rawEdges' => count($rawEdges),
+            'rawTrackedSessions' => count($rawSessions),
             'rawEdgeTimestamps' => array_values(array_map(static fn($edge) => (int)($edge['start'] ?? 0), $rawEdges)),
             'rawScannedRows' => (int)($rawScanStats['rows'] ?? 0),
             'maxRawRiseW' => (float)($rawScanStats['maxRiseW'] ?? 0.0),
@@ -6727,9 +6766,11 @@ class SmartBatteryOptimizer extends IPSModule
         return $edges;
     }
 
-    private function BuildEVChargingSessionsFromRawEdges(array $edges, array $minutePoints, int $rangeStart, int $rangeEnd): array
+    private function BuildEVChargingSessionsFromRawEdges(int $archiveID, int $varID, array $edges, int $rangeStart, int $rangeEnd): array
     {
-        if (count($edges) === 0 || count($minutePoints) < 2) return [];
+        if ($archiveID <= 0 || $varID <= 0 || count($edges) === 0 || $rangeEnd <= $rangeStart) return [];
+
+        usort($edges, static fn($a, $b) => ((int)($a['start'] ?? 0)) <=> ((int)($b['start'] ?? 0)));
 
         $sessions = [];
         $minRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingMinRiseKW') * 1000.0);
@@ -6737,78 +6778,152 @@ class SmartBatteryOptimizer extends IPSModule
         $toleranceW = max(200.0, $this->ReadPropertyFloat('EVChargingRiseToleranceKW') * 1000.0);
         $minDurationS = 5 * 60;
         $maxDurationS = 8 * 3600;
-        $returnBandW = max(1200.0, min(2500.0, $expectedRiseW * 0.30));
+        $lowConfirmS = 60;
+        $blockSeconds = 15 * 60;
 
         foreach ($edges as $edge) {
             $startTs = (int)($edge['start'] ?? 0);
             $baselineW = max(0.0, (float)($edge['baselineW'] ?? 0.0));
             $initialRiseW = max(0.0, (float)($edge['riseW'] ?? 0.0));
             if ($startTs <= 0 || $startTs < $rangeStart || $startTs >= $rangeEnd) continue;
+            if ($initialRiseW < $minRiseW) continue;
 
-            // Suche den Minutenpunkt direkt vor/um den Rohwert-Start.
-            $startIndex = 0;
-            for ($i = 0; $i < count($minutePoints); $i++) {
-                if ((int)($minutePoints[$i]['ts'] ?? 0) <= $startTs) $startIndex = $i;
-                else break;
-            }
-
-            $highSeconds = 0;
-            $endTs = 0;
-            $endIndex = 0;
-            $lowSince = 0;
-            $highExtras = [];
-            $sessionLimit = min($rangeEnd, $startTs + $maxDurationS);
-
-            for ($i = $startIndex; $i < count($minutePoints); $i++) {
-                $pTs = (int)($minutePoints[$i]['ts'] ?? 0);
-                if ($pTs < $startTs) continue;
-                if ($pTs >= $sessionLimit) break;
-                $nextTs = ($i + 1 < count($minutePoints))
-                    ? min($sessionLimit, (int)($minutePoints[$i + 1]['ts'] ?? $sessionLimit))
-                    : $sessionLimit;
-                if ($nextTs <= $pTs) continue;
-
-                $avgW = max(0.0, (float)($minutePoints[$i]['value'] ?? 0.0));
-                $maxW = max($avgW, (float)($minutePoints[$i]['max'] ?? $avgW));
-                $minW = max(0.0, (float)($minutePoints[$i]['min'] ?? $avgW));
-                $extraW = max(0.0, $avgW - $baselineW);
-
-                if ($extraW >= max(1800.0, $minRiseW * 0.45) || $maxW >= $baselineW + $minRiseW * 0.70) {
-                    $highSeconds += ($nextTs - max($pTs, $startTs));
-                    if ($extraW > 500.0) $highExtras[] = $extraW;
-                    $lowSince = 0;
-                } elseif ($avgW <= $baselineW + $returnBandW || $minW <= $baselineW + max(800.0, $returnBandW * 0.75)) {
-                    if ($lowSince <= 0) $lowSince = $pTs;
-                    if (($pTs - $startTs) >= $minDurationS && ($nextTs - $lowSince) >= 60) {
-                        $endTs = max($startTs + $minDurationS, $lowSince);
-                        $endIndex = $i;
-                        break;
-                    }
-                } else {
-                    $lowSince = 0;
+            // Eine zweite Flanke innerhalb eines bereits gefundenen Ladevorgangs ist kein
+            // neuer Start. Das ist z. B. bei mehrstufigem Hochfahren des Onboard-Laders
+            // wichtig (2,5 -> 6,8 -> 11,6 kW innerhalb weniger Sekunden).
+            $insideExisting = false;
+            foreach ($sessions as $existing) {
+                if ($startTs >= (int)($existing['start'] ?? 0) && $startTs <= (int)($existing['end'] ?? 0) + 120) {
+                    $insideExisting = true;
+                    break;
                 }
             }
+            if ($insideExisting) continue;
 
-            if ($highSeconds < $minDurationS || $endTs <= $startTs) continue;
-            $usable = array_values(array_filter($highExtras, static fn($v) => $v > 500.0));
-            $chargePowerW = count($usable) > 0 ? $this->Median($usable) : $initialRiseW;
-            if ($chargePowerW < max(1500.0, $minRiseW * 0.55)) continue;
-
+            // Ab der echten Roh-Flanke ausschließlich Rohwerte verfolgen. Minutenaggregate
+            // sind hier bewusst nicht mehr Teil der Trefferentscheidung. Dadurch kann eine
+            // eindeutig gefundene Startflanke nicht nachträglich durch eine geglättete
+            // Minutenprüfung wieder verworfen werden.
+            $activeExtraW = max(1800.0, min($minRiseW * 0.55, $expectedRiseW * 0.45));
+            $returnExtraW = max(900.0, min(1800.0, $expectedRiseW * 0.25));
+            $scanEnd = min($rangeEnd, $startTs + $maxDurationS);
+            $cursor = max($rangeStart, $startTs - 5);
+            $endTs = 0;
+            $lowSince = 0;
+            $highSeconds = 0.0;
             $extraWh = 0.0;
-            $capW = max($minRiseW, $expectedRiseW + $toleranceW);
-            for ($i = $startIndex; $i < count($minutePoints); $i++) {
-                $segStart = max($startTs, (int)($minutePoints[$i]['ts'] ?? 0));
-                if ($segStart >= $endTs) break;
-                $segEnd = ($i + 1 < count($minutePoints))
-                    ? min($endTs, (int)($minutePoints[$i + 1]['ts'] ?? $endTs))
-                    : $endTs;
-                if ($segEnd <= $segStart) continue;
-                $extraW = max(0.0, (float)($minutePoints[$i]['value'] ?? 0.0) - $baselineW);
-                $extraW = min($extraW, $capW);
-                $extraWh += $extraW * (($segEnd - $segStart) / 3600.0);
+            $hourlyWhByKey = [];
+            $highExtras = [];
+            $prevTs = 0;
+            $prevW = 0.0;
+            $lastSeenTs = 0;
+            $lastHighTs = 0;
+            $guard = 0;
+
+            while ($cursor < $scanEnd && $guard < 1000 && $endTs <= 0) {
+                $guard++;
+                $blockEnd = min($scanEnd, $cursor + $blockSeconds);
+                $rows = $this->GetRawConsumptionPowerPointsWindow($archiveID, $varID, $cursor, $blockEnd, 0);
+                if (count($rows) === 0) {
+                    $cursor = $blockEnd;
+                    continue;
+                }
+                usort($rows, static fn($a, $b) => ((int)($a['ts'] ?? 0)) <=> ((int)($b['ts'] ?? 0)));
+
+                foreach ($rows as $row) {
+                    $ts = (int)($row['ts'] ?? 0);
+                    $valueW = max(0.0, (float)($row['value'] ?? 0.0));
+                    if ($ts < $startTs) {
+                        $prevTs = $ts;
+                        $prevW = $valueW;
+                        continue;
+                    }
+                    if ($lastSeenTs > 0 && $ts <= $lastSeenTs) continue;
+                    $lastSeenTs = $ts;
+
+                    if ($prevTs <= 0) {
+                        $prevTs = $ts;
+                        $prevW = $valueW;
+                        continue;
+                    }
+
+                    $segStart = max($startTs, $prevTs);
+                    $segEnd = min($scanEnd, $ts);
+                    if ($segEnd > $segStart) {
+                        $dt = $segEnd - $segStart;
+                        $prevExtraW = max(0.0, $prevW - $baselineW);
+                        $capW = max($minRiseW, $expectedRiseW + $toleranceW);
+                        $integratedExtraW = min($prevExtraW, $capW);
+                        $extraWh += $integratedExtraW * ($dt / 3600.0);
+                        if ($integratedExtraW > 0.0) {
+                            $hourCursor = $segStart;
+                            while ($hourCursor < $segEnd) {
+                                $hourEnd = min($segEnd, strtotime(date('Y-m-d H:00:00', $hourCursor)) + 3600);
+                                if ($hourEnd <= $hourCursor) break;
+                                $hourKey = date('Y-m-d-H', $hourCursor);
+                                if (!isset($hourlyWhByKey[$hourKey])) $hourlyWhByKey[$hourKey] = 0.0;
+                                $hourlyWhByKey[$hourKey] += $integratedExtraW * (($hourEnd - $hourCursor) / 3600.0);
+                                $hourCursor = $hourEnd;
+                            }
+                        }
+                        if ($prevExtraW >= $activeExtraW) {
+                            $highSeconds += $dt;
+                            $lastHighTs = $segEnd;
+                            if (count($highExtras) < 2000) $highExtras[] = $prevExtraW;
+                        }
+                    }
+
+                    $extraW = max(0.0, $valueW - $baselineW);
+                    if ($extraW <= $returnExtraW) {
+                        if ($lowSince <= 0) $lowSince = $ts;
+                        if (($ts - $startTs) >= $minDurationS && ($ts - $lowSince) >= $lowConfirmS) {
+                            $endTs = $lowSince;
+                            break;
+                        }
+                    } else {
+                        // Erst eine echte Rückkehr in die Nähe der Grundlast darf die
+                        // Ladephase beenden. Zwischenstufen oder normale Hauslast während
+                        // des Ladens setzen die Niedrigphase zurück.
+                        $lowSince = 0;
+                        if ($extraW >= $activeExtraW) {
+                            $lastHighTs = $ts;
+                            if (count($highExtras) < 2000) $highExtras[] = $extraW;
+                        }
+                    }
+
+                    $prevTs = $ts;
+                    $prevW = $valueW;
+                }
+                unset($rows);
+                $cursor = $blockEnd;
             }
-            $extraKWh = $extraWh / 1000.0;
-            if ($extraKWh < 0.25 || $extraKWh > 20.0) continue;
+
+            // Bei historischen Daten sollte normalerweise eine Rückkehr zur Grundlast
+            // vorhanden sein. Falls die Aufzeichnung kurz danach endet, aber bereits eine
+            // klare, lange Hochlastphase vorliegt, bis zum letzten sicheren Hochlastwert
+            // übernehmen statt einen eindeutigen Ladevorgang komplett zu verwerfen.
+            if ($endTs <= $startTs && $lastHighTs > $startTs && ($lastHighTs - $startTs) >= $minDurationS) {
+                $endTs = $lastHighTs;
+            }
+
+            $durationS = $endTs - $startTs;
+            if ($durationS < $minDurationS || $highSeconds < 120) continue;
+
+            $usable = array_values(array_filter($highExtras, static fn($v) => $v >= 1000.0));
+            $chargePowerW = count($usable) > 0 ? $this->Median($usable) : $initialRiseW;
+            // Zusätzliche Hausverbraucher während des Ladens dürfen die gelernte
+            // Fahrzeugleistung nicht nach oben ziehen. Die typische konfigurierte
+            // Ladeleistung plus Toleranz ist deshalb die Obergrenze für den Abzug.
+            $chargePowerW = min($chargePowerW, max($minRiseW, $expectedRiseW + $toleranceW));
+            if ($chargePowerW < max(1500.0, $minRiseW * 0.50)) continue;
+
+            $extraKWh = max(0.0, $extraWh / 1000.0);
+            if ($extraKWh < 0.20) {
+                // Falls der letzte Integrationsabschnitt wegen Blockgrenze fehlt, aus
+                // Dauer und robuster Ladeleistung konservativ abschätzen.
+                $extraKWh = ($chargePowerW * ($durationS / 3600.0)) / 1000.0;
+            }
+            if ($extraKWh < 0.20 || $extraKWh > 22.0) continue;
 
             $sessions[] = [
                 'start' => $startTs,
@@ -6817,10 +6932,11 @@ class SmartBatteryOptimizer extends IPSModule
                 'chargePowerW' => $chargePowerW,
                 'initialRiseW' => $initialRiseW,
                 'plateauCoverage' => 1.0,
-                'confirmedDrop' => true,
-                'patternMatch' => abs($chargePowerW - $expectedRiseW) <= max($toleranceW, $expectedRiseW * 0.35),
+                'confirmedDrop' => $lowSince > 0 && $endTs === $lowSince,
+                'patternMatch' => abs($chargePowerW - $expectedRiseW) <= max($toleranceW, $expectedRiseW * 0.40),
                 'extraKWh' => $extraKWh,
-                'edgeType' => 'raw-archive-rise'
+                'hourlyWhByKey' => $hourlyWhByKey,
+                'edgeType' => 'raw-rise-tracked'
             ];
         }
         return $sessions;
@@ -7296,7 +7412,7 @@ class SmartBatteryOptimizer extends IPSModule
         $durations = [];
         $energies = [];
         foreach ($stored as $day) {
-            if (!is_array($day) || (int)($day['version'] ?? 0) !== 9) continue;
+            if (!is_array($day) || (int)($day['version'] ?? 0) !== 10) continue;
             foreach (($day['details'] ?? []) as $detail) {
                 if (!is_array($detail)) continue;
                 $powerKW = max(0.0, (float)($detail['chargePowerW'] ?? 0.0) / 1000.0);

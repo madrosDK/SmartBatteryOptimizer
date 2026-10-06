@@ -1,3 +1,11 @@
+## 1.10.57 / Build 228
+- Autoladungs-Archivsuche nutzt gefundene Roh-Flanken jetzt direkt als Ladebeginn; die nachgelagerte Trefferentscheidung hängt nicht mehr von Minutenaggregaten ab.
+- Nach einer Roh-Flanke wird Variable `HousePowerVariable` (z. B. #50354) ausschließlich in kleinen 15-Minuten-Rohwertblöcken vorwärts verfolgt, bis die Zusatzlast mindestens 60 s wieder nahe der vorherigen Grundlast liegt.
+- Eindeutige Ladephasen werden nicht mehr durch starre Plateau-/Minutenbedingungen verworfen. Mehrstufige Starts bleiben ein gemeinsamer Ladevorgang.
+- Erkannter Zusatzverbrauch wird weiterhin aus dem Lastprofil abgezogen und im historischen Diagramm orange dargestellt; das originale Archiv bleibt unverändert.
+- EV-Treffercache auf Version 10 angehoben, damit frühere 0-Treffer neu ausgewertet werden.
+- Preis-, PV-, Einspeise-, Dispatch- und sonstige funktionierende Logik unverändert.
+
 ## 1.10.56 / Build 227
 - Autoladungs-Archivsuche prüft ausdrücklich die konfigurierte `HousePowerVariable` und zeigt deren ID im Suchstatus an; beim Nutzer ist dies Variable 50354.
 - Kritischen Frühabbruch behoben: Die direkte Rohwertsuche läuft bei `Autoladungen im Archiv suchen` jetzt immer, auch wenn die 1-Minuten-Aggregation keine verwertbaren Punkte liefert.
