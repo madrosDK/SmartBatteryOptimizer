@@ -1,3 +1,10 @@
+## 1.10.56 / Build 227
+- Autoladungs-Archivsuche prüft ausdrücklich die konfigurierte `HousePowerVariable` und zeigt deren ID im Suchstatus an; beim Nutzer ist dies Variable 50354.
+- Kritischen Frühabbruch behoben: Die direkte Rohwertsuche läuft bei `Autoladungen im Archiv suchen` jetzt immer, auch wenn die 1-Minuten-Aggregation keine verwertbaren Punkte liefert.
+- Rohwertsuche von Stundenblöcken mit 5.000er-Limit auf direkte 30-Minuten-Blöcke ohne künstliches 5.000er-Limit umgestellt; Sekundenflanken können dadurch nicht mehr durch eine Vorselektion oder Abfragelimitierung verloren gehen.
+- Suchstatus zeigt zusätzlich gelesene Rohwerte und den größten tatsächlich im Archiv gesehenen Leistungsanstieg in kW.
+- Lastprofil, Preis-, PV-, Einspeise- und Dispatch-Logik ansonsten unverändert.
+
 ## 1.10.55 / Build 226
 - Autoladungs-Archivsuche entfernt die fehleranfällige Aggregat-Vorauswahl vollständig: jede Stunde wird einzeln als kleines Rohwertfenster geprüft.
 - Direkte Startflanken von mindestens dem konfigurierten Mindestanstieg werden aus den originalen Werten erkannt, z. B. 1,27→7,32 kW, 1,99→7,24 kW und 1,80→7,30 kW innerhalb 1–2 s.
