@@ -570,3 +570,7 @@ Die Einspeiseausführung wird anhand der tatsächlich am Netz gemessenen Zielene
 
 ### 1.9.91 – Wochen-/Monatsansicht Einspeise-Statistik
 Die Einspeise-Statistik kann zwischen Woche (Montag bis Sonntag) und Monat umgeschaltet werden. Navigation, Zeitraumüberschrift und Summen folgen der gewählten Ansicht; die Auswahl bleibt in der Visualisierung gespeichert.
+
+
+### Sichtbare Instanzansicht ab 1.10.63
+Die normale Instanzansicht zeigt nur noch die fachlich relevanten Prognose-, Speicher- und Einspeisewerte. Technische Diagnosevariablen bleiben aus Kompatibilitätsgründen erhalten, sind aber ausgeblendet. Abschnittsüberschriften in der HTML-Übersicht sind reine HTML-Elemente und keine Dummy-Instanzen.

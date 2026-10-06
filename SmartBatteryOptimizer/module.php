@@ -422,6 +422,29 @@ class SmartBatteryOptimizer extends IPSModule
         if ($minimumPriceVarID > 0) @IPS_SetName($minimumPriceVarID, 'Mindestpreis Einspeisung');
         $currentPriceVarID = (int)@$this->GetIDForIdent('CurrentPrice');
         if ($currentPriceVarID > 0) @IPS_SetVariableCustomProfile($currentPriceVarID, 'SBO.PriceCt');
+
+        // v1.10.63: sichtbare Instanzansicht auf die fachlich relevanten Werte reduzieren.
+        // Technische/alte Diagnosevariablen bleiben aus Kompatibilitaetsgruenden bestehen,
+        // werden aber nicht mehr in der normalen Ansicht angezeigt.
+        $uiNames = [
+            'NightConsumptionForecast' => 'Verbrauch bis PV-Morgen',
+            'ConsumptionLearningStatus' => 'Lastprofil'
+        ];
+        foreach ($uiNames as $ident => $name) {
+            $id = (int)@$this->GetIDForIdent($ident);
+            if ($id > 0) @IPS_SetName($id, $name);
+        }
+        $normalHidden = [
+            'PVCalibrationStatus',
+            'NightConsumptionSource',
+            'ValidNightSamples',
+            'PVPeakPowerTomorrow',
+            'PredictedMaxGridExportTomorrow'
+        ];
+        foreach ($normalHidden as $ident) {
+            $id = (int)@$this->GetIDForIdent($ident);
+            if ($id > 0) @IPS_SetHidden($id, true);
+        }
         $this->InitializeFeedInFactorMemory();
         $this->EnsurePVSurfaceStableIDs();
 
@@ -487,6 +510,7 @@ class SmartBatteryOptimizer extends IPSModule
         $lastAppliedDebugMode = $this->ReadAttributeBoolean('LastAppliedDebugMode');
         $debugModeChanged = ($debugMode !== $lastAppliedDebugMode);
         @IPS_SetHidden($this->GetIDForIdent('ProviderDebugHTML'), !$debugMode);
+        @IPS_SetHidden($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), !$debugMode);
         if (!$debugMode) SetValue($this->GetIDForIdent('ProviderDebugHTML'), '');
         if ($debugModeChanged) {
             $this->WriteAttributeBoolean('LastAppliedDebugMode', $debugMode);
@@ -561,7 +585,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.62';
+        $currentModuleVersion = '1.10.63';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -692,7 +716,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.62',
+            'moduleVersion' => '1.10.63',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,

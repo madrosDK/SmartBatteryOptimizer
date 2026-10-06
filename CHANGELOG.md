@@ -1,3 +1,10 @@
+## 1.10.63 / Build 234
+- Normale Instanzansicht auf die fachlich relevanten Werte reduziert; technische Diagnosevariablen bleiben intern erhalten und werden nicht gelöscht.
+- `Prognose Nachtverbrauch` in `Verbrauch bis PV-Morgen` umbenannt; `Verbrauchsprofil Lernen` in `Lastprofil` umbenannt.
+- `PV Kalibrierung`, `Quelle Nachtverbrauch`, `Gültige Nächte`, `PV Spitzenleistung morgen Prognose` und `Max. erwartete Netzeinspeisung morgen ohne Batterie` in der normalen Ansicht ausgeblendet.
+- PV-Kalibrierungsdiagnose wird nur noch im Debug-Modus angezeigt. Keine Berechnungs-, Preis-, PV-, Dispatch- oder Planungslogik geändert.
+- Abschnittsüberschriften der HTML-Übersicht bleiben reine HTML-Elemente; es werden keine zusätzlichen Dummy-Instanzen angelegt.
+
 ## 1.10.62 / Build 233
 - Korrektur der +/-10-%-Toleranz zwischen freigegebener und geplanter Einspeisemenge.
 - Ein verbindliches Preisintervall darf bei gestiegener Freigabe innerhalb desselben Preisblocks früher beginnen, statt die Planmenge zu klein zu lassen.
