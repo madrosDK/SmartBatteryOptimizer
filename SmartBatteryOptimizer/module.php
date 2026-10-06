@@ -558,7 +558,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.54';
+        $currentModuleVersion = '1.10.55';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -689,7 +689,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.54',
+            'moduleVersion' => '1.10.55',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1754,9 +1754,12 @@ class SmartBatteryOptimizer extends IPSModule
                 $sessionCount = (int)($ev['sessions'] ?? 0);
                 $kWh = max(0.0, (float)($ev['kWh'] ?? 0.0));
                 $state['rawEdges'] = (int)($state['rawEdges'] ?? 0) + max(0, (int)($ev['rawEdges'] ?? 0));
+                foreach (($ev['rawEdgeTimestamps'] ?? []) as $edgeTs) {
+                    $state['latestRawEdgeTs'] = max((int)($state['latestRawEdgeTs'] ?? 0), (int)$edgeTs);
+                }
                 if ($kWh > 0.01) {
                     $stored[$dateKey] = [
-                        'version' => 8,
+                        'version' => 9,
                         'thresholdKW' => max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW')),
                         'minRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingMinRiseKW')),
                         'expectedRiseKW' => max(0.5, $this->ReadPropertyFloat('EVChargingExpectedRiseKW')),
@@ -1797,6 +1800,7 @@ class SmartBatteryOptimizer extends IPSModule
             $progress = 'Autoladungs-Archivsuche: ' . $processed . '/' . $total . ' Tage (' . $pct . ' %)'
                 . ' · ' . (int)($state['sessions'] ?? 0) . ' Ladungen'
                 . ' · ' . (int)($state['rawEdges'] ?? 0) . ' Roh-Flanken'
+                . ((int)($state['latestRawEdgeTs'] ?? 0) > 0 ? ' (letzte ' . date('d.m. H:i:s', (int)$state['latestRawEdgeTs']) . ')' : '')
                 . ' · ' . number_format((float)($state['kWh'] ?? 0.0), 2, ',', '.') . ' kWh erkannt.';
             SetValue($this->GetIDForIdent('EVArchiveSearchStatus'), $progress);
             $this->SetActionFeedback($progress);
@@ -1835,7 +1839,8 @@ class SmartBatteryOptimizer extends IPSModule
                     . (int)($state['sessions'] ?? 0) . ' Ladungen an '
                     . (int)($state['foundDays'] ?? 0) . ' Tagen, '
                     . number_format((float)($state['kWh'] ?? 0.0), 2, ',', '.') . ' kWh Ladeanteil.'
-                    . ' Roh-Flanken im Archiv: ' . (int)($state['rawEdges'] ?? 0) . '.'
+                    . ' Roh-Flanken im Archiv: ' . (int)($state['rawEdges'] ?? 0)
+                    . ((int)($state['latestRawEdgeTs'] ?? 0) > 0 ? ' (letzte ' . date('d.m.Y H:i:s', (int)$state['latestRawEdgeTs']) . ')' : '') . '.'
                     . ($latest > 0 ? ' Letzter Fund: ' . date('d.m.Y H:i', $latest) . '.' : '')
                     . ((int)($pattern['samples'] ?? 0) > 0 ? ' Gelerntes Lademuster: ca. ' . number_format((float)($pattern['chargePowerKW'] ?? 0.0), 1, ',', '.') . ' kW Zusatzlast.' : '')
                     . $profileText;
@@ -6421,7 +6426,7 @@ class SmartBatteryOptimizer extends IPSModule
         $evRiseToleranceKW = max(0.2, $this->ReadPropertyFloat('EVChargingRiseToleranceKW'));
         $dateKey = date('Y-m-d', $dayStart);
         $cacheKey = $dateKey . '|' . $archiveID . '|' . $varID
-            . '|v8|threshold=' . number_format($evThresholdKW, 3, '.', '')
+            . '|v9|threshold=' . number_format($evThresholdKW, 3, '.', '')
             . '|rise=' . number_format($evMinRiseKW, 3, '.', '')
             . '|expected=' . number_format($evExpectedRiseKW, 3, '.', '')
             . '|tolerance=' . number_format($evRiseToleranceKW, 3, '.', '')
@@ -6434,7 +6439,7 @@ class SmartBatteryOptimizer extends IPSModule
             $stored = json_decode($this->ReadAttributeString('EVArchiveDetectionsJSON'), true);
             $saved = is_array($stored) ? ($stored[$dateKey] ?? null) : null;
             if (is_array($saved)
-                && (int)($saved['version'] ?? 0) === 8
+                && (int)($saved['version'] ?? 0) === 9
                 && abs((float)($saved['thresholdKW'] ?? 0.0) - $evThresholdKW) < 0.0001
                 && abs((float)($saved['minRiseKW'] ?? 0.0) - $evMinRiseKW) < 0.0001
                 && abs((float)($saved['expectedRiseKW'] ?? 0.0) - $evExpectedRiseKW) < 0.0001
@@ -6569,7 +6574,8 @@ class SmartBatteryOptimizer extends IPSModule
             'sessions' => $sessionCount,
             'kWh' => $evWh / 1000.0,
             'details' => $details,
-            'rawEdges' => count($rawEdges)
+            'rawEdges' => count($rawEdges),
+            'rawEdgeTimestamps' => array_values(array_map(static fn($edge) => (int)($edge['start'] ?? 0), $rawEdges))
         ];
 
         if ($isPastDay) {
@@ -6589,83 +6595,114 @@ class SmartBatteryOptimizer extends IPSModule
         $minRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingMinRiseKW') * 1000.0);
         $expectedRiseW = max(500.0, $this->ReadPropertyFloat('EVChargingExpectedRiseKW') * 1000.0);
         $toleranceW = max(200.0, $this->ReadPropertyFloat('EVChargingRiseToleranceKW') * 1000.0);
-        $edgeFloorW = max(2200.0, min($minRiseW * 0.75, max(2200.0, $expectedRiseW - $toleranceW)));
 
-        // 24/32 Stundenaggregate sind sehr klein. Nur Stunden mit einer grossen
-        // Spannweite koennen einen EV-Start enthalten und werden danach roh geprueft.
-        $hours = @AC_GetAggregatedValues($archiveID, $varID, 0, $rangeStart, $rangeEnd - 1, 0);
-        if (!is_array($hours) || count($hours) === 0) return [];
+        // Der Archiv-Suchlauf muss die echte Rohwertflanke finden. Deshalb gibt es hier
+        // bewusst KEINE Vorfilterung mehr ueber Stunden-/Minutenaggregate. Jede Stunde
+        // wird einzeln als kleines Rohwertfenster gelesen. Bei 1-s-Logging sind das rund
+        // 3.600 Werte und damit sicher unter dem Archiv-Hardlimit von 10.000 Datensaetzen.
+        // Ein paar Minuten Ueberlappung liefern die Grundlast fuer Flanken am Stundenanfang.
+        $edgeFloorW = max(1500.0, $minRiseW);
+        $hourTs = strtotime(date('Y-m-d H:00:00', $rangeStart));
+        if ($hourTs > $rangeStart) $hourTs -= 3600;
 
-        $candidateHours = [];
-        foreach ($hours as $row) {
-            $hourTs = (int)($row['TimeStamp'] ?? 0);
-            if ($hourTs < $rangeStart || $hourTs >= $rangeEnd) continue;
-            $minW = max(0.0, (float)($row['Min'] ?? 0.0));
-            $maxW = max(0.0, (float)($row['Max'] ?? 0.0));
-            if (($maxW - $minW) >= $edgeFloorW) $candidateHours[$hourTs] = true;
-        }
-        if (count($candidateHours) === 0) return [];
-
-        ksort($candidateHours, SORT_NUMERIC);
         $edges = [];
         $lastAcceptedTs = 0;
-        foreach (array_keys($candidateHours) as $hourTs) {
-            // 15 Minuten Vorgeschichte fuer die Grundlast; 5 Minuten Nachlauf fuer
-            // einen Start kurz vor dem Stundenende. Bei 1-s-Logging sind das maximal
-            // 4.800 Werte und damit deutlich unter dem Archiv-Hardlimit von 10.000.
-            $rawStart = max($rangeStart, $hourTs - 15 * 60);
-            $rawEnd = min($rangeEnd, $hourTs + 65 * 60);
+        $lastAcceptedIndex = -1;
+
+        while ($hourTs < $rangeEnd) {
+            $coreStart = max($rangeStart, $hourTs);
+            $coreEnd = min($rangeEnd, $hourTs + 3600);
+            if ($coreEnd <= $coreStart) {
+                $hourTs += 3600;
+                continue;
+            }
+
+            $rawStart = max($rangeStart, $coreStart - 5 * 60);
+            $rawEnd = min($rangeEnd, $coreEnd + 60);
             $rows = $this->GetRawConsumptionPowerPointsWindow($archiveID, $varID, $rawStart, $rawEnd, 5000);
-            if (count($rows) < 2) continue;
+            if (count($rows) < 2) {
+                $hourTs += 3600;
+                continue;
+            }
 
-            for ($i = 1; $i < count($rows); $i++) {
-                $ts = (int)$rows[$i]['ts'];
-                if ($ts < $hourTs || $ts >= $hourTs + 3600) continue;
-                if ($lastAcceptedTs > 0 && ($ts - $lastAcceptedTs) < 10 * 60) continue;
+            $rowCount = count($rows);
+            for ($i = 1; $i < $rowCount; $i++) {
+                $ts = (int)($rows[$i]['ts'] ?? 0);
+                if ($ts < $coreStart || $ts >= $coreEnd) continue;
 
-                // Nicht nur den direkt vorherigen Wert verwenden: innerhalb von 90 s
-                // darf der Lader auch in zwei/drei kleinen Schritten hochfahren.
-                $lookbackStart = $ts - 90;
-                $lowW = (float)$rows[$i - 1]['value'];
-                $lowTs = (int)$rows[$i - 1]['ts'];
+                // Bereits gefundene Ladeflanken innerhalb von 10 Minuten nicht doppelt
+                // zaehlen. Bei einem mehrstufigen Start wird die zuerst erkannte Flanke
+                // spaeter noch durch die hoehere Stufe aktualisiert, falls diese innerhalb
+                // von 20 Sekunden folgt.
+                if ($lastAcceptedTs > 0 && ($ts - $lastAcceptedTs) >= 20 && ($ts - $lastAcceptedTs) < 10 * 60) continue;
+
+                // Niedrigsten Rohwert der letzten 20 Sekunden suchen. Damit werden sowohl
+                // direkte Starts (1,3 -> 7,3 kW) als auch mehrstufige Starts
+                // (2,5 -> 6,8 -> 11,6 kW) erkannt.
+                $lookbackStart = $ts - 20;
+                $lowW = max(0.0, (float)($rows[$i - 1]['value'] ?? 0.0));
+                $lowTs = (int)($rows[$i - 1]['ts'] ?? $ts);
                 for ($k = $i - 1; $k >= 0; $k--) {
-                    if ((int)$rows[$k]['ts'] < $lookbackStart) break;
-                    $v = (float)$rows[$k]['value'];
+                    $kTs = (int)($rows[$k]['ts'] ?? 0);
+                    if ($kTs < $lookbackStart) break;
+                    $v = max(0.0, (float)($rows[$k]['value'] ?? 0.0));
                     if ($v < $lowW) {
                         $lowW = $v;
-                        $lowTs = (int)$rows[$k]['ts'];
+                        $lowTs = $kTs;
                     }
                 }
-                $highW = (float)$rows[$i]['value'];
+
+                $highW = max(0.0, (float)($rows[$i]['value'] ?? 0.0));
                 $riseW = $highW - $lowW;
                 if ($riseW < $edgeFloorW) continue;
 
-                // Median-Grundlast aus bis zu 15 Minuten vor der Flanke. Die letzten
-                // 30 Sekunden werden ausgelassen, damit ein gestufter Ladebeginn die
-                // Grundlast nicht bereits anhebt.
+                // Robuste Grundlast aus den letzten bis zu 5 Minuten. Die letzten 5 s
+                // werden ausgelassen, damit ein gestufter Ladebeginn die Grundlast nicht
+                // schon nach oben zieht. Gibt es zu wenig Historie, reicht der Rohwert vor
+                // der Flanke als Grundlast.
                 $history = [];
-                $histFrom = $ts - 15 * 60;
-                $histTo = $ts - 30;
+                $histFrom = $ts - 5 * 60;
+                $histTo = $ts - 5;
                 for ($k = $i - 1; $k >= 0; $k--) {
-                    $hTs = (int)$rows[$k]['ts'];
+                    $hTs = (int)($rows[$k]['ts'] ?? 0);
                     if ($hTs < $histFrom) break;
-                    if ($hTs <= $histTo) $history[] = max(0.0, (float)$rows[$k]['value']);
+                    if ($hTs <= $histTo) $history[] = max(0.0, (float)($rows[$k]['value'] ?? 0.0));
                 }
-                $baselineW = count($history) >= 2 ? $this->Median($history) : max(0.0, $lowW);
+                $baselineW = count($history) >= 2 ? $this->Median($history) : $lowW;
                 $riseVsBaselineW = $highW - $baselineW;
-                if ($riseVsBaselineW < $edgeFloorW) continue;
+                if (max($riseW, $riseVsBaselineW) < $edgeFloorW) continue;
 
-                $edges[] = [
+                $edge = [
                     'start' => $ts,
                     'fromTs' => $lowTs,
-                    'fromW' => max(0.0, $lowW),
-                    'toW' => max(0.0, $highW),
+                    'fromW' => $lowW,
+                    'toW' => $highW,
                     'baselineW' => max(0.0, $baselineW),
-                    'riseW' => max($riseW, $riseVsBaselineW)
+                    'riseW' => max($riseW, $riseVsBaselineW),
+                    'expectedMatch' => abs(max($riseW, $riseVsBaselineW) - $expectedRiseW) <= max($toleranceW, $expectedRiseW * 0.45)
                 ];
+
+                // Mehrstufiger Start: innerhalb von 20 s die bereits gespeicherte Flanke
+                // behalten, aber auf die hoehere gemessene Stufe aktualisieren.
+                if ($lastAcceptedTs > 0 && ($ts - $lastAcceptedTs) < 20 && $lastAcceptedIndex >= 0) {
+                    if ($edge['riseW'] > (float)($edges[$lastAcceptedIndex]['riseW'] ?? 0.0)) {
+                        $edge['start'] = (int)($edges[$lastAcceptedIndex]['start'] ?? $ts);
+                        $edge['fromTs'] = (int)($edges[$lastAcceptedIndex]['fromTs'] ?? $lowTs);
+                        $edge['fromW'] = min((float)($edges[$lastAcceptedIndex]['fromW'] ?? $lowW), $lowW);
+                        $edge['baselineW'] = min((float)($edges[$lastAcceptedIndex]['baselineW'] ?? $baselineW), $baselineW);
+                        $edges[$lastAcceptedIndex] = $edge;
+                    }
+                    continue;
+                }
+
+                $edges[] = $edge;
+                $lastAcceptedIndex = count($edges) - 1;
                 $lastAcceptedTs = $ts;
             }
+
+            $hourTs += 3600;
         }
+
         return $edges;
     }
 
@@ -7237,7 +7274,7 @@ class SmartBatteryOptimizer extends IPSModule
         $durations = [];
         $energies = [];
         foreach ($stored as $day) {
-            if (!is_array($day) || (int)($day['version'] ?? 0) !== 8) continue;
+            if (!is_array($day) || (int)($day['version'] ?? 0) !== 9) continue;
             foreach (($day['details'] ?? []) as $detail) {
                 if (!is_array($detail)) continue;
                 $powerKW = max(0.0, (float)($detail['chargePowerW'] ?? 0.0) / 1000.0);

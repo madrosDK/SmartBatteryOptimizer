@@ -1,4 +1,4 @@
-> Version 1.10.54 / Build 225: Autoladungs-Archivsuche prüft echte Rohwert-Anstiege in gezielt ausgewählten Stunden; erkannte Ladeanteile werden orange dargestellt und aus dem Lernprofil ausgeschlossen.
+> Version 1.10.55 / Build 226: Autoladungs-Archivsuche liest jede Archivstunde direkt in kleinen Rohwertblöcken und erkennt echte Sekunden-Sprünge ohne Aggregat-Vorfilter; Ladeanteile werden orange dargestellt und aus dem Lastprofil ausgeschlossen.
 
 ## Version 1.9.82 – rollierende PV-Auto-Kalibrierung
 

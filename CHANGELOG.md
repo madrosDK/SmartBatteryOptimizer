@@ -1,3 +1,11 @@
+## 1.10.55 / Build 226
+- Autoladungs-Archivsuche entfernt die fehleranfällige Aggregat-Vorauswahl vollständig: jede Stunde wird einzeln als kleines Rohwertfenster geprüft.
+- Direkte Startflanken von mindestens dem konfigurierten Mindestanstieg werden aus den originalen Werten erkannt, z. B. 1,27→7,32 kW, 1,99→7,24 kW und 1,80→7,30 kW innerhalb 1–2 s.
+- Mehrstufige Ladebeginne wie 2,53→6,76→11,63 kW innerhalb weniger Sekunden werden als ein gemeinsamer Start zusammengeführt.
+- Rohdaten werden weiterhin nur stundenweise (mit kurzer Überlappung) gelesen; es gibt keine Ganz-Tages-Rohwertabfrage und damit keinen Rückfall auf den früheren 32-MB-Speicherfehler.
+- Suchstatus zeigt zusätzlich Zeitpunkt der zuletzt gefundenen Roh-Flanke.
+- EV-Erkennungs-/Treffercache auf Version 9 angehoben; erkannter Ladeanteil wird weiterhin vollständig aus dem Lastprofil herausgerechnet und orange dargestellt.
+
 ## 1.10.54 / Build 225
 - Autoladungs-Archivsuche erkennt Ladebeginn jetzt direkt aus den originalen Rohwerten: Stundenaggregate dienen nur zur Vorauswahl auffälliger Stunden; ausschließlich diese kleinen Zeitfenster werden roh gelesen.
 - Dadurch wird ein realer Sprung wie ca. 1,25 kW auf 7,3–8,5 kW innerhalb weniger Sekunden direkt erkannt und nicht mehr von Minutenmitteln abhängig gemacht.
