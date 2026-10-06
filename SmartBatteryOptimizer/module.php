@@ -109,21 +109,16 @@ class SmartBatteryOptimizer extends IPSModule
 
         $this->RegisterVariableFloat('PVForecastToday', 'PV Prognose heute', '~Electricity', 9);
         $this->RegisterVariableFloat('PVForecastTomorrow', 'PV Prognose morgen', '~Electricity', 10);
-        $this->RegisterVariableString('PVCalibrationStatus', 'PV Kalibrierung', '', 11);
         $this->RegisterVariableString('AutomaticReleaseStatus', 'Automatikfreigabe', '', 12);
         $this->RegisterVariableFloat('NightConsumptionForecast', 'Prognose Nachtverbrauch', '~Electricity', 20);
-        $this->RegisterVariableString('NightConsumptionSource', 'Quelle Nachtverbrauch', '', 21);
-        $this->RegisterVariableInteger('ValidNightSamples', 'Gültige Nächte', '', 22);
         $this->RegisterVariableFloat('ConsumptionForecastTomorrow', 'Verbrauchsprognose morgen', '~Electricity', 23);
         $this->RegisterVariableFloat('ExpectedPVSurplusTomorrow', 'PV-Überschuss morgen nach Eigenverbrauch', '~Electricity', 24);
-        $this->RegisterVariableFloat('PVPeakPowerTomorrow', 'PV Spitzenleistung morgen Prognose', '~Watt', 25);
-        $this->RegisterVariableFloat('PredictedMaxGridExportTomorrow', 'Max. erwartete Netzeinspeisung morgen ohne Batterie', '~Watt', 26);
         $this->RegisterVariableFloat('GridLimitHeadroomRequired', 'Speicherbedarf Netzlimit-Schutz', '~Electricity', 27);
         $this->RegisterVariableString('ConsumptionLearningStatus', 'Verbrauchsprofil Lernen', '', 28);
         $this->RegisterVariableFloat('AvailableFeedInEnergy', 'Für Einspeisung verfügbar', '~Electricity', 30);
         $this->RegisterVariableFloat('PVSpaceRequiredEnergy', 'Für PV freizugebender Speicher', '~Electricity', 31);
-        $this->RegisterVariableFloat('CurrentPrice', 'Aktueller Einspeisepreis', '', 40);
-        $this->RegisterVariableFloat('HighestPrice', 'Höchster geplanter Einspeisepreis', '', 50);
+        // Versteckte technische Tarif-Zeitreihe für historische Erlös-/Einspeisestatistik.
+        $this->RegisterVariableFloat('CurrentPrice', 'Tarifarchiv intern', '', 40);
         $this->RegisterVariableBoolean('AutomaticEnabled', 'Einspeiseautomatik', '~Switch', 55);
         $this->EnableAction('AutomaticEnabled');
 
@@ -132,12 +127,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->EnsureRuntimeProfiles();
         $this->RegisterVariableBoolean('PVCurtailmentProtectionEnabled', 'PV-Abregelung vermeiden', '~Switch', 56);
         $this->EnableAction('PVCurtailmentProtectionEnabled');
-        $this->RegisterVariableInteger('RuntimeGridFeedInLimitW', 'Maximale Netzeinspeisung', 'SBO.PowerW', 57);
-        $this->EnableAction('RuntimeGridFeedInLimitW');
-        $this->RegisterVariableInteger('RuntimeGridLimitSafetyW', 'Sicherheitsabstand Einspeisegrenze', 'SBO.PowerW', 58);
-        $this->EnableAction('RuntimeGridLimitSafetyW');
-        $this->RegisterVariableInteger('RuntimeMaxBatteryChargePowerW', 'Maximale Batterieladeleistung', 'SBO.PowerW', 59);
-        $this->EnableAction('RuntimeMaxBatteryChargePowerW');
         $this->RegisterVariableFloat('RuntimePVHeadroomTargetSOC', 'Maximaler Ziel-SoC bei starker PV', 'SBO.Percent', 60);
         $this->EnableAction('RuntimePVHeadroomTargetSOC');
         $this->RegisterVariableFloat('RuntimePVStorageSharePct', 'PV-Prognose als möglicher Batterieüberschuss', 'SBO.Percent', 61);
@@ -159,7 +148,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableFloat('FeedInTargetEnergy', 'Geplante Einspeisemenge aktuell', '~Electricity', 71);
         $this->RegisterVariableFloat('FeedInDeliveredEnergy', 'Tatsächlich eingespeiste Menge aktuell', '~Electricity', 72);
         $this->RegisterVariableString('NextFeedInWindow', 'Nächstes Einspeisefenster', '', 80);
-        $this->RegisterVariableFloat('ExpectedRevenue', 'Erwarteter Erlös', '', 90);
+        $this->RegisterVariableFloat('ExpectedRevenue', 'Erwarteter Erlös', 'SBO.CurrencyEUR', 90);
         $this->RegisterVariableString('LastUpdate', 'Letzte Aktualisierung', '', 100);
         $this->RegisterVariableString('StatusText', 'Optimierungsstatus', '', 110);
         $this->RegisterVariableString('OverviewHTML', 'Übersicht', '~HTMLBox', 120);
@@ -301,6 +290,12 @@ class SmartBatteryOptimizer extends IPSModule
         IPS_SetVariableProfileDigits('SBO.PriceCt', 2);
         IPS_SetVariableProfileText('SBO.PriceCt', '', ' ct/kWh');
         IPS_SetVariableProfileValues('SBO.PriceCt', -100, 500, 0.1);
+
+        if (!IPS_VariableProfileExists('SBO.CurrencyEUR')) {
+            IPS_CreateVariableProfile('SBO.CurrencyEUR', 2);
+        }
+        IPS_SetVariableProfileDigits('SBO.CurrencyEUR', 2);
+        IPS_SetVariableProfileText('SBO.CurrencyEUR', '', ' €');
     }
 
     public function GetConfigurationForm()
@@ -401,9 +396,6 @@ class SmartBatteryOptimizer extends IPSModule
 
         if (!$this->ReadAttributeBoolean('RuntimePVSettingsInitialized')) {
             SetValue($this->GetIDForIdent('PVCurtailmentProtectionEnabled'), $this->ReadPropertyBoolean('PreventPVCurtailment'));
-            SetValue($this->GetIDForIdent('RuntimeGridFeedInLimitW'), $this->ReadPropertyInteger('GridFeedInLimitW'));
-            SetValue($this->GetIDForIdent('RuntimeGridLimitSafetyW'), $this->ReadPropertyInteger('GridLimitSafetyW'));
-            SetValue($this->GetIDForIdent('RuntimeMaxBatteryChargePowerW'), $this->ReadPropertyInteger('MaxBatteryChargePowerW'));
             SetValue($this->GetIDForIdent('RuntimePVHeadroomTargetSOC'), $this->ReadPropertyFloat('PVHeadroomTargetSOC'));
             SetValue($this->GetIDForIdent('RuntimePVStorageSharePct'), $this->ReadPropertyFloat('PVStorageSharePct'));
             SetValue($this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt'), $this->ReadPropertyFloat('PVSpaceMinimumPriceCt'));
@@ -421,11 +413,37 @@ class SmartBatteryOptimizer extends IPSModule
         $minimumPriceVarID = @$this->GetIDForIdent('RuntimePVSpaceMinimumPriceCt');
         if ($minimumPriceVarID > 0) @IPS_SetName($minimumPriceVarID, 'Mindestpreis Einspeisung');
         $currentPriceVarID = (int)@$this->GetIDForIdent('CurrentPrice');
-        if ($currentPriceVarID > 0) @IPS_SetVariableCustomProfile($currentPriceVarID, 'SBO.PriceCt');
+        if ($currentPriceVarID > 0) {
+            @IPS_SetVariableCustomProfile($currentPriceVarID, 'SBO.PriceCt');
+            @IPS_SetName($currentPriceVarID, 'Tarifarchiv intern');
+            @IPS_SetHidden($currentPriceVarID, true);
+        }
+        $expectedRevenueID = (int)@$this->GetIDForIdent('ExpectedRevenue');
+        if ($expectedRevenueID > 0) @IPS_SetVariableCustomProfile($expectedRevenueID, 'SBO.CurrencyEUR');
 
-        // v1.10.63: sichtbare Instanzansicht auf die fachlich relevanten Werte reduzieren.
-        // Technische/alte Diagnosevariablen bleiben aus Kompatibilitaetsgruenden bestehen,
-        // werden aber nicht mehr in der normalen Ansicht angezeigt.
+        // v1.10.64: reine Anzeige-/Legacyvariablen wirklich entfernen. Die Berechnungen
+        // und Konfigurationswerte bleiben bestehen. CurrentPrice bleibt ausschließlich
+        // als verstecktes technisches Tarifarchiv für historische Erlösstatistiken erhalten.
+        foreach ([
+            'PVCalibrationStatus',
+            'NightConsumptionSource',
+            'ValidNightSamples',
+            'PVPeakPowerTomorrow',
+            'PredictedMaxGridExportTomorrow',
+            'HighestPrice',
+            'RuntimeGridFeedInLimitW',
+            'RuntimeGridLimitSafetyW',
+            'RuntimeMaxBatteryChargePowerW'
+        ] as $obsoleteIdent) {
+            try {
+                $obsoleteID = (int)@$this->GetIDForIdent($obsoleteIdent);
+                if ($obsoleteID > 0 && @IPS_VariableExists($obsoleteID)) {
+                    $this->UnregisterVariable($obsoleteIdent);
+                }
+            } catch (Throwable $ignored) {}
+        }
+
+        // Sichtbare Instanzansicht auf die fachlich relevanten Werte reduzieren.
         $uiNames = [
             'NightConsumptionForecast' => 'Verbrauch bis PV-Morgen',
             'ConsumptionLearningStatus' => 'Lastprofil'
@@ -433,17 +451,6 @@ class SmartBatteryOptimizer extends IPSModule
         foreach ($uiNames as $ident => $name) {
             $id = (int)@$this->GetIDForIdent($ident);
             if ($id > 0) @IPS_SetName($id, $name);
-        }
-        $normalHidden = [
-            'PVCalibrationStatus',
-            'NightConsumptionSource',
-            'ValidNightSamples',
-            'PVPeakPowerTomorrow',
-            'PredictedMaxGridExportTomorrow'
-        ];
-        foreach ($normalHidden as $ident) {
-            $id = (int)@$this->GetIDForIdent($ident);
-            if ($id > 0) @IPS_SetHidden($id, true);
         }
         $this->InitializeFeedInFactorMemory();
         $this->EnsurePVSurfaceStableIDs();
@@ -585,7 +592,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.63';
+        $currentModuleVersion = '1.10.64';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -716,7 +723,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.63',
+            'moduleVersion' => '1.10.64',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -824,18 +831,6 @@ class SmartBatteryOptimizer extends IPSModule
                 SetValue($this->GetIDForIdent($Ident), (bool)$Value);
                 $this->RecalculateInternal(false);
                 break;
-            case 'RuntimeGridFeedInLimitW':
-                SetValue($this->GetIDForIdent($Ident), max(0, (int)$Value));
-                $this->RecalculateInternal(false);
-                break;
-            case 'RuntimeGridLimitSafetyW':
-                SetValue($this->GetIDForIdent($Ident), max(0, (int)$Value));
-                $this->RecalculateInternal(false);
-                break;
-            case 'RuntimeMaxBatteryChargePowerW':
-                SetValue($this->GetIDForIdent($Ident), max(0, (int)$Value));
-                $this->RecalculateInternal(false);
-                break;
             case 'RuntimePVHeadroomTargetSOC':
             case 'RuntimePVStorageSharePct':
                 SetValue($this->GetIDForIdent($Ident), max(0.0, min(100.0, (float)$Value)));
@@ -885,12 +880,6 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $id = @$this->GetIDForIdent($ident);
         return $id > 0 ? (bool)GetValue($id) : $fallback;
-    }
-
-    private function GetRuntimeInteger(string $ident, int $fallback): int
-    {
-        $id = @$this->GetIDForIdent($ident);
-        return $id > 0 ? (int)GetValue($id) : $fallback;
     }
 
     private function GetRuntimeFloat(string $ident, float $fallback): float
@@ -1359,9 +1348,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->ForecastDiagnosticStep('05.92 ForecastJSON schreiben START');
         $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
         $this->ForecastDiagnosticStep('05.93 ForecastJSON schreiben ENDE');
-        $this->ForecastDiagnosticStep('05.94 Kalibrierungsstatus rendern START');
-        SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
-        $this->ForecastDiagnosticStep('05.95 Kalibrierungsstatus rendern ENDE');
         if ($renderDiagnosis) {
             $this->ForecastDiagnosticStep('05.96 Diagnose-HTML rendern START');
             SetValue($this->GetIDForIdent('PVCalibrationDiagnosisHTML'), $this->RenderPVCalibrationDiagnosisHTML($forecast));
@@ -1475,7 +1461,7 @@ class SmartBatteryOptimizer extends IPSModule
                 }
             }
             $forecast = $this->ApplyConsumptionForecastToPV($forecast, $consumptionProfile);
-            SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
+
             $gate = $this->GetAutomaticLearningGateStatus();
             SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
             $this->ForecastDiagnosticStep('07 Preise START');
@@ -1522,17 +1508,12 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteAttributeInteger('NightSampleCount', $profileDays);
             $this->WriteAttributeFloat('LearnedNightKWh', $nightForPlan);
             SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($nightForPlan, 3));
-            SetValue($this->GetIDForIdent('NightConsumptionSource'), 'Lastprofil – ' . $profileSource);
-            SetValue($this->GetIDForIdent('ValidNightSamples'), $profileDays);
             SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)$forecast['consumptionTomorrowKWh'], 3));
             SetValue($this->GetIDForIdent('ExpectedPVSurplusTomorrow'), round((float)$forecast['pvSurplusTomorrowKWh'], 3));
-            SetValue($this->GetIDForIdent('PVPeakPowerTomorrow'), round((float)($plan['pvPeakPowerTomorrowW'] ?? 0.0), 0));
-            SetValue($this->GetIDForIdent('PredictedMaxGridExportTomorrow'), round((float)($plan['predictedMaxGridExportTomorrowW'] ?? 0.0), 0));
             SetValue($this->GetIDForIdent('GridLimitHeadroomRequired'), round((float)($plan['gridLimitSpaceRequiredKWh'] ?? 0.0), 3));
             SetValue($this->GetIDForIdent('ConsumptionLearningStatus'), $this->ReadAttributeString('ConsumptionLearningSource'));
             SetValue($this->GetIDForIdent('AvailableFeedInEnergy'), round($plan['availableKWh'], 3));
             SetValue($this->GetIDForIdent('PVSpaceRequiredEnergy'), round($plan['pvSpaceRequiredKWh'], 3));
-            SetValue($this->GetIDForIdent('HighestPrice'), round($plan['highestPriceCt'], 3));
             SetValue($this->GetIDForIdent('ExpectedRevenue'), round($plan['expectedRevenueEUR'], 3));
             SetValue($this->GetIDForIdent('NextFeedInWindow'), $plan['nextWindow']);
             if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
@@ -2343,8 +2324,6 @@ class SmartBatteryOptimizer extends IPSModule
                     }
                 }
             }
-
-            SetValue($this->GetIDForIdent('PVCalibrationStatus'), 'PV-Kalibrierung zurückgesetzt – Auto-Faktoren 1,000; Anbietergewichtung neutral.');
 
             // KEINE externe Forecast-Abfrage beim Reset: dadurch erfolgt der Reset sofort.
             // Vorhandene Forecast-Werte bleiben erhalten, werden aber für die Anzeige mit
@@ -4795,34 +4774,6 @@ class SmartBatteryOptimizer extends IPSModule
         ];
     }
 
-    private function BuildPVCalibrationStatus(array $forecast): string
-    {
-        if (!isset($forecast['surfaceCalibration']) || !is_array($forecast['surfaceCalibration'])) return '-';
-        $parts = [];
-        foreach ($forecast['surfaceCalibration'] as $name => $c) {
-            if (empty($c['autoEnabled'])) {
-                $parts[] = $name . ': manuell';
-                continue;
-            }
-            if ($c['actualW'] === null) {
-                $parts[] = $name . ': keine String-Variable';
-                continue;
-            }
-            if (!empty($c['calibrationBlocked'])) {
-                $parts[] = $name . ': ' . (string)$c['calibrationBlockReason'] . ' | Auto ' . number_format((float)$c['autoFactor'], 3, ',', '.') . ' (' . (int)$c['sampleCount'] . ' Werte)';
-                continue;
-            }
-                        if (empty($c['orientationKnown'])) {
-                $days = $this->GetSurfaceLearningDayCount((string)$c['key']);
-                $required = max(1, $this->ReadPropertyInteger('UnknownOrientationLearningDays'));
-                $parts[] = $name . ': Ausrichtung unbekannt, Lernphase ' . $days . '/' . $required . ' Tage, Auto ' . number_format((float)$c['autoFactor'], 3, ',', '.') . ' (' . (int)$c['sampleCount'] . ' Werte)';
-            } else {
-                $parts[] = $name . ': Auto ' . number_format((float)$c['autoFactor'], 3, ',', '.') . ' (' . (int)$c['sampleCount'] . ' Werte)';
-            }
-        }
-        return count($parts) ? implode(' | ', $parts) : '-';
-    }
-
     private function GetAutomaticLearningGateStatus(): array
     {
         $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
@@ -5023,10 +4974,10 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function AnalyzeGridLimitRisk(array $forecast, array $consumptionProfile): array
     {
-        $gridLimitW = max(0, $this->GetRuntimeInteger('RuntimeGridFeedInLimitW', $this->ReadPropertyInteger('GridFeedInLimitW')));
-        $safetyW = max(0, min($gridLimitW, $this->GetRuntimeInteger('RuntimeGridLimitSafetyW', $this->ReadPropertyInteger('GridLimitSafetyW'))));
+        $gridLimitW = max(0, $this->ReadPropertyInteger('GridFeedInLimitW'));
+        $safetyW = max(0, min($gridLimitW, $this->ReadPropertyInteger('GridLimitSafetyW')));
         $effectiveGridLimitW = max(0, $gridLimitW - $safetyW);
-        $maxChargeW = max(0, $this->GetRuntimeInteger('RuntimeMaxBatteryChargePowerW', $this->ReadPropertyInteger('MaxBatteryChargePowerW')));
+        $maxChargeW = max(0, $this->ReadPropertyInteger('MaxBatteryChargePowerW'));
 
         $hourlyLoad = isset($consumptionProfile['hourlyKWh']) && is_array($consumptionProfile['hourlyKWh'])
             ? $consumptionProfile['hourlyKWh']
@@ -5849,10 +5800,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Das Netz-Ziel stammt aus "Maximale Netzeinspeisung". Der separate
         // Sicherheitsabstand gehoert ausschliesslich zum PV-/Netzlimit-Schutz und
         // wird fuer die naechtliche Preis-Einspeisung NICHT abgezogen.
-        return max(0.0, (float)$this->GetRuntimeInteger(
-            'RuntimeGridFeedInLimitW',
-            $this->ReadPropertyInteger('GridFeedInLimitW')
-        ));
+        return max(0.0, (float)$this->ReadPropertyInteger('GridFeedInLimitW'));
     }
 
     private function GetPlannedBatteryPowerW(array $consumptionProfile, int $timestamp): float

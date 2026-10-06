@@ -1,3 +1,11 @@
+## 1.10.64 / Build 235
+- Reine Anzeige-/Legacyvariablen `PV Kalibrierung`, `Quelle Nachtverbrauch`, `Gültige Nächte`, `PV Spitzenleistung morgen Prognose`, `Max. erwartete Netzeinspeisung morgen ohne Batterie` und `Höchster geplanter Einspeisepreis` vollständig entfernt.
+- Die doppelten Laufzeitvariablen `Maximale Netzeinspeisung`, `Sicherheitsabstand Einspeisegrenze` und `Maximale Batterieladeleistung` entfernt. Planung und Netzlimit-Schutz lesen diese drei Werte jetzt ausschließlich aus der Instanzkonfiguration.
+- `Aktueller Einspeisepreis` aus der normalen Instanzansicht entfernt. Die bestehende Zeitreihe bleibt ausschließlich als verstecktes technisches `Tarifarchiv intern` erhalten, da die historische Einspeise-/Erlösstatistik sie benötigt.
+- Die drei zugehörigen Config-Felder sind keine Startwerte mehr, sondern die allein maßgeblichen Konfigurationswerte.
+- `Erwarteter Erlös` erhält ein EUR-Profil und zeigt die Einheit `€` direkt an der Variable.
+- Keine Änderung an Preisbeschaffung, PV-Prognose, Dispatch-Reihenfolge, Autolade-Erkennung oder bestehender Archivhistorie.
+
 ## 1.10.63 / Build 234
 - Normale Instanzansicht auf die fachlich relevanten Werte reduziert; technische Diagnosevariablen bleiben intern erhalten und werden nicht gelöscht.
 - `Prognose Nachtverbrauch` in `Verbrauch bis PV-Morgen` umbenannt; `Verbrauchsprofil Lernen` in `Lastprofil` umbenannt.

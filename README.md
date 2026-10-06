@@ -317,17 +317,12 @@ Für morgen wird intern in 15-Minuten-Slots gerechnet. Die vorhandenen stündlic
 
 Wenn die mögliche Netzeinspeisung oberhalb von `Netzlimit - Sicherheitsabstand` liegt, berechnet das Modul, wie viel Batterie-Aufnahmeleistung und Speicherplatz nötig sind. Der notwendige Speicherplatz wird als Mindestanforderung in die bestehende PV-Speicherfreihaltung übernommen und muss vor dem ersten kritischen Slot geschaffen sein.
 
-Neue Ausgaben:
-- PV Spitzenleistung morgen Prognose
-- Max. erwartete Netzeinspeisung morgen ohne Batterie
-- Speicherbedarf Netzlimit-Schutz
+Der Netzlimit-Schutz berechnet intern weiterhin PV-Spitzenleistung und maximal erwartete Netzeinspeisung. Als sichtbarer Ergebniswert bleibt nur `Speicherbedarf Netzlimit-Schutz`; die beiden reinen Diagnosevariablen wurden ab v1.10.64 entfernt.
 
 Wichtig: Bei Open-Meteo und den zusammengeführten Anbieterwerten handelt es sich um Stundenmittel. Die angezeigte Spitzenleistung ist daher die höchste prognostizierte Stundenleistung, keine garantierte kurzfristige Wechselrichterspitze. Der einstellbare Sicherheitsabstand zur 10-kW-Grenze dient dazu, diese Unsicherheit abzufangen.
 
-### Frontend-Steuerung Netzlimit-Schutz 1.7.1
-Alle für den PV-/Netzlimit-Schutz relevanten Betriebswerte sind als bedienbare IP-Symcon-Variablen verfügbar. Dazu gehören Ein/Aus, maximale Netzeinspeisung, Sicherheitsabstand, maximale Batterieladeleistung, maximaler Ziel-SoC bei starker PV, Anteil der PV-Prognose als möglicher Batterieüberschuss und Mindestpreis für notwendige Speicherfreihaltung.
-
-Die Instanzkonfiguration liefert beim ersten Anlegen der Variablen nur die Startwerte. Danach sind die Frontend-Variablen für die laufende Optimierung maßgeblich. Eine Änderung löst unmittelbar eine neue Planung mit den bereits geladenen Prognose- und Preisdaten aus.
+### Netzlimit-Steuerung
+Maximale Netzeinspeisung, Sicherheitsabstand und maximale Batterieladeleistung werden ab v1.10.64 ausschließlich aus der Instanzkonfiguration gelesen. Die früheren doppelten Laufzeitvariablen wurden entfernt. Der Schalter `PV-Abregelung vermeiden` sowie die bewusst weiterhin bedienbaren Ziel-/Freigabewerte bleiben als Frontend-Variablen erhalten.
 
 ### Frontend-Profile 1.7.2
 Die editierbaren Laufzeitvariablen verwenden nun eigene, typkorrekte IP-Symcon-Profile. Leistungswerte sind Integer mit Einheit W, Prozentwerte und Preise sind Float-Profile. Dadurch wird die WebFront-/Tile-Fehlermeldung `Invalid profile type` vermieden.
@@ -572,5 +567,5 @@ Die Einspeiseausführung wird anhand der tatsächlich am Netz gemessenen Zielene
 Die Einspeise-Statistik kann zwischen Woche (Montag bis Sonntag) und Monat umgeschaltet werden. Navigation, Zeitraumüberschrift und Summen folgen der gewählten Ansicht; die Auswahl bleibt in der Visualisierung gespeichert.
 
 
-### Sichtbare Instanzansicht ab 1.10.63
-Die normale Instanzansicht zeigt nur noch die fachlich relevanten Prognose-, Speicher- und Einspeisewerte. Technische Diagnosevariablen bleiben aus Kompatibilitätsgründen erhalten, sind aber ausgeblendet. Abschnittsüberschriften in der HTML-Übersicht sind reine HTML-Elemente und keine Dummy-Instanzen.
+### Sichtbare Instanzansicht ab 1.10.64
+Die normale Instanzansicht zeigt nur noch fachlich relevante Prognose-, Speicher- und Einspeisewerte. Reine Legacy-/Diagnosevariablen wurden entfernt. Die dynamische Tarif-Zeitreihe bleibt ausschließlich als verstecktes technisches Archiv für die historische Erlösstatistik bestehen. Abschnittsüberschriften in der HTML-Übersicht sind reine HTML-Elemente und keine Dummy-Instanzen.
