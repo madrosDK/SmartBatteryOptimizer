@@ -1,3 +1,13 @@
+## 1.10.61 / Build 232
+
+- Verbrauchsprognose vereinheitlicht: Nachtreserve, PV-Zeit, übriger Tag und Gesamtverbrauch werden ausschließlich aus dem gelernten stündlichen Lastprofil berechnet.
+- Separaten Nachtverbrauch-Lernpfad aus der laufenden Berechnung entfernt; keine eigene Nacht-Archivstatistik, kein Nacht-Fallback und kein zusätzlicher Nacht-Sicherheitsaufschlag mehr.
+- Der Sicherheitsaufschlag `Verbrauchsprognose` ist jetzt der einzige Verbrauchs-Sicherheitsfaktor und wird bereits auf die Stundenwerte des Lastprofils angewendet.
+- Kommende Nachtreserve wird direkt durch zeitanteilige Integration des Lastprofils von Nachtbeginn bis Morgenende bestimmt.
+- PV-Zeit und übriger Tag werden ohne nachträgliche Skalierung direkt aus denselben Stundenwerten berechnet.
+- Oberfläche bereinigt: `Mindestens gültige Nächte`, `Ersatzwert Nachtverbrauch`, `Sicherheitsaufschlag Nachtverbrauch` und `Nur Nachtverbrauch neu lernen` entfernt.
+- Bestehende Nacht-Variablen bleiben aus Kompatibilitätsgründen erhalten, werden aber nur noch mit Werten aus dem Lastprofil befüllt.
+
 ## 1.10.60 / Build 231
 - Autoladungs-Erkennung vereinheitlicht: `Autoladung Ladeleistung` ist jetzt der zentrale Wert für Startflanke, Mindest-Gesamtleistung während des Starts und den festen Abzug aus dem Lastprofil.
 - Deutlich kleinere Lastanstiege werden nicht mehr als Autoladung akzeptiert. Bei 7,1 kW Ladeleistung liegt die harte Untergrenze bei mindestens 85 % der Ladeleistung bzw. innerhalb der eingestellten Toleranz; ein Anstieg um etwa 5 kW wird dadurch verworfen.

@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "caption": "Börsenpreisabhängige Batterieeinspeisung mit PV-Prognose, Nachtverbrauchs-Lernfunktion und Mehrflächen-PV."
+            "caption": "Börsenpreisabhängige Batterieeinspeisung mit PV-Prognose, gelerntem Stunden-Lastprofil und Mehrflächen-PV."
         },
         {
             "type": "ExpansionPanel",
@@ -563,24 +563,6 @@
                     "suffix": " %"
                 },
                 {
-                    "type": "NumberSpinner",
-                    "name": "MinimumValidNights",
-                    "caption": "Mindestens gültige Nächte zum Lernen",
-                    "digits": 0,
-                    "minimum": 1,
-                    "maximum": 30,
-                    "suffix": " Nächte"
-                },
-                {
-                    "type": "NumberSpinner",
-                    "name": "FallbackNightConsumptionKWh",
-                    "caption": "Ersatzwert Nachtverbrauch bei fehlenden Archivdaten",
-                    "digits": 2,
-                    "minimum": 0,
-                    "maximum": 100,
-                    "suffix": " kWh"
-                },
-                {
                     "type": "CheckBox",
                     "name": "AutomaticDayNight",
                     "caption": "Tag/Nacht automatisch bestimmen"
@@ -651,15 +633,6 @@
                     "minimum": 0,
                     "maximum": 10000,
                     "suffix": " W"
-                },
-                {
-                    "type": "NumberSpinner",
-                    "name": "SafetyReservePct",
-                    "caption": "Sicherheitsaufschlag Nachtverbrauch",
-                    "digits": 0,
-                    "minimum": 0,
-                    "maximum": 100,
-                    "suffix": " %"
                 },
                 {
                     "type": "NumberSpinner",
@@ -853,7 +826,7 @@
             "items": [
                 {
                     "type": "Label",
-                    "caption": "Die Einspeiseautomatik wird über den Schalter 'Einspeiseautomatik' in der Instanz ein-/ausgeschaltet. Prognosen, Nachtverbrauch und Lernfunktionen laufen unabhängig davon weiter."
+                    "caption": "Die Einspeiseautomatik wird über den Schalter 'Einspeiseautomatik' in der Instanz ein-/ausgeschaltet. Prognosen und Lastprofil-Lernfunktionen laufen unabhängig davon weiter."
                 },
                 {
                     "type": "NumberSpinner",
@@ -901,11 +874,6 @@
             "type": "Button",
             "caption": "Jetzt Prognose & Plan berechnen",
             "onClick": "SBO_Recalculate($id);"
-        },
-        {
-            "type": "Button",
-            "caption": "Nur Nachtverbrauch neu lernen",
-            "onClick": "SBO_LearnNightConsumption($id);"
         },
         {
             "type": "Button",

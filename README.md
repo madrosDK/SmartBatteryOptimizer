@@ -1,4 +1,4 @@
-> Version 1.10.60 / Build 231: Autoladung wird nur noch erkannt, wenn Startanstieg und Gesamtleistung zur bekannten Fahrzeug-Ladeleistung passen; diese Ladeleistung ist zugleich der feste Abzugswert.
+> Version 1.10.61 / Build 232: Sämtliche Verbrauchsprognosen und Reserven werden aus einem gemeinsamen gelernten Stunden-Lastprofil berechnet; der separate Nachtverbrauch-Lernpfad entfällt.
 
 > Version 1.10.59 / Build 230: Erkannte Autoladungen werden mit dem eingestellten Plausibilitätswert als fester Ladeleistung aus dem Lastprofil herausgerechnet; neue einstellbare Maximalenergie pro Ladevorgang, Standard 14,4 kWh.
 
@@ -15,9 +15,14 @@ Die PV-Auto-Korrektur verwendet keine Stundenfaktoren mehr. Der Faktor bleibt bi
 - aWATTar SUNNY Spot 60min berücksichtigt automatisch den aktuellen 19-%-Abschlag auf den absoluten Marktpreis.
 - Highcharts und Fallback-Grafik zeigen jetzt den **effektiven Einspeisepreis** als Balken; der reine EPEX-Marktpreis bleibt im Tooltip sichtbar.
 - Tariflogik ist separat von der Marktdatenquelle aufgebaut, damit weitere Anbieter leicht ergänzt werden können.
-IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose, lernendem Nachtverbrauch und Unterstützung mehrerer PV-Flächen.
+IP-Symcon-Modul zur börsenpreisabhängigen Batterieeinspeisung mit PV-Prognose, gelerntem stündlichem Lastprofil und Unterstützung mehrerer PV-Flächen.
 
 ## Version
+
+
+**1.10.61 / Build 232**
+
+Seit dieser Version gibt es für die Verbrauchsprognose nur noch eine Lernbasis: das stündliche Lastprofil. Die kommende Nachtreserve wird aus den zeitanteiligen Stundenwerten zwischen Nachtbeginn und Morgenende integriert. Verbrauch während der PV-Zeit und übriger Tagesverbrauch stammen aus denselben Stundenwerten. Der frühere separate Nachtverbrauch-Lernpfad, Nacht-Fallback und Nacht-Sicherheitsaufschlag werden nicht mehr verwendet. Der konfigurierte Sicherheitsaufschlag auf die Verbrauchsprognose wirkt einmalig auf das gemeinsame Lastprofil.
 
 **1.10.60 / Build 231**
 - Plausibilitätswert ist nach erkannter Startflanke zugleich die feste Fahrzeug-Ladeleistung.
@@ -131,17 +136,21 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 
 ## Verbrauchsprofil lernen
 
-Das Modul lernt aus der archivierten Variable **Hausverbrauch Leistung (W)** zusätzlich zum Nachtverbrauch ein stündliches Lastprofil.
+Das Modul lernt aus der archivierten Variable **Hausverbrauch Leistung (W)** ein stündliches Lastprofil. Dieses Lastprofil ist die einzige Verbrauchsbasis für Nachtreserve, PV-Zeit, übrigen Tag und Einspeiseplanung.
 
 Ab Version **1.10.43** gibt es für **jeden Wochentag ein eigenes 24-Stunden-Profil**. Zusätzlich werden vier saisonale Stützprofile (Winter, Frühling, Sommer, Herbst) geführt. Zwischen diesen Stützpunkten wird mit einem sanften Verlauf interpoliert, sodass es an Saisonwechseln keine sprunghaften Verbrauchsprognosen gibt. Neuere Vergleichstage werden stärker gewichtet als sehr alte Archivtage. Ab 1.10.48 werden Wochentags-/Saison-Slots mit noch wenigen Vergleichstagen zusätzlich mit dem globalen Stundenprofil stabilisiert; mit wachsender Zahl passender Lerntage steigt das Gewicht des individuellen Wochentags automatisch.
 
-Autoladung wird primär am deutlichen Leistungsanstieg gegenüber der unmittelbar vorherigen Grundlast erkannt. Standard ist ein typischer Ladeanstieg von **6,5 kW** mit **±2,0 kW Toleranz**; zusätzlich bleibt der Mindestanstieg konfigurierbar. Ein Sprung wie ca. **1,2 kW → 7,3–8,5 kW** wird damit direkt als Ladebeginn bewertet. Danach wird die erhöhte Last bis zur Rückkehr Richtung Grundlast verfolgt. Eine Ladephase wird nur übernommen, wenn sie mindestens die konfigurierbare **Autoladung Mindestdauer** erreicht; Standard sind **20 Minuten**. Damit werden kurze Fremdspitzen verworfen. Die automatische Erkennung zukünftiger Ladevorgänge kann separat ein- oder ausgeschaltet werden; die manuelle Archivsuche bleibt davon unabhängig. Der erkannte Zusatzanteil wird beim Lernen vollständig aus dem Grundlastprofil herausgerechnet. Das originale Verbrauchsarchiv bleibt unverändert und der Ladeanteil erscheint im Diagramm separat **orange**.
+Autoladung wird am Leistungsanstieg gegenüber der unmittelbar vorherigen Grundlast erkannt. Die eingestellte **Autoladung Ladeleistung** ist zugleich Referenz für die Startflanke und der feste Leistungsanteil, der während der Ladephase aus dem Lastprofil herausgerechnet wird. Die Toleranz bestimmt, wie stark die Startflanke davon abweichen darf. Eine Ladephase wird nur übernommen, wenn sie mindestens die konfigurierbare **Autoladung Mindestdauer** erreicht; Standard sind **20 Minuten**. Die erkannte Ladephase endet beim deutlichen Leistungsabfall Richtung Grundlast oder spätestens bei der eingestellten maximalen Energie pro Ladevorgang. Das originale Verbrauchsarchiv bleibt unverändert und der Ladeanteil erscheint im Diagramm separat **orange**.
 
 Für die Einspeiseentscheidung wird die PV-Prognose des nächsten Tages zeitgleich mit dem erwarteten Eigenverbrauch verrechnet. Nur der erwartete PV-Überschuss kann zum Wiederaufladen des Speichers verwendet werden. Die Einspeisung wird deshalb so begrenzt, dass der konfigurierte **Ziel-SoC nach dem nächsten PV-Tag** erreichbar bleibt und der Nacht-/Eigenverbrauch berücksichtigt ist.
 
 Der normale Lernlauf aktualisiert nur die vorhandenen aktuellen Saison-/Wochentag-Slots. Über **Lastprofil neu berechnen (inkl. Archiv)** kann das komplette vorhandene Verbrauchsarchiv rückwirkend ausgewertet werden. Der Wiederaufbau läuft in kleinen Blöcken über den bestehenden Modul-Worker, damit die übrigen Modul-Timer nicht durch einen langen Archivlauf blockiert werden. Das Lastprofil-Diagramm kann über das konfigurierte Lernfenster (maximal 90 Tage) zurückgeblättert werden und zeigt pro Tag das passende Wochentags-/Saisonprofil.
 
 **Lastprofil zurücksetzen** entfernt ausschließlich die intern gelernten Lastprofilwerte. Verbrauchsarchive und alle anderen Modul-Daten bleiben erhalten. Es erfolgt niemals ein automatischer Lastprofil-Reset bei einem Modulupdate.
+
+## Einheitliche Verbrauchsprognose ab 1.10.61
+
+Alle Verbrauchswerte für die Batterieplanung stammen aus dem stündlichen Lastprofil. Die kommende Nachtreserve wird durch zeitanteilige Integration der passenden Stundenprofile von Nachtbeginn bis Morgenende berechnet. Danach werden die Stunden bis zum nächsten Nachtbeginn direkt in PV-Zeit und übrigen Tag aufgeteilt. Eine separate Nachtverbrauchsstatistik wird nicht mehr gelernt oder skaliert. Der Sicherheitsaufschlag auf die gelernte Verbrauchsprognose wird genau einmal auf die Stundenwerte angewendet.
 
 ## Preisdiagramm über 24 Stunden
 

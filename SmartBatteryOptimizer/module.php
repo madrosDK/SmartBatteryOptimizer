@@ -56,7 +56,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('GridExportEnergyVariable', 0);
         $this->RegisterPropertyInteger('PVActualPowerVariable', 0);
         $this->RegisterPropertyInteger('LearningDays', 30);
-        $this->RegisterPropertyFloat('FallbackNightConsumptionKWh', 4.0);
+        $this->RegisterPropertyFloat('FallbackNightConsumptionKWh', 4.0); // Legacy-Kompatibilität, seit 1.10.61 unbenutzt.
         $this->RegisterPropertyBoolean('ConsumptionProfileLearningEnabled', true);
         $this->RegisterPropertyFloat('EVChargingDetectionThresholdKW', 7.1);
         $this->RegisterPropertyFloat('EVChargingMaxEnergyKWh', 14.4);
@@ -70,7 +70,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyFloat('FallbackDailyConsumptionKWh', 12.0);
         $this->RegisterPropertyFloat('ConsumptionForecastSafetyPct', 10.0);
         $this->RegisterPropertyFloat('BatteryTargetSOC', 100.0);
-        $this->RegisterPropertyInteger('MinimumValidNights', 3);
+        $this->RegisterPropertyInteger('MinimumValidNights', 3); // Legacy-Kompatibilität, seit 1.10.61 unbenutzt.
         $this->RegisterPropertyBoolean('AutomaticDayNight', false);
         $this->RegisterPropertyInteger('SunriseVariable', 0);
         $this->RegisterPropertyInteger('SunsetVariable', 0);
@@ -79,7 +79,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterPropertyInteger('NightStartHour', 18);
         $this->RegisterPropertyInteger('FallbackMorningHour', 8);
         $this->RegisterPropertyInteger('MorningPVThresholdW', 300);
-        $this->RegisterPropertyFloat('SafetyReservePct', 10.0);
+        $this->RegisterPropertyFloat('SafetyReservePct', 10.0); // Legacy-Kompatibilität, seit 1.10.61 unbenutzt.
         $this->RegisterPropertyFloat('OutlierPct', 70.0);
 
         $this->RegisterPropertyInteger('PriceProvider', 0);
@@ -561,7 +561,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.60';
+        $currentModuleVersion = '1.10.61';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -692,7 +692,7 @@ class SmartBatteryOptimizer extends IPSModule
         $payload = [
             'format' => 'SmartBatteryOptimizer-DataExport',
             'formatVersion' => 1,
-            'moduleVersion' => '1.10.60',
+            'moduleVersion' => '1.10.61',
             'instanceID' => $this->InstanceID,
             'exportedAt' => date('c'),
             'configurationWithoutSecrets' => $configuration,
@@ -1405,20 +1405,18 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->DebugLog('Control', 'Steuerpruefung vor Aktualisierung fehlgeschlagen, Aktualisierung laeuft trotzdem weiter: ' . $controlError->getMessage(), 0);
             }
 
-            // Preise und Preisdiagramm bewusst VOR Nachtverbrauch/Lastprofil aktualisieren.
+            // Preise und Preisdiagramm bewusst VOR dem Lastprofil-Lernlauf aktualisieren.
             // Ein langsamer oder fehlerhafter Lernlauf darf den Börsenpreis-Refresh niemals
             // mehr blockieren. Für die Farbmarkierungen wird zunächst der zuletzt gültige
             // Forecast/Plan verwendet; am Ende des Rechenlaufs wird das Diagramm wie bisher
             // nochmals mit dem frisch berechneten Plan gerendert.
             $this->RefreshPricesAndChartEarly();
 
-            $this->ForecastDiagnosticStep('01 Nachtverbrauch START');
-            $night = $this->LearnNightConsumptionInternal();
-            $this->ForecastDiagnosticStep('02 Nachtverbrauch ENDE');
-            $this->DebugLog('Nachtverbrauch', 'Ergebnis ' . round($night, 3) . ' kWh | ' . $this->ReadAttributeString('NightLearningSource'));
-            $this->ForecastDiagnosticStep('03 Verbrauchsprofil START');
+            // Verbrauch wird vollständig aus EINEM gelernten Stundenprofil abgeleitet.
+            // Der frühere separate Nacht-Lernpfad ist nicht mehr Teil der Berechnung.
+            $this->ForecastDiagnosticStep('01 Verbrauchsprofil START');
             $consumptionProfile = $this->LearnConsumptionProfileInternal(false);
-            $this->ForecastDiagnosticStep('04 Verbrauchsprofil ENDE');
+            $this->ForecastDiagnosticStep('02 Verbrauchsprofil ENDE');
             $this->DebugLog('Verbrauchsprofil', ['Quelle'=>$this->ReadAttributeString('ConsumptionLearningSource'),'dailyKWh'=>$consumptionProfile['dailyKWh'] ?? null,'validDays'=>$consumptionProfile['validDays'] ?? null]);
             $forecast = [];
             if (!$refreshPVForecast) {
@@ -1434,12 +1432,12 @@ class SmartBatteryOptimizer extends IPSModule
                 // Forecast weitergerechnet. Preise, Planung und Anzeigen duerfen deswegen nicht
                 // auf einem alten Stand stehen bleiben.
                 try {
-                    $this->ForecastDiagnosticStep('05 PV-Kalibrierung START');
+                    $this->ForecastDiagnosticStep('03 PV-Kalibrierung START');
                     $this->UpdatePVCalibrationState(false);
-                    $this->ForecastDiagnosticStep('06 PV-Kalibrierung ENDE');
-                    $this->ForecastDiagnosticStep('07 FetchPVForecast START');
+                    $this->ForecastDiagnosticStep('04 PV-Kalibrierung ENDE');
+                    $this->ForecastDiagnosticStep('05 FetchPVForecast START');
                     $forecast = $this->FetchPVForecast($forceForecastProviders);
-                    $this->ForecastDiagnosticStep('08 FetchPVForecast ENDE');
+                    $this->ForecastDiagnosticStep('06 FetchPVForecast ENDE');
                     $this->DebugLog('PV-Prognose', ['heuteKWh'=>$forecast['todayKWh'] ?? null,'morgenKWh'=>$forecast['tomorrowKWh'] ?? null,'Quellen'=>$forecast['forecastSources'] ?? [],'Gewichte'=>$forecast['forecastSourceWeights'] ?? []]);
                     $this->StorePVForecastHistory($forecast);
                 } catch (Throwable $forecastError) {
@@ -1452,11 +1450,11 @@ class SmartBatteryOptimizer extends IPSModule
                     $this->DebugLog('PV-Prognose', $forecastWarning . ' | letzter gueltiger Forecast wird weiterverwendet', 0);
                 }
             }
-            $forecast = $this->ApplyConsumptionForecastToPV($forecast, $consumptionProfile, $night);
+            $forecast = $this->ApplyConsumptionForecastToPV($forecast, $consumptionProfile);
             SetValue($this->GetIDForIdent('PVCalibrationStatus'), $this->BuildPVCalibrationStatus($forecast));
             $gate = $this->GetAutomaticLearningGateStatus();
             SetValue($this->GetIDForIdent('AutomaticReleaseStatus'), $gate['text']);
-            $this->ForecastDiagnosticStep('09 Preise START');
+            $this->ForecastDiagnosticStep('07 Preise START');
             $prices = $this->FetchPrices();
             // Das frisch geladene Preisraster zuerst veröffentlichen. Der parallel
             // laufende ControlTimer darf niemals noch ein altes PricesJSON lesen und
@@ -1467,10 +1465,10 @@ class SmartBatteryOptimizer extends IPSModule
             // bereinigt und rückwirkend mit den korrekten Startzeiten neu aufgebaut.
             $this->SyncCurrentPriceArchiveTimeline($prices);
             $this->UpdateCurrentPriceVariable($prices);
-            $this->ForecastDiagnosticStep('10 Preise ENDE');
+            $this->ForecastDiagnosticStep('08 Preise ENDE');
             $this->DebugLog('Preise', 'Geladene interne Preis-Slots: ' . count($prices));
-            $nightForPlan = (float)($forecast['nightConsumptionTomorrowKWh'] ?? $night);
-            $this->ForecastDiagnosticStep('11 Einspeiseplan START');
+            $nightForPlan = (float)($forecast['upcomingNightConsumptionKWh'] ?? ($forecast['nightConsumptionTomorrowKWh'] ?? 0.0));
+            $this->ForecastDiagnosticStep('09 Einspeiseplan START');
             // Veralteten Laufzustand bereinigen: Ein gesetzter ActiveFeedInPlanKey darf
             // die Aktualisierung des zukünftigen Plans nur blockieren, wenn tatsächlich
             // gerade eingespeist wird. Nach Neustart/Fehler kann der Schlüssel sonst
@@ -1482,7 +1480,7 @@ class SmartBatteryOptimizer extends IPSModule
             // Bereits veröffentlichte zukünftige Einspeisefenster sind verbindlich.
             // Eine normale Neuberechnung darf sie nicht mehr entfernen oder verschieben.
             $plan = $this->PreserveCommittedFeedInPlan($plan, $previousPlan);
-            $this->ForecastDiagnosticStep('12 Einspeiseplan ENDE');
+            $this->ForecastDiagnosticStep('10 Einspeiseplan ENDE');
             $this->DebugLog('Einspeiseplan', ['SoC'=>$plan['soc'] ?? null,'gespeichertKWh'=>$plan['storedKWh'] ?? null,'ReserveKWh'=>$plan['reserveKWh'] ?? null,'verfuegbarKWh'=>$plan['availableKWh'] ?? null,'PVSpeicherKWh'=>$plan['pvSpaceRequiredKWh'] ?? null,'Slots'=>count($plan['slots'] ?? []),'ErloesEUR'=>$plan['expectedRevenueEUR'] ?? null,'Status'=>$plan['status'] ?? '']);
 
             $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
@@ -1492,9 +1490,16 @@ class SmartBatteryOptimizer extends IPSModule
 
             SetValue($this->GetIDForIdent('PVForecastToday'), round((float)($forecast['todayKWh'] ?? 0.0), 3));
             SetValue($this->GetIDForIdent('PVForecastTomorrow'), round($forecast['tomorrowKWh'], 3));
+            // Kompatibilitätsvariablen bleiben bestehen, werden aber ausschließlich
+            // aus dem gemeinsamen Lastprofil gespeist.
+            $profileSource = (string)($consumptionProfile['source'] ?? $this->ReadAttributeString('ConsumptionLearningSource'));
+            $profileDays = (int)($consumptionProfile['validDays'] ?? 0);
+            $this->WriteAttributeString('NightLearningSource', 'Lastprofil – ' . $profileSource);
+            $this->WriteAttributeInteger('NightSampleCount', $profileDays);
+            $this->WriteAttributeFloat('LearnedNightKWh', $nightForPlan);
             SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($nightForPlan, 3));
-            SetValue($this->GetIDForIdent('NightConsumptionSource'), $this->ReadAttributeString('NightLearningSource'));
-            SetValue($this->GetIDForIdent('ValidNightSamples'), $this->ReadAttributeInteger('NightSampleCount'));
+            SetValue($this->GetIDForIdent('NightConsumptionSource'), 'Lastprofil – ' . $profileSource);
+            SetValue($this->GetIDForIdent('ValidNightSamples'), $profileDays);
             SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)$forecast['consumptionTomorrowKWh'], 3));
             SetValue($this->GetIDForIdent('ExpectedPVSurplusTomorrow'), round((float)$forecast['pvSurplusTomorrowKWh'], 3));
             SetValue($this->GetIDForIdent('PVPeakPowerTomorrow'), round((float)($plan['pvPeakPowerTomorrowW'] ?? 0.0), 0));
@@ -1523,7 +1528,7 @@ class SmartBatteryOptimizer extends IPSModule
             }
             SetValue($this->GetIDForIdent('StatusText'), $finalStatus);
             SetValue($this->GetIDForIdent('LastUpdate'), date('d.m.Y H:i:s'));
-            SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $night));
+            SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $nightForPlan));
             SetValue($this->GetIDForIdent('PVForecastChartHTML'), $this->RenderPVForecastChartHTML($forecast));
             SetValue($this->GetIDForIdent('ForecastSolarStatus'), $this->RenderProviderForecastStatusHTML($forecast));
             SetValue($this->GetIDForIdent('ConsumptionProfileChartHTML'), $this->RenderConsumptionProfileChartHTML($consumptionProfile));
@@ -1592,19 +1597,20 @@ class SmartBatteryOptimizer extends IPSModule
 
     public function LearnNightConsumption()
     {
-        $this->SetActionFeedback('Nachtverbrauch wird neu gelernt ...');
+        // Kompatibilitätsmethode für ältere erzeugte Wrapper-Skripte.
+        // Es gibt keinen separaten Nacht-Lernpfad mehr: ein Aufruf lernt das
+        // gemeinsame Lastprofil neu und berechnet daraus die Nachtreserve.
+        $this->SetActionFeedback('Lastprofil wird neu gelernt ...');
         try {
-            $value = $this->LearnNightConsumptionInternal();
-            SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($value, 3));
-            SetValue($this->GetIDForIdent('NightConsumptionSource'), $this->ReadAttributeString('NightLearningSource'));
-            SetValue($this->GetIDForIdent('ValidNightSamples'), $this->ReadAttributeInteger('NightSampleCount'));
+            $this->LearnConsumptionProfileInternal(true);
             $this->RecalculateInternal(false);
-            $text = 'Nachtverbrauch neu gelernt: ' . number_format($value, 2, ',', '.') . ' kWh (' . $this->ReadAttributeString('NightLearningSource') . ')';
+            $value = (float)@GetValue($this->GetIDForIdent('NightConsumptionForecast'));
+            $text = 'Nachtreserve aus Lastprofil aktualisiert: ' . number_format($value, 2, ',', '.') . ' kWh';
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
             echo $text;
         } catch (Throwable $e) {
-            $text = 'Nachtverbrauch lernen fehlgeschlagen: ' . $e->getMessage();
+            $text = 'Lastprofil aktualisieren fehlgeschlagen: ' . $e->getMessage();
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
             echo $text;
@@ -5116,7 +5122,7 @@ class SmartBatteryOptimizer extends IPSModule
         $stored = $capacity * $soc / 100.0;
         $minimumSOC = $this->GetRuntimeMinimumSOC();
         $minEnergy = $capacity * $minimumSOC / 100.0;
-        $nightReserve = $nightKWh * (1.0 + $this->ReadPropertyFloat('SafetyReservePct') / 100.0);
+        $nightReserve = max(0.0, $nightKWh); // Sicherheitsaufschlag steckt bereits im stündlichen Lastprofil.
 
         $tomorrowPV = (float)$forecast['tomorrowKWh'];
         $tomorrowConsumption = (float)($forecast['consumptionTomorrowKWh'] ?? 0.0);
@@ -7468,11 +7474,13 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function BuildFallbackConsumptionProfile(float $dailyKWh, string $source): array
     {
-        $hourly = array_fill(0, 24, $dailyKWh / 24.0);
+        $rawHourly = array_fill(0, 24, $dailyKWh / 24.0);
+        $safety = 1.0 + max(0.0, $this->ReadPropertyFloat('ConsumptionForecastSafetyPct')) / 100.0;
+        $hourly = array_map(static fn($v) => max(0.0, (float)$v) * $safety, $rawHourly);
         $result = [
             'hourlyKWh' => $hourly,
-            'rawHourlyKWh' => $hourly,
-            'dailyKWh' => $dailyKWh,
+            'rawHourlyKWh' => $rawHourly,
+            'dailyKWh' => array_sum($hourly),
             'validDays' => 0,
             'source' => $source,
             'updated' => time()
@@ -7690,89 +7698,109 @@ class SmartBatteryOptimizer extends IPSModule
         return $result;
     }
 
-    private function ApplyConsumptionForecastToPV(array $forecast, array $profile, float $learnedNightKWh): array
+    private function ApplyConsumptionForecastToPV(array $forecast, array $profile): array
     {
-        $hourly = isset($profile['hourlyKWh']) && is_array($profile['hourlyKWh'])
-            ? $profile['hourlyKWh']
-            : array_fill(0, 24, 0.0);
-
+        // Einzige Verbrauchsbasis: das gelernte, stündliche Lastprofil. Auch Nacht,
+        // PV-Zeit und übriger Tag werden direkt daraus integriert; keine nachträgliche
+        // Skalierung auf einen separat gelernten Nachtwert mehr.
+        $todayStart = strtotime('today 00:00:00');
         $tomorrowStart = strtotime('tomorrow 00:00:00');
-        $tomorrowEnd = $tomorrowStart + 86400;
+        $tomorrowEnd = strtotime('+1 day', $tomorrowStart);
+
+        $nightStart = $this->DetermineNightStart(0, $todayStart);
         $nightEnd = $this->DetermineMorningEnd(0, $tomorrowStart);
-        $nightStart = $this->DetermineNightStart(0, $tomorrowStart);
+        $nextNightStart = $this->DetermineNightStart(0, $tomorrowStart);
+        if ($nightEnd <= $nightStart) $nightEnd = $tomorrowStart + 8 * 3600;
+        if ($nextNightStart <= $nightEnd) $nextNightStart = $tomorrowStart + 18 * 3600;
+
+        // Kommende Nacht = heute Abend bis morgen Morgen. Genau dieser Wert wird
+        // später als Batterie-Nachtreserve verwendet.
+        $nightConsumption = $this->GetConsumptionProfileEnergyForRange($profile, $nightStart, $nightEnd, true);
+
+        // Der folgende Tag wird vom Ende der Nacht bis zum nächsten Nachtbeginn
+        // direkt aus demselben Lastprofil berechnet. Zusammen ergibt das den für
+        // die Optimierung relevanten nächsten Verbrauchszyklus.
+        $dayStart = max($tomorrowStart, $nightEnd);
+        $dayEnd = min($tomorrowEnd, $nextNightStart);
         $thresholdKW = max(0.0, $this->ReadPropertyInteger('MorningPVThresholdW') / 1000.0);
+        $tomorrowHourly = $this->GetConsumptionForecastHourlyForTimestamp($profile, $tomorrowStart + 12 * 3600, true);
 
-        $totalConsumption = 0.0;
-        for ($h = 0; $h < 24; $h++) {
-            $totalConsumption += max(0.0, (float)($hourly[$h] ?? 0.0));
-        }
-
-        $nightConsumption = min($totalConsumption, max(0.0, $learnedNightKWh));
-        $dayConsumption = max(0.0, $totalConsumption - $nightConsumption);
-
-        $rawDayProfile = 0.0;
-        $dayFractions = [];
-        $pvKWhByHour = [];
-
-        for ($h = 0; $h < 24; $h++) {
-            $hourStart = $tomorrowStart + $h * 3600;
-            $hourEnd = $hourStart + 3600;
-            $loadKWh = max(0.0, (float)($hourly[$h] ?? 0.0));
-
-            $nightSeconds = 0;
-            $nightSeconds += $this->OverlapSeconds($hourStart, $hourEnd, $tomorrowStart, min($tomorrowEnd, $nightEnd));
-            $nightSeconds += $this->OverlapSeconds($hourStart, $hourEnd, max($tomorrowStart, $nightStart), $tomorrowEnd);
-            $nightFraction = max(0.0, min(1.0, $nightSeconds / 3600.0));
-            $dayFraction = 1.0 - $nightFraction;
-            $dayFractions[$h] = $dayFraction;
-
-            $rawDayProfile += $loadKWh * $dayFraction;
-
-            $pvKWhByHour[$h] = isset($forecast['hours'][$hourStart])
-                ? max(0.0, (float)$forecast['hours'][$hourStart]['totalKW'])
-                : 0.0;
-        }
-
-        $dayScale = $rawDayProfile > 0.000001 ? ($dayConsumption / $rawDayProfile) : 0.0;
         $consumptionDuringPV = 0.0;
         $otherDayConsumption = 0.0;
         $netPVSurplus = 0.0;
 
         for ($h = 0; $h < 24; $h++) {
-            $loadKWh = max(0.0, (float)($hourly[$h] ?? 0.0));
-            $dayLoadKWh = $loadKWh * ($dayFractions[$h] ?? 0.0) * $dayScale;
-            $pvKWh = $pvKWhByHour[$h] ?? 0.0;
+            $hourStart = $tomorrowStart + $h * 3600;
+            $hourEnd = $hourStart + 3600;
+            $overlap = $this->OverlapSeconds($hourStart, $hourEnd, $dayStart, $dayEnd);
+            if ($overlap <= 0) continue;
 
-            if (($dayFractions[$h] ?? 0.0) > 0.0 && $pvKWh >= $thresholdKW) {
-                $consumptionDuringPV += $dayLoadKWh;
-                $netPVSurplus += max(0.0, $pvKWh - $dayLoadKWh);
+            $fraction = $overlap / 3600.0;
+            $loadKWh = max(0.0, (float)($tomorrowHourly[$h] ?? 0.0)) * $fraction;
+            $pvKW = isset($forecast['hours'][$hourStart])
+                ? max(0.0, (float)($forecast['hours'][$hourStart]['totalKW'] ?? 0.0))
+                : 0.0;
+            $pvKWh = $pvKW * $fraction;
+
+            if ($pvKW >= $thresholdKW) {
+                $consumptionDuringPV += $loadKWh;
+                $netPVSurplus += max(0.0, $pvKWh - $loadKWh);
             } else {
-                $otherDayConsumption += $dayLoadKWh;
+                $otherDayConsumption += $loadKWh;
             }
         }
 
-        $consumptionDuringPV = min($consumptionDuringPV, max(0.0, $totalConsumption - $nightConsumption));
-        $otherDayConsumption = max(0.0, $totalConsumption - $nightConsumption - $consumptionDuringPV);
+        $dayConsumption = $consumptionDuringPV + $otherDayConsumption;
+        $cycleConsumption = $nightConsumption + $dayConsumption;
+        $calendarTomorrowConsumption = array_sum(array_map(static fn($v) => max(0.0, (float)$v), $tomorrowHourly));
 
-        $forecast['consumptionTomorrowKWh'] = $totalConsumption;
+        $forecast['consumptionTomorrowKWh'] = $cycleConsumption;
+        $forecast['calendarConsumptionTomorrowKWh'] = $calendarTomorrowConsumption;
+        $forecast['upcomingNightConsumptionKWh'] = $nightConsumption;
+        // Kompatibilitätsfeld: entspricht jetzt ebenfalls der kommenden Nachtreserve.
         $forecast['nightConsumptionTomorrowKWh'] = $nightConsumption;
         $forecast['dayConsumptionTomorrowKWh'] = $dayConsumption;
         $forecast['consumptionDuringPVTomorrowKWh'] = $consumptionDuringPV;
         $forecast['otherDayConsumptionTomorrowKWh'] = $otherDayConsumption;
         $forecast['pvSurplusTomorrowKWh'] = $netPVSurplus;
+        $forecast['consumptionCycleStartTs'] = $nightStart;
+        $forecast['consumptionCycleEndTs'] = $nextNightStart;
+        $forecast['nightWindowStartTs'] = $nightStart;
+        $forecast['nightWindowEndTs'] = $nightEnd;
         $forecast['consumptionProfile'] = $profile;
 
         $this->DebugLog(
             'PV/Eigenverbrauch',
-            'Morgen gesamt=' . round($totalConsumption, 3)
-            . ' kWh | Nacht=' . round($nightConsumption, 3)
+            'Lastprofil-Zyklus gesamt=' . round($cycleConsumption, 3)
+            . ' kWh | kommende Nacht=' . round($nightConsumption, 3)
             . ' kWh | PV-Zeit=' . round($consumptionDuringPV, 3)
             . ' kWh | übriger Tag=' . round($otherDayConsumption, 3)
-            . ' kWh | Summe=' . round($nightConsumption + $consumptionDuringPV + $otherDayConsumption, 3)
+            . ' kWh | Kalender morgen=' . round($calendarTomorrowConsumption, 3)
             . ' kWh | PV-Überschuss=' . round($netPVSurplus, 3) . ' kWh'
         );
 
         return $forecast;
+    }
+
+    private function GetConsumptionProfileEnergyForRange(array $profile, int $rangeStart, int $rangeEnd, bool $withSafety = true): float
+    {
+        if ($rangeEnd <= $rangeStart) return 0.0;
+
+        $sum = 0.0;
+        $dayStart = strtotime(date('Y-m-d 00:00:00', $rangeStart));
+        while ($dayStart < $rangeEnd) {
+            $nextDay = strtotime('+1 day', $dayStart);
+            $hourly = $this->GetConsumptionForecastHourlyForTimestamp($profile, $dayStart + 12 * 3600, $withSafety);
+            for ($h = 0; $h < 24; $h++) {
+                $hourStart = $dayStart + $h * 3600;
+                $hourEnd = min($nextDay, $hourStart + 3600);
+                $overlap = $this->OverlapSeconds($hourStart, $hourEnd, $rangeStart, $rangeEnd);
+                if ($overlap <= 0) continue;
+                $sum += max(0.0, (float)($hourly[$h] ?? 0.0)) * ($overlap / 3600.0);
+            }
+            $dayStart = $nextDay;
+        }
+        return max(0.0, $sum);
     }
 
     private function OverlapSeconds(int $startA, int $endA, int $startB, int $endB): int
@@ -7781,116 +7809,6 @@ class SmartBatteryOptimizer extends IPSModule
             return 0;
         }
         return max(0, min($endA, $endB) - max($startA, $startB));
-    }
-
-    private function LearnNightConsumptionInternal(): float
-    {
-        $fallback = max(0.0, $this->ReadPropertyFloat('FallbackNightConsumptionKWh'));
-        $varID = $this->ReadPropertyInteger('HousePowerVariable');
-
-        if ($varID <= 0 || !@IPS_VariableExists($varID)) {
-            return $this->UseNightFallback($fallback, 'Fallback – Hausverbrauchsvariable fehlt', 0);
-        }
-
-        $archiveID = $this->FindArchive();
-        if ($archiveID <= 0) {
-            return $this->UseNightFallback($fallback, 'Fallback – Archiv nicht gefunden', 0);
-        }
-
-        // Der Benutzer wählt die normale Variable. Das Archiv protokolliert genau diese Variable-ID.
-        // Falls die Protokollierung nicht aktiv ist, wird nicht abgebrochen, sondern ein Ersatzwert benutzt.
-        if (function_exists('AC_GetLoggingStatus')) {
-            try {
-                if (!AC_GetLoggingStatus($archiveID, $varID)) {
-                    return $this->UseNightFallback($fallback, 'Fallback – Variable nicht archiviert', 0);
-                }
-            } catch (Throwable $e) {
-                $this->DebugLog('NightArchive', 'Logging-Status konnte nicht geprüft werden: ' . $e->getMessage(), 0);
-            }
-        }
-
-        $days = max(3, $this->ReadPropertyInteger('LearningDays'));
-        $minimumSamples = max(1, min($days, $this->ReadPropertyInteger('MinimumValidNights')));
-        $samples = [];
-        for ($d = 1; $d <= $days; $d++) {
-            $day = strtotime('-' . $d . ' days 00:00');
-            $start = $this->DetermineNightStart($archiveID, $day);
-            $end = $this->DetermineMorningEnd($archiveID, $day + 86400);
-            if ($end <= $start) continue;
-            $kwh = $this->IntegratePowerVariable($archiveID, $varID, $start, $end);
-            $durationH = max(0.0, ($end - $start) / 3600.0);
-            $avgW = $durationH > 0 ? ($kwh / $durationH) * 1000.0 : 0.0;
-            $this->DebugLog(
-                'NightWindow',
-                date('d.m.Y', $day)
-                . ' | ' . date('H:i', $start) . '–' . date('H:i', $end)
-                . ' | Dauer=' . number_format($durationH, 2, '.', '') . ' h'
-                . ' | Verbrauch=' . number_format($kwh, 2, '.', '') . ' kWh'
-                . ' | Ø=' . number_format($avgW, 0, '.', '') . ' W'
-                . ' | ' . ($this->ReadPropertyBoolean('AutomaticDayNight') ? 'automatisch' : 'manuell')
-            );
-            if ($kwh > 0.05 && is_finite($kwh)) {
-                // Reihenfolge beibehalten: zuerst die neuesten Nächte.
-                $samples[] = ['age' => $d, 'kWh' => $kwh];
-            }
-        }
-
-        $this->WriteAttributeInteger('NightSampleCount', count($samples));
-
-        if (count($samples) < $minimumSamples) {
-            $learned = $this->ReadAttributeFloat('LearnedNightKWh');
-            if ($learned > 0.05) {
-                $source = 'Letzter Lernwert – nur ' . count($samples) . '/' . $minimumSamples . ' gültige Nächte';
-                $this->WriteAttributeString('NightLearningSource', $source);
-                $this->DebugLog('NightConsumption', $source, 0);
-                return $learned;
-            }
-            return $this->UseNightFallback($fallback, 'Fallback – nur ' . count($samples) . '/' . $minimumSamples . ' gültige Nächte', count($samples));
-        }
-
-        $values = array_column($samples, 'kWh');
-        $median = $this->Median($values);
-        $band = $this->ReadPropertyFloat('OutlierPct') / 100.0;
-        $filtered = array_values(array_filter($samples, function ($sample) use ($median, $band) {
-            $v = (float)$sample['kWh'];
-            if ($median <= 0) return true;
-            return $v >= $median * max(0.0, 1.0 - $band) && $v <= $median * (1.0 + $band);
-        }));
-        if (count($filtered) < $minimumSamples) $filtered = $samples;
-
-        // Zeitgewichtung: neueste 7 Nächte 60 %, Tage 8–14 25 %, ältere Nächte 15 %.
-        $groups = [[], [], []];
-        foreach ($filtered as $sample) {
-            $age = (int)$sample['age'];
-            $idx = $age <= 7 ? 0 : ($age <= 14 ? 1 : 2);
-            $groups[$idx][] = (float)$sample['kWh'];
-        }
-        $groupWeights = [0.60, 0.25, 0.15];
-        $weightedSum = 0.0;
-        $usedWeight = 0.0;
-        foreach ($groups as $idx => $group) {
-            if (count($group) === 0) continue;
-            $groupAvg = array_sum($group) / count($group);
-            $weightedSum += $groupAvg * $groupWeights[$idx];
-            $usedWeight += $groupWeights[$idx];
-        }
-        $weightedAvg = $usedWeight > 0 ? $weightedSum / $usedWeight : $median;
-        $learned = 0.75 * $weightedAvg + 0.25 * $median;
-
-        $this->WriteAttributeFloat('LearnedNightKWh', $learned);
-        $this->WriteAttributeInteger('NightSampleCount', count($filtered));
-        $source = 'Archiv gelernt – ' . count($filtered) . ' gültige Nächte';
-        $this->WriteAttributeString('NightLearningSource', $source);
-        $this->DebugLog('NightConsumption', $source . ', Prognose ' . round($learned, 3) . ' kWh', 0);
-        return $learned;
-    }
-
-    private function UseNightFallback(float $fallback, string $source, int $samples): float
-    {
-        $this->WriteAttributeString('NightLearningSource', $source);
-        $this->WriteAttributeInteger('NightSampleCount', $samples);
-        $this->DebugLog('NightConsumption', $source . ', Wert ' . round($fallback, 3) . ' kWh', 0);
-        return $fallback;
     }
 
     private function DetermineNightStart(int $archiveID, int $dayTs): int
@@ -9331,13 +9249,13 @@ class SmartBatteryOptimizer extends IPSModule
     private function RenderOverviewHTML(array $forecast, array $plan, float $night): string
     {
         $total = (float)($forecast['consumptionTomorrowKWh'] ?? 0.0);
-        $nightPart = (float)($forecast['nightConsumptionTomorrowKWh'] ?? $night);
+        $nightPart = (float)($forecast['upcomingNightConsumptionKWh'] ?? ($forecast['nightConsumptionTomorrowKWh'] ?? $night));
         $pvPart = (float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0);
         $otherPart = (float)($forecast['otherDayConsumptionTomorrowKWh'] ?? 0.0);
 
         // Konkretes Zeitfenster der nächsten Nacht anzeigen.
-        $nightStartTs = $this->DetermineNightStart(0, strtotime('today 00:00:00'));
-        $nightEndTs = $this->DetermineMorningEnd(0, strtotime('tomorrow 00:00:00'));
+        $nightStartTs = (int)($forecast['nightWindowStartTs'] ?? $this->DetermineNightStart(0, strtotime('today 00:00:00')));
+        $nightEndTs = (int)($forecast['nightWindowEndTs'] ?? $this->DetermineMorningEnd(0, strtotime('tomorrow 00:00:00')));
         $nightWindowClock = date('H:i', $nightStartTs) . ' – ' . date('H:i', $nightEndTs) . ' Uhr';
 
         $cellLabel = 'padding:4px 8px 4px 0;color:#b9c0c8;white-space:nowrap;vertical-align:top';
@@ -9362,10 +9280,10 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '<td></td><td></td>';
         $html .= '</tr>';
 
-        $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">Verbrauch morgen</td></tr>';
+        $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">Verbrauch bis morgen Abend</td></tr>';
         $html .= '<tr>';
         $html .= '<td style="' . $cellLabel . '">Gesamt</td><td style="' . $cellValue . '">' . number_format($total, 2, ',', '.') . ' kWh</td>';
-        $html .= '<td style="' . $cellLabel . '">Nacht</td><td style="' . $cellValue . '">' . number_format($nightPart, 2, ',', '.') . ' kWh</td>';
+        $html .= '<td style="' . $cellLabel . '">Kommende Nacht</td><td style="' . $cellValue . '">' . number_format($nightPart, 2, ',', '.') . ' kWh</td>';
         $html .= '</tr>';
         $html .= '<tr>';
         $html .= '<td style="' . $cellLabel . '">Während PV-Zeit</td><td style="' . $cellValue . '">' . number_format($pvPart, 2, ',', '.') . ' kWh</td>';
@@ -9375,7 +9293,7 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '<td style="' . $cellLabel . '">Nachtfenster</td><td colspan="3" style="padding:4px 0;color:#fff"><b>' . htmlspecialchars($nightWindowClock) . '</b></td>';
         $html .= '</tr>';
         $html .= '<tr>';
-        $html .= '<td style="' . $cellLabel . '">Lernbasis</td><td colspan="3" style="padding:4px 0;color:#d8dde3">Nachtverbrauch: ' . htmlspecialchars($this->HumanizeLearningSource($this->ReadAttributeString('NightLearningSource'), true)) . ' &nbsp;|&nbsp; Tagesprofil: ' . htmlspecialchars($this->HumanizeLearningSource($this->ReadAttributeString('ConsumptionLearningSource'), false)) . '</td>';
+        $html .= '<td style="' . $cellLabel . '">Lernbasis</td><td colspan="3" style="padding:4px 0;color:#d8dde3">Lastprofil: ' . htmlspecialchars($this->HumanizeLearningSource($this->ReadAttributeString('ConsumptionLearningSource'), false)) . '</td>';
         $html .= '</tr>';
 
         $html .= '<tr><td colspan="4" style="' . $sectionStyle . '">PV-Prognose</td></tr>';
