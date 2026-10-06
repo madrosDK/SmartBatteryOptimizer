@@ -478,10 +478,6 @@ Die PV-Kalibrierung und die Diagnose-HTMLBox werden alle 30 Sekunden aus lokalen
 ### 1.9.28 – Mehrheitsbasierte Abregelung
 Die PV-Lernsperre wertet ein rollendes 2-Minuten-Fenster aus. Standardmäßig schaltet sie bei mindestens 75 % Messwerten an/über der Sperrschwelle ein und bei mindestens 75 % Messwerten darunter wieder aus. Der Prozentsatz ist konfigurierbar. Bei Aktivierung werden ausschließlich der Sperrzeitraum sowie zwei Minuten vor dem ersten hohen Messwert verworfen; nach Freigabe werden neue Werte sofort wieder zur Kalibrierung verwendet.
 
-### Datenexport
-Über **Gespeicherte Modul-Daten als JSON exportieren** werden alle internen Lern-, Kalibrierungs-, Prognose-, Cache-, Preis-, Plan- und Statusattribute sowie die aktuellen Modulvariablen in eine JSON-Datei geschrieben. Die Datei liegt unter `user/SmartBatteryOptimizer/` im IP-Symcon-Kernelverzeichnis. API-Schlüssel werden nicht exportiert. Historische Rohwerte der referenzierten IP-Symcon-Variablen bleiben im normalen IP-Symcon-Archiv und werden nicht dupliziert.
-
-
 ## Einspeiseplanung mit Lastprofil (v1.10.34)
 
 Bei der Preis-Einspeisung ist **Maximale Netzeinspeisung** das Netz-Ziel. **Max. Einspeise-/Entladeleistung** ist die physische Obergrenze des Wechselrichters/Batteriesystems.
@@ -512,7 +508,7 @@ PV-Kalibrierung und Einspeise-Statistik verwenden ab 1.9.79 das **IP-Symcon Arch
 
 Beim ersten Start von 1.9.79 werden die vorhandenen Kalibrierdaten automatisch übernommen. Aktuelle Energieintervalle werden zeitlich übertragen; bereits saisonal verdichtete Altwerte werden unter Erhalt von Gesamtenergie, Ist/Prognose-Verhältnis, Stundenbezug und Lerntagen in die Archivstruktur migriert. Die alten JSON-Werte bleiben als Sicherheitskopie bestehen.
 
-Auch die Preis-Einspeiseautomatik schreibt abgeschlossene Einspeisefenster in eigene archivierte Variablen (kWh, Erlös, Planmenge und Fensterzähler). Das Monats-Highcharts liest diese Historie anschließend aus dem Archiv. Die Statusvariable **Archiv-Datenspeicher** zeigt den Migrations-/Archivstatus.
+Abgeschlossene Einspeiseautomatik-Läufe werden ausschließlich in `FeedInStatisticsJSON` gespeichert. Die reale Gesamt-Netzeinspeisung und die Erlösberechnung verwenden weiterhin die echten Messarchive sowie die interne Tarif-Zeitreihe. Zusätzliche Einspeise-Hilfsvariablen im IP-Symcon-Archiv werden nicht mehr angelegt.
 
 Die Funktion **PV-Kalibrierdaten löschen ...** löscht den ausgewählten Zeitraum jetzt direkt aus den archivierten PV-Zeitreihen und reaggregiert die betroffenen Variablen. **PV-Kalibrierung zurücksetzen** leert die PV-Lernarchive vollständig; die Einspeise-Statistik wird dabei nicht gelöscht.
 

@@ -160,11 +160,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterVariableString('PVCalibrationDiagnosisHTML', 'PV-Kalibrierung Diagnose', '~HTMLBox', 190);
         $this->RegisterVariableString('ActionFeedback', 'Letzte Aktionen', '~HTMLBox', 118);
         $this->RegisterVariableString('ForecastSolarStatus', 'PV-Prognose Anbieter', '~HTMLBox', 119);
-        $this->RegisterVariableString('PVDebugVisibilityState', 'PV Debug Sichtbarkeit', '', 126);
         $this->RegisterVariableString('ProviderDebugHTML', 'Prognose Provider Debug', '~HTMLBox', 191);
-        $this->RegisterVariableString('DataExportStatus', 'Datenspeicher Export', '', 128);
-        $this->RegisterVariableString('ArchiveStorageStatus', 'Archiv-Datenspeicher', '', 129);
-        $this->EnableAction('PVDebugVisibilityState');
         $this->RegisterVariableString('PriceChartHTML', 'Börsenpreis Diagramm', '~HTMLBox', 123);
         $this->RegisterVariableString('PlanHTML', 'Einspeiseplan', '~HTMLBox', 123);
 
@@ -174,7 +170,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('ForecastSolarSurfaceCacheJSON', '{}');
         $this->RegisterAttributeString('OpenMeteoSurfaceCacheJSON', '{}');
         $this->RegisterAttributeInteger('ForecastSolarRetryAfterTs', 0);
-        $this->RegisterAttributeString('PVDebugVisibilityJSON', '{}');
         $this->RegisterAttributeString('ProviderDebugLogJSON', '[]');
         $this->RegisterAttributeString('ActionHistoryJSON', '[]');
         $this->RegisterAttributeString('AppliedModuleVersion', '');
@@ -190,7 +185,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeBoolean('LastAppliedDebugMode', false);
         $this->RegisterAttributeString('PVCalibrationJSON', '{}');
         $this->RegisterAttributeInteger('ArchiveStorageMigrationVersion', 0);
-        $this->RegisterAttributeString('ArchiveStorageStatus', '');
         $this->RegisterAttributeInteger('PVCalibrationEnergyVersion', 0);
         $this->RegisterAttributeString('PVSurfaceStableIDsJSON', '{}');
         $this->RegisterAttributeBoolean('PVCalibrationCurtailmentLatched', false);
@@ -241,7 +235,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeInteger('GridExportTrackLastTs', 0);
         $this->RegisterAttributeFloat('GridExportTrackLastW', 0.0);
         $this->RegisterAttributeInteger('FeedInStatisticsLastRenderTs', 0);
-        $this->RegisterAttributeInteger('FeedInStatisticsResetVersion', 0);
         $this->RegisterAttributeInteger('ActiveFeedInStartedTs', 0);
         $this->RegisterAttributeFloat('ActiveFeedInPriceCt', 0.0);
         $this->RegisterAttributeString('ActiveFeedInReason', '');
@@ -421,7 +414,7 @@ class SmartBatteryOptimizer extends IPSModule
         $expectedRevenueID = (int)@$this->GetIDForIdent('ExpectedRevenue');
         if ($expectedRevenueID > 0) @IPS_SetVariableCustomProfile($expectedRevenueID, 'SBO.CurrencyEUR');
 
-        // v1.10.64: reine Anzeige-/Legacyvariablen wirklich entfernen. Die Berechnungen
+        // v1.10.65: bestätigte Legacy-/Exportvariablen und den alten Einspeise-Archivzweig entfernen. Die Berechnungen
         // und Konfigurationswerte bleiben bestehen. CurrentPrice bleibt ausschließlich
         // als verstecktes technisches Tarifarchiv für historische Erlösstatistiken erhalten.
         foreach ([
@@ -433,7 +426,16 @@ class SmartBatteryOptimizer extends IPSModule
             'HighestPrice',
             'RuntimeGridFeedInLimitW',
             'RuntimeGridLimitSafetyW',
-            'RuntimeMaxBatteryChargePowerW'
+            'RuntimeMaxBatteryChargePowerW',
+            'PVDebugVisibilityState',
+            'DataExportStatus',
+            'ArchiveStorageStatus',
+            'FeedInArchiveKWh',
+            'FeedInArchiveEUR',
+            'FeedInArchiveTargetKWh',
+            'FeedInArchiveWindow',
+            'FeedInArchiveStartTs',
+            'FeedInArchiveEndTs'
         ] as $obsoleteIdent) {
             try {
                 $obsoleteID = (int)@$this->GetIDForIdent($obsoleteIdent);
@@ -592,7 +594,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.64';
+        $currentModuleVersion = '1.10.65';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -669,83 +671,6 @@ class SmartBatteryOptimizer extends IPSModule
         } catch (Throwable $e) {
             $this->DebugLog('Debug-Rebuild', $e->getMessage(), 0);
         }
-    }
-
-    public function ExportStoredData(): string
-    {
-        $stringAttributes = [
-            'ForecastJSON','PVForecastHistoryJSON','PVSourceForecastHistoryJSON','ForecastSolarSurfaceCacheJSON','OpenMeteoSurfaceCacheJSON',
-            'PVDebugVisibilityJSON','ProviderDebugLogJSON','ActionHistoryJSON','AppliedModuleVersion','PVSourceWeightsJSON','PVNodeLastError',
-            'PVCalibrationJSON','PVCalibrationCurtailmentSamplesJSON','PVCalibrationExcludedPeriodsJSON','PVCalibrationExclusionActiveReason','PVCalibrationCleanupStatus','PricesJSON','PriceCacheSignature','PlanJSON','NightLearningSource',
-            'ConsumptionProfileJSON','ConsumptionLearningSource','ConsumptionArchiveRebuildStateJSON','EVArchiveSearchStateJSON','EVArchiveDetectionsJSON','EVChargingPatternJSON','AlphaDispatchCommandKey','ActiveFeedInPlanKey',
-            'CompletedFeedInPlanKeysJSON','FeedInStatisticsJSON','ActiveFeedInReason','AlphaTestTrace','ArchiveStorageStatus'
-        ];
-        $integerAttributes = [
-            'ForecastSolarRetryAfterTs','PVSourceWeightLearningResetTs','PVNodeConsecutiveRejects','PVCalibrationEnergyVersion',
-            'PVCalibrationBelowThresholdSince','PVCalibrationAboveThresholdSince','PVCalibrationAboveThresholdCount',
-            'PVCalibrationBlockedFromTs','PVCalibrationExclusionActiveFromTs','NightSampleCount','ConsumptionProfileUpdated','ActiveFeedInLastTs','ActiveFeedInEnergyVariableID','ManualTestUntil',
-            'ManualTestPowerW','AlphaTestStage','AlphaTestNextTs','ActiveFeedInLastAdjustmentTs','ActiveFeedInPlannedEndTs','ActiveFeedInStartedTs','FeedInFactorVariableLastID','ArchiveStorageMigrationVersion','PriceCacheUpdatedTs','PriceArchiveAlignmentVersion','PriceArchiveLastSyncedTs','FeedInStatisticsLastRenderTs','FeedInStatisticsResetVersion'
-        ];
-        $floatAttributes = ['LearnedNightKWh','ActiveFeedInTargetKWh','ActiveFeedInDeliveredKWh','ActiveFeedInLastExportW','ActiveFeedInLastEnergyKWh','ActiveFeedInPriceCt','FeedInFactorOriginalValue'];
-        $booleanAttributes = ['PVNodeAutoDisabled','LastAppliedDebugMode','PVCalibrationCurtailmentLatched','AlphaDispatchActive','RuntimePVSettingsInitialized','FeedInPriceLockActive','FeedInFactorOriginalValid'];
-
-        $attributes = [];
-        foreach ($stringAttributes as $name) $attributes[$name] = $this->ReadAttributeString($name);
-        foreach ($integerAttributes as $name) $attributes[$name] = $this->ReadAttributeInteger($name);
-        foreach ($floatAttributes as $name) $attributes[$name] = $this->ReadAttributeFloat($name);
-        foreach ($booleanAttributes as $name) $attributes[$name] = $this->ReadAttributeBoolean($name);
-
-        // Zusätzlich alle aktuellen Modulvariablen sichern. Die historischen Rohdaten aus dem
-        // IP-Symcon Archiv bleiben im Archiv und werden nicht nochmals in diese Datei kopiert.
-        $variables = [];
-        foreach (IPS_GetChildrenIDs($this->InstanceID) as $childID) {
-            $object = @IPS_GetObject($childID);
-            if (!is_array($object) || (int)($object['ObjectType'] ?? -1) !== 2) continue;
-            $variable = @IPS_GetVariable($childID);
-            if (!is_array($variable)) continue;
-            $ident = (string)($object['ObjectIdent'] ?? '');
-            if ($ident === '') continue;
-            $variables[$ident] = [
-                'id' => $childID,
-                'name' => (string)($object['ObjectName'] ?? ''),
-                'type' => (int)($variable['VariableType'] ?? -1),
-                'value' => GetValue($childID)
-            ];
-        }
-
-        // Konfiguration als Referenz mitsichern, Zugangsdaten aber bewusst nicht exportieren.
-        $configuration = json_decode(IPS_GetConfiguration($this->InstanceID), true);
-        if (!is_array($configuration)) $configuration = [];
-        foreach (['ForecastSolarAPIKey','PVNodeAPIKey'] as $secretKey) {
-            if (array_key_exists($secretKey, $configuration)) $configuration[$secretKey] = '__NICHT_EXPORTIERT__';
-        }
-
-        $payload = [
-            'format' => 'SmartBatteryOptimizer-DataExport',
-            'formatVersion' => 1,
-            'moduleVersion' => '1.10.64',
-            'instanceID' => $this->InstanceID,
-            'exportedAt' => date('c'),
-            'configurationWithoutSecrets' => $configuration,
-            'attributes' => $attributes,
-            'variables' => $variables,
-            'note' => 'Historische Rohwerte der referenzierten IP-Symcon Variablen liegen weiterhin im IP-Symcon Archiv und sind nicht dupliziert.'
-        ];
-
-        $dir = rtrim(IPS_GetKernelDir(), '/\\') . DIRECTORY_SEPARATOR . 'user' . DIRECTORY_SEPARATOR . 'SmartBatteryOptimizer';
-        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
-            throw new Exception('Exportordner konnte nicht erstellt werden: ' . $dir);
-        }
-        $file = $dir . DIRECTORY_SEPARATOR . 'SmartBatteryOptimizer_Data_' . $this->InstanceID . '_' . date('Y-m-d_H-i-s') . '.json';
-        $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        if ($json === false || @file_put_contents($file, $json) === false) {
-            throw new Exception('Exportdatei konnte nicht geschrieben werden: ' . $file);
-        }
-        $size = filesize($file);
-        $message = 'Export erstellt: ' . $file . ' (' . number_format((float)$size / 1024.0, 1, ',', '.') . ' KB)';
-        SetValue($this->GetIDForIdent('DataExportStatus'), $message);
-        $this->DebugLog('Datenexport', $message);
-        return $message;
     }
 
     public function RequestAction($Ident, $Value)
@@ -844,18 +769,6 @@ class SmartBatteryOptimizer extends IPSModule
             case 'RuntimeMinimumSOC':
                 SetValue($this->GetIDForIdent($Ident), max(0.0, min(100.0, (float)$Value)));
                 $this->RecalculateInternal(false);
-                break;
-            case 'PVDebugVisibilityState':
-                $state = json_decode((string)$Value, true);
-                if (is_array($state)) {
-                    $clean = [];
-                    foreach ($state as $key => $visible) {
-                        $clean[(string)$key] = (bool)$visible;
-                    }
-                    $json = json_encode($clean);
-                    $this->WriteAttributeString('PVDebugVisibilityJSON', $json);
-                    SetValue($this->GetIDForIdent('PVDebugVisibilityState'), $json);
-                }
                 break;
             case 'AutomaticEnabled':
                 $enabled = (bool)$Value;
@@ -3144,7 +3057,6 @@ class SmartBatteryOptimizer extends IPSModule
             $stats[] = ['start'=>$startedTs,'end'=>time(),'planKey'=>$key,'targetKWh'=>$target,'deliveredKWh'=>$delivered,'priceCt'=>$priceCt,'revenueEUR'=>$delivered*$priceCt/100.0,'completed'=>$completed,'reason'=>'price','finishReason'=>$reason];
             if (count($stats) > 1500) $stats = array_slice($stats, -1500);
             $this->WriteAttributeString('FeedInStatisticsJSON', json_encode($stats));
-            $this->StoreFeedInStatisticArchive($delivered, $delivered*$priceCt/100.0, $target, $startedTs, time());
         }
         // Anzeige nach jedem Abschluss aktualisieren. Dadurch verschwindet ein eventuell
         // laufender Status sofort, auch wenn das Fenster nicht statistikrelevant war.
@@ -8389,9 +8301,7 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $archiveID = $this->FindArchive();
         if ($archiveID <= 0) {
-            $text = 'Archive Control nicht gefunden – bisheriger JSON-Datenspeicher bleibt aktiv.';
-            $this->WriteAttributeString('ArchiveStorageStatus', $text);
-            $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
+            $this->DebugLog('ArchiveStorage', 'Archive Control nicht gefunden – PV-Archivfunktionen nicht verfügbar.', 0);
             return;
         }
 
@@ -8474,25 +8384,6 @@ class SmartBatteryOptimizer extends IPSModule
 
         // Ab v1.10.01 werden vorhandene Kalibrierarchive bei Updates niemals pauschal gelöscht.
 
-        $feedVars = [
-            'FeedInArchiveKWh' => ['Einspeiseautomatik Energie je Fenster', '~Electricity', 360],
-            'FeedInArchiveEUR' => ['Einspeiseautomatik Erlös je Fenster', '', 361],
-            'FeedInArchiveTargetKWh' => ['Einspeiseautomatik Planmenge je Fenster', '~Electricity', 362],
-            'FeedInArchiveWindow' => ['Einspeiseautomatik Fenster', '', 363],
-            'FeedInArchiveStartTs' => ['Einspeiseautomatik Startzeit', '', 364],
-            'FeedInArchiveEndTs' => ['Einspeiseautomatik Endzeit', '', 365]
-        ];
-        foreach ($feedVars as $ident => $cfg) {
-            $this->MaintainVariable($ident, $cfg[0], VARIABLETYPE_FLOAT, $cfg[1], $cfg[2], true);
-            $varID = @$this->GetIDForIdent($ident);
-            if ($varID <= 0) continue;
-            @IPS_SetHidden($varID, true);
-            try {
-                if (!AC_GetLoggingStatus($archiveID, $varID)) AC_SetLoggingStatus($archiveID, $varID, true);
-                if (AC_GetAggregationType($archiveID, $varID) !== 0) AC_SetAggregationType($archiveID, $varID, 0);
-                if (function_exists('AC_SetGraphStatus')) @AC_SetGraphStatus($archiveID, $varID, false);
-            } catch (Throwable $e) { $this->DebugLog('ArchiveStorage', $e->getMessage(), 0); }
-        }
 
         $migrationVersion = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion');
         // v1.9.84: fehlerhafte Prognosearchive aus 1.9.83 (W/1000 statt echte
@@ -8513,16 +8404,11 @@ class SmartBatteryOptimizer extends IPSModule
                 // zugeordnet. Die Erstübernahme schreibt die Prognose-Zeitreihe daher bereits
                 // mit korrigierter Stundenlage ins Archiv.
                 $pvCount = $this->MigratePVCalibrationJSONToArchive($archiveID, $surfaces);
-                $feedCount = $this->MigrateFeedInStatisticsJSONToArchive($archiveID);
                 $this->MigrateOpenMeteoSourceHistoryToIntervalStart();
                 $this->WriteAttributeInteger('ArchiveStorageMigrationVersion', 2);
-                $text = 'Archiv aktiv – vorhandene Daten übernommen: PV ' . $pvCount . ' Intervalle, Einspeisung ' . $feedCount . ' Fenster; Open-Meteo Stundenlage korrigiert.';
-                $this->WriteAttributeString('ArchiveStorageStatus', $text);
-                $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
+                $text = 'Archiv aktiv – vorhandene PV-Kalibrierdaten übernommen: ' . $pvCount . ' Intervalle; Open-Meteo Stundenlage korrigiert.';
             } catch (Throwable $e) {
                 $text = 'Archiv-Migration fehlgeschlagen – JSON bleibt als Sicherheitskopie: ' . $e->getMessage();
-                $this->WriteAttributeString('ArchiveStorageStatus', $text);
-                $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
                 $this->DebugLog('ArchiveMigration', $text, 0);
             }
         } elseif ($migrationVersion < 2) {
@@ -8536,18 +8422,10 @@ class SmartBatteryOptimizer extends IPSModule
                 $this->MigrateOpenMeteoSourceHistoryToIntervalStart();
                 $this->WriteAttributeInteger('ArchiveStorageMigrationVersion', 2);
                 $text = 'Archiv aktiv – Open-Meteo Stundenlage korrigiert; ' . $pvCount . ' PV-Kalibrierintervalle übernommen.';
-                $this->WriteAttributeString('ArchiveStorageStatus', $text);
-                $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
             } catch (Throwable $e) {
                 $text = 'Open-Meteo Archivkorrektur fehlgeschlagen – vorhandene Daten bleiben erhalten: ' . $e->getMessage();
-                $this->WriteAttributeString('ArchiveStorageStatus', $text);
-                $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
                 $this->DebugLog('ArchiveMigration', $text, 0);
             }
-        } else {
-            $text = 'Archiv aktiv – Prognose-kWh und Einspeise-Statistik im Archiv; PV-Istwerte werden direkt aus den zugeordneten PV-String-Archiven gelesen.';
-            $this->WriteAttributeString('ArchiveStorageStatus', $text);
-            $id = @$this->GetIDForIdent('ArchiveStorageStatus'); if ($id > 0) SetValue($id, $text);
         }
     }
 
@@ -8705,33 +8583,6 @@ class SmartBatteryOptimizer extends IPSModule
         $this->WriteAttributeInteger('PVSourceWeightLearningResetTs', time());
         $this->WriteAttributeString('PVSourceWeightsJSON', '{}');
         $this->DebugLog('Open-Meteo', 'Gespeicherte Quellenhistorie um 1 Stunde auf den Intervallbeginn verschoben; Provider-Gewichte lernen neu.');
-    }
-
-    private function MigrateFeedInStatisticsJSONToArchive(int $archiveID): int
-    {
-        $stats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
-        if (!is_array($stats)) return 0;
-        $ids = [
-            'kwh'=>(int)@$this->GetIDForIdent('FeedInArchiveKWh'),
-            'eur'=>(int)@$this->GetIDForIdent('FeedInArchiveEUR'),
-            'target'=>(int)@$this->GetIDForIdent('FeedInArchiveTargetKWh'),
-            'window'=>(int)@$this->GetIDForIdent('FeedInArchiveWindow')
-        ];
-        // Auch die Einspeise-Migration ist wiederholbar, falls der erste Import abbricht.
-        foreach ($ids as $id) { if ($id > 0) { @AC_DeleteVariableData($archiveID, $id, 0, time()); @AC_SetLoggingStatus($archiveID, $id, true); } }
-        $rows = ['kwh'=>[],'eur'=>[],'target'=>[],'window'=>[]]; $count = 0;
-        foreach ($stats as $r) {
-            if (!is_array($r) || (($r['reason'] ?? 'price') !== 'price')) continue;
-            $ts = (int)($r['end'] ?? $r['start'] ?? 0); if ($ts <= 0) continue;
-            // Bei identischen Sekunden nicht überschreiben, sondern minimal versetzen.
-            while (isset($rows['window'][$ts])) $ts++;
-            $rows['kwh'][$ts] = max(0.0, (float)($r['deliveredKWh'] ?? 0));
-            $rows['eur'][$ts] = (float)($r['revenueEUR'] ?? 0);
-            $rows['target'][$ts] = max(0.0, (float)($r['targetKWh'] ?? 0));
-            $rows['window'][$ts] = 1.0; $count++;
-        }
-        foreach ($ids as $k => $id) $this->AddArchiveLoggedValues($archiveID, $id, $rows[$k]);
-        return $count;
     }
 
     private function StorePVCalibrationHourlyForecast(array $surfaceForecastHours, array $surfaces): void
@@ -8931,28 +8782,6 @@ class SmartBatteryOptimizer extends IPSModule
             $tmp=$this->RecalculatePVCalibrationFactors([$key=>$entry],$key);$result[$key]=$tmp[$key]??$entry;
         }
         return $result;
-    }
-
-    private function StoreFeedInStatisticArchive(float $delivered, float $revenue, float $target, int $startTs, int $endTs): void
-    {
-        $archiveID = $this->FindArchive(); if ($archiveID <= 0 || $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return;
-        $ts=$endTs; $map = ['FeedInArchiveKWh'=>$delivered,'FeedInArchiveEUR'=>$revenue,'FeedInArchiveTargetKWh'=>$target,'FeedInArchiveWindow'=>1.0,'FeedInArchiveStartTs'=>(float)$startTs,'FeedInArchiveEndTs'=>(float)$endTs];
-        foreach ($map as $ident=>$value) {
-            $id=(int)@$this->GetIDForIdent($ident); if($id<=0) continue;
-            try { AC_AddLoggedValues($archiveID,$id,[['TimeStamp'=>$ts,'Value'=>(float)$value]]); } catch(Throwable $e){ $this->DebugLog('FeedInArchive',$e->getMessage(),0); }
-        }
-    }
-
-    private function ReadFeedInStatisticsFromArchive(): array
-    {
-        if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return [];
-        $archiveID=$this->FindArchive(); if($archiveID<=0) return [];
-        $ids=['kwh'=>(int)@$this->GetIDForIdent('FeedInArchiveKWh'),'eur'=>(int)@$this->GetIDForIdent('FeedInArchiveEUR'),'target'=>(int)@$this->GetIDForIdent('FeedInArchiveTargetKWh'),'window'=>(int)@$this->GetIDForIdent('FeedInArchiveWindow'),'start'=>(int)@$this->GetIDForIdent('FeedInArchiveStartTs'),'end'=>(int)@$this->GetIDForIdent('FeedInArchiveEndTs')];
-        if($ids['kwh']<=0||$ids['eur']<=0||$ids['target']<=0||$ids['window']<=0) return [];
-        $maps=[];
-        foreach($ids as $k=>$id){ $maps[$k]=[]; if($id<=0) continue; $rows=@AC_GetLoggedValues($archiveID,$id,0,time(),0); if(is_array($rows)) foreach($rows as $r)$maps[$k][(int)$r['TimeStamp']]=(float)$r['Value']; }
-        $out=[]; foreach($maps['window'] as $ts=>$one){ $kwh=(float)($maps['kwh'][$ts]??0); $eur=(float)($maps['eur'][$ts]??0); $start=(int)round((float)($maps['start'][$ts]??$ts)); $end=(int)round((float)($maps['end'][$ts]??$ts)); $out[]=['start'=>$start,'end'=>$end,'targetKWh'=>(float)($maps['target'][$ts]??0),'deliveredKWh'=>$kwh,'priceCt'=>$kwh>0?$eur/$kwh*100.0:0.0,'revenueEUR'=>$eur,'completed'=>true,'reason'=>'price','finishReason'=>'Archiv']; }
-        usort($out,function($a,$b){return ((int)$a['start'])<=>((int)$b['start']);}); return $out;
     }
 
     private function FindArchive(): int
@@ -9420,59 +9249,6 @@ class SmartBatteryOptimizer extends IPSModule
     }
 
 
-    private function ResetFeedInStatisticsFromTodayOnce(): void
-    {
-        // v1.10.41: Die Einspeise-Statistik beginnt einmalig mit dem Tag des Updates neu.
-        // Roharchive (Einspeise-kWh, CurrentPrice, Netzleistung, Verbrauch usw.) bleiben
-        // vollständig erhalten. Entfernt werden nur abgeleitete Statistikdaten vor heute.
-        if ($this->ReadAttributeInteger('FeedInStatisticsResetVersion') >= 1) return;
-
-        $cutoff = strtotime('today 00:00:00');
-        if ($cutoff <= 0) return;
-
-        try {
-            // Detaillierte Automatikläufe nur ab heute behalten. Ein vor Mitternacht
-            // gestarteter Lauf gehört nach der bestehenden Statistiklogik zum Starttag
-            // und wird deshalb bewusst nicht in den Neustart übernommen.
-            $stats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
-            if (!is_array($stats)) $stats = [];
-            $kept = [];
-            foreach ($stats as $row) {
-                if (!is_array($row)) continue;
-                $ts = (int)($row['start'] ?? $row['end'] ?? 0);
-                if ($ts >= $cutoff) $kept[] = $row;
-            }
-            $this->WriteAttributeString('FeedInStatisticsJSON', json_encode($kept));
-
-            // Den alten fortgeschriebenen Tageszähler vollständig verwerfen. Er ist nur
-            // noch Fallback und soll den sauberen Neustart aus kWh- und Preisarchiv nicht
-            // mit historischen Durchschnittswerten beeinflussen.
-            $this->WriteAttributeString('GridExportDailyJSON', '{}');
-
-            // Die versteckten, vom Modul erzeugten Automatik-Archivwerte vor heute
-            // entfernen. Messarchive des Benutzers werden ausdrücklich nicht verändert.
-            $archiveID = $this->FindArchive();
-            if ($archiveID > 0) {
-                foreach (['FeedInArchiveKWh','FeedInArchiveEUR','FeedInArchiveTargetKWh','FeedInArchiveWindow','FeedInArchiveStartTs','FeedInArchiveEndTs'] as $ident) {
-                    $varID = (int)@$this->GetIDForIdent($ident);
-                    if ($varID > 0 && @IPS_VariableExists($varID)) {
-                        $deleted = @AC_DeleteVariableData($archiveID, $varID, 0, $cutoff - 1);
-                        if ($deleted === false) throw new Exception('Alte Statistik-Archivdaten konnten nicht gelöscht werden: ' . $ident);
-                    }
-                }
-            }
-
-            $this->WriteAttributeInteger('FeedInStatisticsLastRenderTs', 0);
-            $this->WriteAttributeInteger('FeedInStatisticsResetVersion', 1);
-            $this->DebugLog('Einspeise-Statistik', 'v1.10.41: Statistik einmalig ab ' . date('d.m.Y 00:00:00', $cutoff) . ' neu gestartet; Roharchive unverändert.');
-        } catch (Throwable $e) {
-            // Marker absichtlich nicht setzen: Bei einem temporären Archivfehler wird
-            // der einmalige Reset beim nächsten ApplyChanges erneut versucht.
-            $this->DebugLog('Einspeise-Statistik', 'Neustart fehlgeschlagen: ' . $e->getMessage(), 0);
-        }
-    }
-
-
     private function GetGridExportHourlyStatisticsFromArchive(int $startTs, int $endTs, array $automationRuns): array
     {
         $archiveID = $this->FindArchive();
@@ -9656,35 +9432,11 @@ class SmartBatteryOptimizer extends IPSModule
 
     private function RenderFeedInStatisticsHTML(): string
     {
-        // Archiv und detaillierte Laufhistorie zusammenführen. FeedInStatisticsJSON enthält
-        // Start/Ende/PlanKey der realen Automatikläufe und darf nicht ignoriert werden, nur
-        // weil bereits einzelne Archivpunkte existieren. Detaillierte JSON-Läufe haben
-        // Vorrang; Archivdaten ergänzen nur ältere, noch nicht enthaltene Fenster.
-        $archiveStats = $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1 ? $this->ReadFeedInStatisticsFromArchive() : [];
-        if (!is_array($archiveStats)) $archiveStats = [];
-        $jsonStats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
-        if (!is_array($jsonStats)) $jsonStats = [];
-        $stats = []; $seenRuns = [];
-        foreach ($jsonStats as $r) {
-            if (!is_array($r)) continue;
-            $start=(int)($r['start']??0); $end=(int)($r['end']??0); $k=(float)($r['deliveredKWh']??0.0);
-            $sig = (string)($r['planKey']??'') . '|' . $start . '|' . $end . '|' . round($k,3);
-            $seenRuns[$sig]=true; $stats[]=$r;
-        }
-        foreach ($archiveStats as $r) {
-            if (!is_array($r)) continue;
-            $ts=(int)($r['start']??$r['end']??0); $k=(float)($r['deliveredKWh']??0.0);
-            // Ein Archivpunkt gilt als bereits vertreten, wenn ein detaillierter Lauf mit
-            // praktisch gleicher Menge innerhalb von +/- 6 Stunden endet. So werden alte
-            // Migrationen nicht doppelt gezählt, fehlende Archiv-only-Fenster aber erhalten.
-            $duplicate=false;
-            foreach ($jsonStats as $jr) {
-                if (!is_array($jr)) continue;
-                $je=(int)($jr['end']??$jr['start']??0); $jk=(float)($jr['deliveredKWh']??0.0);
-                if ($je>0 && abs($je-$ts)<=21600 && abs($jk-$k)<=0.02) { $duplicate=true; break; }
-            }
-            if (!$duplicate) $stats[]=$r;
-        }
+        // Automatikläufe werden ausschließlich in FeedInStatisticsJSON geführt.
+        // Die früheren sechs Hilfs-Archivvariablen wurden entfernt, damit es nur
+        // noch einen eindeutigen Speicherweg für abgeschlossene Einspeisefenster gibt.
+        $stats = json_decode($this->ReadAttributeString('FeedInStatisticsJSON'), true);
+        if (!is_array($stats)) $stats = [];
         // GridExportDailyJSON bleibt nur noch als Fallback für ältere Zeiträume erhalten,
         // für die noch keine archivierte Preis-Zeitreihe existiert. Die kWh-Auswertung
         // selbst kommt ausschließlich aus dem realen Einspeisearchiv.

@@ -1,3 +1,11 @@
+## 1.10.65 / Build 236
+
+- Aufräumen: komplette JSON-Datenexportfunktion inklusive Button und Statusvariable entfernt.
+- Aufräumen: die nicht mehr verwendeten Variablen `PV Debug Sichtbarkeit`, `Datenspeicher Export` und `Archiv-Datenspeicher` werden bei Updates entfernt.
+- Einspeise-Statistik: die sechs alten Hilfs-Archivvariablen (`Energie/Erlös/Planmenge/Fenster/Startzeit/Endzeit`) sowie deren Migration, Schreib- und Lese-Fallbacks wurden entfernt.
+- Abgeschlossene Automatikläufe haben jetzt genau einen Speicherweg: `FeedInStatisticsJSON`; reale Gesamt-Netzeinspeisung und Erlösberechnung nutzen weiterhin die echten Mess-/Tarifarchive.
+- PV-Kalibrierungsarchive und deren Migration bleiben unverändert erhalten.
+
 ## 1.10.64 / Build 235
 - Reine Anzeige-/Legacyvariablen `PV Kalibrierung`, `Quelle Nachtverbrauch`, `Gültige Nächte`, `PV Spitzenleistung morgen Prognose`, `Max. erwartete Netzeinspeisung morgen ohne Batterie` und `Höchster geplanter Einspeisepreis` vollständig entfernt.
 - Die doppelten Laufzeitvariablen `Maximale Netzeinspeisung`, `Sicherheitsabstand Einspeisegrenze` und `Maximale Batterieladeleistung` entfernt. Planung und Netzlimit-Schutz lesen diese drei Werte jetzt ausschließlich aus der Instanzkonfiguration.
