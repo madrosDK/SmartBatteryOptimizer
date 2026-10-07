@@ -1,3 +1,11 @@
+## 1.10.68 / Build 239
+
+- Autoladung: automatisch erkannte, abgeschlossene Ladevorgaenge werden jetzt dauerhaft in `EVArchiveDetectionsJSON` gespeichert und bleiben nach Tageswechsel/Neustart orange markiert.
+- Das gespeicherte Ladeprofil wird weiterhin aus dem Lastprofil herausgerechnet; automatische Erkennung loescht keine bereits gespeicherten Treffer.
+- Fuer den unmittelbar vergangenen Kalendertag erfolgt bei fehlendem gespeicherten Treffer einmalig eine robuste Rohwert-Rueckpruefung, damit vor dem Update nur temporaer erkannte Ladevorgaenge wiederhergestellt werden koennen.
+- EV-Analysecache auf Logikstand v14 angehoben; bestehende gespeicherte Treffer v13 bleiben kompatibel.
+- Keine Aenderung an Einspeiseplanung, PV-Prognose, Preislogik oder Dispatch.
+
 ## 1.10.67 / Build 238
 
 - Konfiguration: neuer erster Bereich „IP-Symcon Variablen“ bündelt die externen Variablenzuordnungen.

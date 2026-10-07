@@ -618,7 +618,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.67';
+        $currentModuleVersion = '1.10.68';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -1714,7 +1714,8 @@ class SmartBatteryOptimizer extends IPSModule
                 }
                 if ($kWh > 0.01) {
                     $stored[$dateKey] = [
-                        'version' => 13,
+                        'version' => 14,
+                        'source' => 'archive',
                         'thresholdKW' => max(1.0, $this->ReadPropertyFloat('EVChargingDetectionThresholdKW')),
                         'maxEnergyKWh' => max(0.1, $this->ReadPropertyFloat('EVChargingMaxEnergyKWh')),
                         'riseToleranceKW' => max(0.2, $this->ReadPropertyFloat('EVChargingRiseToleranceKW')),
@@ -6433,7 +6434,7 @@ class SmartBatteryOptimizer extends IPSModule
         $futureDetectionEnabled = $this->ReadPropertyBoolean('EVFutureDetectionEnabled');
         $dateKey = date('Y-m-d', $dayStart);
         $cacheKey = $dateKey . '|' . $archiveID . '|' . $varID
-            . '|v13|chargepower=' . number_format($evThresholdKW, 3, '.', '')
+            . '|v14|chargepower=' . number_format($evThresholdKW, 3, '.', '')
             . '|maxenergy=' . number_format($evMaxEnergyKWh, 3, '.', '')
             . '|tolerance=' . number_format($evRiseToleranceKW, 3, '.', '')
             . '|duration=' . $evMinimumDurationMinutes
@@ -6447,7 +6448,7 @@ class SmartBatteryOptimizer extends IPSModule
             $stored = json_decode($this->ReadAttributeString('EVArchiveDetectionsJSON'), true);
             $saved = is_array($stored) ? ($stored[$dateKey] ?? null) : null;
             if (is_array($saved)
-                && (int)($saved['version'] ?? 0) === 13
+                && in_array((int)($saved['version'] ?? 0), [13, 14], true)
                 && abs((float)($saved['thresholdKW'] ?? 0.0) - $evThresholdKW) < 0.0001
                 && abs((float)($saved['maxEnergyKWh'] ?? 0.0) - $evMaxEnergyKWh) < 0.0001
                 && abs((float)($saved['riseToleranceKW'] ?? 0.0) - $evRiseToleranceKW) < 0.0001
@@ -6470,6 +6471,16 @@ class SmartBatteryOptimizer extends IPSModule
             return $empty;
         }
 
+        // Automatisch erkannte Ladevorgaenge des laufenden Tages wurden in aelteren
+        // Versionen nur temporaer berechnet. Nach Mitternacht konnte die Markierung
+        // deshalb verschwinden. Fuer den unmittelbar vorangegangenen Kalendertag
+        // fuehren wir einmalig dieselbe robuste Rohwertpruefung wie bei der manuellen
+        // Archivsuche aus, sofern kein dauerhaft gespeicherter Treffer existiert.
+        $autoRawRecovery = !$forceRefresh
+            && $futureDetectionEnabled
+            && $isPastDay
+            && $dayStart >= strtotime('yesterday 00:00:00');
+
         if ($isPastDay && !$forceRefresh) {
             $cache = json_decode((string)$this->GetBuffer('ConsumptionEVAnalysisCache'), true);
             if (is_array($cache) && isset($cache[$cacheKey]) && is_array($cache[$cacheKey])) {
@@ -6491,7 +6502,7 @@ class SmartBatteryOptimizer extends IPSModule
         // HousePowerVariable (beim Nutzer #50354) 0 Roh-Flanken gemeldet werden konnten.
         $rawEdges = [];
         $rawScanStats = ['rows' => 0, 'maxRiseW' => 0.0, 'latestTs' => 0];
-        if ($forceRefresh) {
+        if ($forceRefresh || $autoRawRecovery) {
             $rawEdges = $this->FindEVChargingRawStartEdges($archiveID, $varID, $readStart, $readEnd);
             $diag = json_decode((string)$this->GetBuffer('EVRawScanStats'), true);
             if (is_array($diag)) $rawScanStats = array_merge($rawScanStats, $diag);
@@ -6503,7 +6514,7 @@ class SmartBatteryOptimizer extends IPSModule
         // verfolgt. Genau der alte Frühabbruch bei fehlenden 1-Minuten-Aggregaten führte
         // zu "Roh-Flanken gefunden, aber 0 Ladungen".
         $rawSessions = [];
-        if ($forceRefresh && count($rawEdges) > 0) {
+        if (($forceRefresh || $autoRawRecovery) && count($rawEdges) > 0) {
             $rawSessions = $this->BuildEVChargingSessionsFromRawEdges($archiveID, $varID, $rawEdges, $readStart, $readEnd);
         }
 
@@ -6512,7 +6523,7 @@ class SmartBatteryOptimizer extends IPSModule
         // Trefferquelle. Dadurch koennen geglaettete Minutenwerte keine zusaetzlichen
         // Fremdspitzen als Autoladung einschleusen. Fuer die laufende Zukunftserkennung
         // bleibt die speicherschonende Minutenanalyse aktiv.
-        $sessions = $forceRefresh
+        $sessions = ($forceRefresh || $autoRawRecovery)
             ? $rawSessions
             : (count($points) >= 2 ? $this->DetectEVChargingSessions($points, $readStart, $readEnd, $pattern) : []);
         if (count($points) < 2 && count($sessions) === 0) {
@@ -6628,6 +6639,31 @@ class SmartBatteryOptimizer extends IPSModule
             'maxRawRiseW' => (float)($rawScanStats['maxRiseW'] ?? 0.0),
             'latestRawValueTs' => (int)($rawScanStats['latestTs'] ?? 0)
         ];
+
+        // Vollstaendig erkannte automatische Ladevorgaenge dauerhaft sichern.
+        // Damit bleiben orange Markierung und Abzug aus dem Lastprofil auch nach
+        // Tageswechsel, Neustart oder Cache-Neuaufbau erhalten. Ein automatischer
+        // Lauf loescht niemals einen bereits gespeicherten Treffer; gezieltes Entfernen
+        // bleibt der expliziten Archivsuche vorbehalten.
+        if (!$forceRefresh && $futureDetectionEnabled && $sessionCount > 0 && $evWh > 10.0) {
+            $stored = json_decode($this->ReadAttributeString('EVArchiveDetectionsJSON'), true);
+            if (!is_array($stored)) $stored = [];
+            $stored[$dateKey] = [
+                'version' => 14,
+                'source' => 'automatic',
+                'thresholdKW' => $evThresholdKW,
+                'maxEnergyKWh' => $evMaxEnergyKWh,
+                'riseToleranceKW' => $evRiseToleranceKW,
+                'minimumDurationMinutes' => $evMinimumDurationMinutes,
+                'hourlyWh' => array_values($hourlyEVWh),
+                'sessions' => $sessionCount,
+                'kWh' => max(0.0, $evWh / 1000.0),
+                'details' => array_values($details),
+                'updated' => time()
+            ];
+            ksort($stored);
+            $this->WriteAttributeString('EVArchiveDetectionsJSON', json_encode($stored));
+        }
 
         if ($isPastDay) {
             $cache = json_decode((string)$this->GetBuffer('ConsumptionEVAnalysisCache'), true);
@@ -7403,7 +7439,7 @@ class SmartBatteryOptimizer extends IPSModule
         $durations = [];
         $energies = [];
         foreach ($stored as $day) {
-            if (!is_array($day) || (int)($day['version'] ?? 0) !== 13) continue;
+            if (!is_array($day) || !in_array((int)($day['version'] ?? 0), [13, 14], true)) continue;
             foreach (($day['details'] ?? []) as $detail) {
                 if (!is_array($detail)) continue;
                 $powerKW = max(0.0, (float)($detail['chargePowerW'] ?? 0.0) / 1000.0);
