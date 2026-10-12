@@ -1,3 +1,11 @@
+# SmartBatteryOptimizer v1.10.71 / Build 242
+
+- PV-Kalibriersperre greift jetzt vor dem Speichern abgeschlossener Stunden.
+- Jede Stunde, die eine Kalibriersperre auch nur teilweise ueberlappt, wird vollständig aus der PV-Kalibrierung ausgeschlossen.
+- Sperrzeiten wegen Einspeisebegrenzung werden dauerhaft als Ausschlusszeitraum gespeichert.
+- Falls die Sperre rueckwirkend erkannt wird, werden bereits archivierte Prognose/Ist-Paare der betroffenen Stunden aus den internen Kalibrierarchiven entfernt.
+- Reale PV-Rohdaten werden dabei nicht veraendert.
+
 # SmartBatteryOptimizer v1.10.70 / Build 241
 
 - PV-Auto-Korrektur: Ist-Erzeugung ist nun ausdrücklich die verbindliche Gültigkeitsliste für die Faktorberechnung.

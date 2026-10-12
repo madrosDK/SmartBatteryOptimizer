@@ -618,7 +618,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.70';
+        $currentModuleVersion = '1.10.71';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -1211,6 +1211,13 @@ class SmartBatteryOptimizer extends IPSModule
         $this->ForecastDiagnosticStep('05.03 PV-Kalibrierung PVCalibrationJSON lesen START');
         $calibration = json_decode($this->ReadAttributeString('PVCalibrationJSON'), true);
         if (!is_array($calibration)) $calibration = [];
+        // Die aktuelle Kalibriersperre MUSS vor dem Abschliessen einer Stunde
+        // ausgewertet werden. Sonst koennte eine gerade abgeregelte Stunde noch als
+        // gueltiges Prognose/Ist-Paar ins Archiv geschrieben werden.
+        $this->ForecastDiagnosticStep('05.03a Feed-In-Gate START');
+        $gate = $this->GetPVCalibrationFeedInGate();
+        $this->ForecastDiagnosticStep('05.03b Feed-In-Gate ENDE | blockiert=' . (!empty($gate['blocked']) ? 'ja' : 'nein'));
+
         if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') >= 1) {
             $this->FinalizePVCalibrationCompletedHours();
             $calibration = $this->BuildPVCalibrationFromArchive($calibration);
@@ -1222,9 +1229,6 @@ class SmartBatteryOptimizer extends IPSModule
         if (!is_array($surfaces)) $surfaces = [];
         $this->ForecastDiagnosticStep('05.06 PV-Kalibrierung PVSurfaces lesen ENDE | Anzahl=' . count($surfaces));
 
-        $this->ForecastDiagnosticStep('05.07 Feed-In-Gate START');
-        $gate = $this->GetPVCalibrationFeedInGate();
-        $this->ForecastDiagnosticStep('05.08 Feed-In-Gate ENDE | blockiert=' . (!empty($gate['blocked']) ? 'ja' : 'nein'));
         $surfaceCalibration = is_array($forecast['surfaceCalibration'] ?? null) ? $forecast['surfaceCalibration'] : [];
 
         foreach ($surfaces as $idx => $surface) {
@@ -4170,19 +4174,59 @@ class SmartBatteryOptimizer extends IPSModule
         return $activeFrom;
     }
 
+    private function AppendPVCalibrationExcludedPeriod(int $fromTs, int $toTs, string $reason): void
+    {
+        if ($fromTs <= 0) return;
+        $toTs = max($fromTs, $toTs);
+        $periods = json_decode($this->ReadAttributeString('PVCalibrationExcludedPeriodsJSON'), true);
+        if (!is_array($periods)) $periods = [];
+        $periods[] = ['fromTs'=>$fromTs, 'toTs'=>$toTs, 'reason'=>$reason];
+        if (count($periods) > 180) $periods = array_slice($periods, -180);
+        $this->WriteAttributeString('PVCalibrationExcludedPeriodsJSON', json_encode($periods));
+    }
+
+    private function PurgePVCalibrationArchivePairsForPeriod(int $fromTs, int $toTs): int
+    {
+        if ($fromTs <= 0 || $toTs < $fromTs || $this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return 0;
+        $archiveID = $this->FindArchive();
+        $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+        if ($archiveID <= 0 || !is_array($surfaces)) return 0;
+
+        $hourStart = strtotime(date('Y-m-d H:00:00', $fromTs));
+        if ($hourStart === false) return 0;
+        $removed = 0;
+        $touched = [];
+        for ($startTs = $hourStart; $startTs <= $toTs; $startTs += 3600) {
+            $endTs = $startTs + 3600;
+            if (!($startTs < $toTs && $endTs > $fromTs)) continue;
+            foreach ($surfaces as $idx => $surface) {
+                if (empty($surface['Active']) || empty($surface['AutoCalibrate'])) continue;
+                foreach ([$this->PVCalibrationIdent('Expected', $idx), $this->PVCalibrationIdent('Actual', $idx)] as $ident) {
+                    $varID = (int)@$this->GetIDForIdent($ident);
+                    if ($varID <= 0) continue;
+                    $rows = @AC_GetLoggedValues($archiveID, $varID, $endTs, $endTs, 1);
+                    if (is_array($rows) && count($rows) > 0) {
+                        @AC_DeleteVariableData($archiveID, $varID, $endTs, $endTs);
+                        $removed++;
+                        $touched[$varID] = true;
+                    }
+                }
+            }
+        }
+        if (function_exists('AC_ReAggregateVariable')) {
+            foreach (array_keys($touched) as $varID) @AC_ReAggregateVariable($archiveID, (int)$varID);
+        }
+        return $removed;
+    }
+
     private function FinishPVCalibrationExclusion(?int $toTs = null): void
     {
         $fromTs = $this->ReadAttributeInteger('PVCalibrationExclusionActiveFromTs');
         if ($fromTs <= 0) return;
         $toTs = $toTs ?? time();
         $reason = $this->ReadAttributeString('PVCalibrationExclusionActiveReason');
-        $periods = json_decode($this->ReadAttributeString('PVCalibrationExcludedPeriodsJSON'), true);
-        if (!is_array($periods)) $periods = [];
-        $periods[] = ['fromTs'=>$fromTs, 'toTs'=>max($fromTs, $toTs), 'reason'=>$reason];
-        // Nur die letzten 180 Sperrperioden behalten; die Kalibrierdaten selbst haben
-        // ohnehin eine deutlich kuerzere Aufbewahrungszeit.
-        if (count($periods) > 180) $periods = array_slice($periods, -180);
-        $this->WriteAttributeString('PVCalibrationExcludedPeriodsJSON', json_encode($periods));
+        $this->AppendPVCalibrationExcludedPeriod($fromTs, $toTs, $reason);
+        $this->PurgePVCalibrationArchivePairsForPeriod($fromTs, $toTs);
         $this->WriteAttributeInteger('PVCalibrationExclusionActiveFromTs', 0);
         $this->WriteAttributeString('PVCalibrationExclusionActiveReason', '');
     }
@@ -4297,12 +4341,22 @@ class SmartBatteryOptimizer extends IPSModule
             $blockedFromTs = max(0, $firstHighTs - 120);
             $this->WriteAttributeBoolean('PVCalibrationCurtailmentLatched', true);
             $this->WriteAttributeInteger('PVCalibrationBlockedFromTs', $blockedFromTs);
+            // Die Entscheidung kann wenige Minuten nach dem eigentlichen Beginn fallen.
+            // Deshalb eventuell bereits archivierte Stundenpaare, die den rueckdatierten
+            // Sperrbereich schneiden, sofort wieder aus dem Kalibrierarchiv entfernen.
+            $this->PurgePVCalibrationArchivePairsForPeriod($blockedFromTs, $now);
         } elseif ($blocked && $windowReady && $lowPct >= $majorityPct) {
+            $oldBlockedFromTs = $blockedFromTs;
             $blocked = false;
+            if ($oldBlockedFromTs > 0) {
+                $this->AppendPVCalibrationExcludedPeriod($oldBlockedFromTs, $now, 'Einspeisegrenze erreicht');
+                $this->PurgePVCalibrationArchivePairsForPeriod($oldBlockedFromTs, $now);
+            }
             $blockedFromTs = 0;
             $this->WriteAttributeBoolean('PVCalibrationCurtailmentLatched', false);
             $this->WriteAttributeInteger('PVCalibrationBlockedFromTs', 0);
-            // Ab jetzt dürfen neue Intervalle wieder lernen; alter Sperrbereich bleibt entfernt.
+            // Ab jetzt duerfen neue Stunden wieder lernen; der abgeschlossene Sperrbereich
+            // bleibt dauerhaft in der Ausschlussliste dokumentiert.
         }
 
         $belowSince = 0;
@@ -8658,6 +8712,11 @@ class SmartBatteryOptimizer extends IPSModule
         if (!is_array($periods)) $periods = [];
         $activeFrom = $this->ReadAttributeInteger('PVCalibrationExclusionActiveFromTs');
         if ($activeFrom > 0) $periods[] = ['fromTs'=>$activeFrom, 'toTs'=>time()];
+        // Eine aktuell aktive Einspeisegrenzen-Sperre ist ebenfalls sofort ein
+        // Ausschlusszeitraum. Jede Stunde, die diesen Zeitraum auch nur teilweise
+        // ueberlappt, darf weder Prognose- noch Ist-Wert im Kalibrierarchiv erhalten.
+        $curtailmentFrom = $this->ReadAttributeInteger('PVCalibrationBlockedFromTs');
+        if ($curtailmentFrom > 0) $periods[] = ['fromTs'=>$curtailmentFrom, 'toTs'=>time()];
         foreach ($periods as $p) {
             if (!is_array($p)) continue;
             $a=(int)($p['fromTs']??0); $b=(int)($p['toTs']??0);
