@@ -1,3 +1,19 @@
+# SmartBatteryOptimizer v1.10.70 / Build 241
+
+- PV-Auto-Korrektur: Ist-Erzeugung ist nun ausdrücklich die verbindliche Gültigkeitsliste für die Faktorberechnung.
+- Es werden nur Stundenpaare mit identischem Zeitstempel aus archivierter Ist-Erzeugung und archivierter Roh-Prognose verwendet.
+- Prognosestunden ohne gespeicherten Ist-Wert werden vollständig ignoriert.
+- „PV-Kalibrierung aus Archiv neu einlesen“ erzeugt keine fehlenden Ist-Werte mehr aus Roh-PV-Daten; damit können abgeregelte Stunden nicht nachträglich in die Lernbasis zurückgelangen.
+- Der Neuaufbau meldet Anzahl gültiger Paare sowie ignorierte Prognose-/Ist-Stunden.
+
+# SmartBatteryOptimizer v1.10.69 / Build 240
+
+- PV-Auto-Faktor: Live-Lernen und Archiv-Neuaufbau verwenden jetzt exakt dieselbe Tagesfenster-Logik.
+- Es werden ausschließlich vollständig abgeschlossene Lerntage gezählt; der laufende Tag verdrängt keinen vollständigen Lerntag mehr.
+- Der Archiv-Neuaufbau sucht rückwärts in Blöcken, bis wirklich die neuesten N gültigen Lerntage gefunden wurden; die frühere feste N+2-Kalendertage-Grenze entfällt.
+- Bei Archive-Control-Betrieb werden keine transienten Unterstunden-Samples mehr in den Auto-Faktor gemischt; maßgeblich sind die abgeschlossenen Prognose-/Ist-Stundenpaare.
+- „PV-Kalibrierung aus vorhandenen Daten nachtragen“ blickt bei Datenlücken weiter zurück und stößt anschließend einen vollständigen Prognose-Neuaufbau an, sodass Diagnose und angewendeter Anlagenfaktor denselben Stand zeigen.
+
 ## 1.10.68 / Build 239
 
 - Autoladung: automatisch erkannte, abgeschlossene Ladevorgaenge werden jetzt dauerhaft in `EVArchiveDetectionsJSON` gespeichert und bleiben nach Tageswechsel/Neustart orange markiert.

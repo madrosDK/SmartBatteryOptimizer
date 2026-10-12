@@ -572,3 +572,5 @@ Die normale Instanzansicht zeigt nur noch fachlich relevante Prognose-, Speicher
 - **Darstellungsmodus**: Standard / Erweitert / Debug; die direkte AlphaESS-Testentladung ist nur in Debug sichtbar.
 - **Mindestpreis Einspeisung** wird in vollen 1,00 ct/kWh geführt.
 
+
+> **PV-Auto-Korrektur:** Für die Faktorberechnung zählen ausschließlich Stunden, für die eine gültige Ist-Erzeugung archiviert wurde und eine Prognose mit demselben Stunden-Zeitstempel vorhanden ist. Prognosestunden ohne Ist-Wert werden ignoriert; fehlende Ist-Werte werden nicht nachträglich erzeugt.

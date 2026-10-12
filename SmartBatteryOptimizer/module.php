@@ -618,7 +618,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.68';
+        $currentModuleVersion = '1.10.70';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -1251,7 +1251,12 @@ class SmartBatteryOptimizer extends IPSModule
                     $calibration = $this->InvalidatePVCalibrationFrom($calibration, $key, max(0, $blockedFromTs));
                     $this->ForecastDiagnosticStep($prefix . 'Sperrbereich entfernen ENDE');
                 }
-            } elseif ($actualW !== null && $expectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
+            } elseif ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1
+                && $actualW !== null && $expectedW >= $this->ReadPropertyInteger('PVCalibrationMinExpectedW')) {
+                // Legacy-Fallback ohne Archive Control. Im normalen Archivmodus kommen
+                // Auto-Faktor und Diagnose ausschließlich aus abgeschlossenen Stundenpaaren.
+                // Dadurch verwendet Live-Betrieb exakt dieselbe Datenbasis wie ein manueller
+                // Neuaufbau aus dem Archiv.
                 $sampleCountBefore = isset($calibration[$key]['energySamples']) && is_array($calibration[$key]['energySamples']) ? count($calibration[$key]['energySamples']) : 0;
                 $this->ForecastDiagnosticStep($prefix . 'Energiesample START | Samples=' . $sampleCountBefore);
                 $calibration = $this->AddPVCalibrationEnergySample($calibration, $key, $expectedW, $actualW);
@@ -4525,12 +4530,14 @@ class SmartBatteryOptimizer extends IPSModule
         // Rollierendes Fenster: die neuesten N gültigen Lerntage verwenden.
         // Vor dem erstmaligen Erreichen von N Tagen bleibt der Faktor exakt 1,000.
         $byDay = [];
+        $today = date('Y-m-d');
         foreach ($samples as $sample) {
             $ts = (int)($sample['ts'] ?? 0);
             $exp = (float)($sample['expectedKWh'] ?? 0.0);
             $act = (float)($sample['actualKWh'] ?? 0.0);
             if ($ts <= 0 || $exp <= 0.0 || $act < 0.0) continue;
             $day = date('Y-m-d', $ts);
+            if ($day === $today) continue; // nur vollständig abgeschlossene Lerntage
             if (!isset($byDay[$day])) $byDay[$day] = ['expected'=>0.0,'actual'=>0.0,'samples'=>0,'firstTs'=>$ts,'lastTs'=>(int)($sample['endTs'] ?? $ts)];
             $byDay[$day]['expected'] += $exp;
             $byDay[$day]['actual'] += $act;
@@ -4653,43 +4660,10 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $calibration[$key]['energySamples'] = $samples;
 
-        $factorDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
-        $factorCutoff = $now - $factorDays * 86400;
-        $sumExpectedKWh = 0.0;
-        $sumActualKWh = 0.0;
-        $count = 0;
-        foreach ($samples as $sample) {
-            if ((int)$sample['ts'] < $factorCutoff) continue;
-            $sumExpectedKWh += (float)$sample['expectedKWh'];
-            $sumActualKWh += (float)$sample['actualKWh'];
-            $count++;
-        }
-        if ($sumExpectedKWh > 0.0) {
-            $factor = $sumActualKWh / $sumExpectedKWh;
-            $calibration[$key]['factor'] = max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $factor));
-        } else {
-            $calibration[$key]['factor'] = 1.0;
-        }
-        $calibration[$key]['factorSampleCount'] = $count;
-
-        // Stundenfaktoren in einem einzigen Durchlauf bilden (O(n) statt 24*n).
-        $hourSums = [];
-        foreach ($samples as $sample) {
-            if ((int)$sample['ts'] < $factorCutoff) continue;
-            $h = isset($sample['hour']) ? (int)$sample['hour'] : (int)date('G', (int)$sample['ts']);
-            if (!isset($hourSums[$h])) $hourSums[$h] = ['e'=>0.0,'a'=>0.0,'c'=>0];
-            $hourSums[$h]['e'] += (float)$sample['expectedKWh'];
-            $hourSums[$h]['a'] += (float)$sample['actualKWh'];
-            $hourSums[$h]['c'] += max(1, (int)($sample['intervals'] ?? 1));
-        }
-        $hourlyFactors = [];
-        foreach ($hourSums as $h => $v) {
-            if ($v['e'] <= 0.0) continue;
-            $hourlyFactors[(string)$h] = ['factor'=>max($this->ReadPropertyFloat('PVCalibrationMinFactor'), min($this->ReadPropertyFloat('PVCalibrationMaxFactor'), $v['a']/$v['e'])),'samples'=>$v['c'],'expectedKWh'=>$v['e'],'actualKWh'=>$v['a']];
-        }
-        $calibration[$key]['hourlyFactors'] = $hourlyFactors;
-        $calibration[$key]['updated'] = $now;
-        return $calibration;
+        // Auch im Legacy-Fallback exakt dieselbe Tagesfenster-Logik verwenden wie
+        // beim Archiv-Neuaufbau. Damit ändert ein Wechsel des Lernzeitraums nicht mehr
+        // gleichzeitig die Berechnungsmethode.
+        return $this->RecalculatePVCalibrationFactors($calibration, $key);
     }
 
     private function GetPVCalibrationDiagnostics(array $calibration, string $key): array
@@ -8776,67 +8750,144 @@ class SmartBatteryOptimizer extends IPSModule
         $archiveID=$this->FindArchive();
         $surfaces=json_decode($this->ReadPropertyString('PVSurfaces'),true);
         if($archiveID<=0 || !is_array($surfaces)){
-            $msg='Kalibrierung nachtragen: Archiv oder PV-Flächen nicht verfügbar.';
+            $msg='PV-Kalibrierung aus Archiv neu einlesen: Archiv oder PV-Flächen nicht verfügbar.';
             $this->SetActionFeedback($msg); return $msg;
         }
-        $days=max(1,$this->ReadPropertyInteger('PVCalibrationDays'));
-        $from=time()-($days+3)*86400; $added=0; $missingForecast=0; $blocked=0;
+
+        // Ab v1.10.70 ist die archivierte Ist-Erzeugung die verbindliche
+        // Gültigkeitsliste für das Lernen. Fehlende Ist-Stunden werden bewusst
+        // NICHT mehr aus Roh-PV-Daten nacherzeugt. Dadurch kann eine wegen
+        // Abregelung verworfene Stunde nicht nachträglich wieder in die
+        // Faktorberechnung gelangen. BuildPVCalibrationFromArchive() verwendet
+        // ausschließlich Stunden, in denen Ist UND Prognose denselben
+        // Stunden-Endzeitstempel besitzen.
+        $paired=0; $actualOnly=0; $forecastOnly=0;
+        $requiredDays=max(1,$this->ReadPropertyInteger('PVCalibrationDays'));
+        $lookbackDays=max(60,$requiredDays*4+7);
+        $from=strtotime(date('Y-m-d 00:00:00'))-$lookbackDays*86400;
+        $to=strtotime(date('Y-m-d 00:00:00'))-1;
+
         foreach($surfaces as $idx=>$surface){
             if(empty($surface['Active']) || empty($surface['AutoCalibrate']))continue;
             $expectedID=(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Expected', $idx));
             $actualID=(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Actual', $idx));
             if($expectedID<=0 || $actualID<=0)continue;
-            $eRows=@AC_GetLoggedValues($archiveID,$expectedID,$from,time(),0); if(!is_array($eRows))$eRows=[];
-            $forecast=[];
-            foreach($eRows as $r){$end=(int)($r['TimeStamp']??0);$v=(float)($r['Value']??0);if($end>0&&$v>0)$forecast[$end]=$v;}
-            if(count($forecast)===0){$missingForecast++;continue;}
-            foreach($forecast as $endTs=>$exp){
-                $startTs=$endTs-3600;if($startTs<=0||$endTs>time())continue;
-                if($this->IsPVCalibrationHourExcluded($startTs,$endTs)){$blocked++;continue;}
-                $exists=@AC_GetLoggedValues($archiveID,$actualID,$endTs,$endTs,1);
-                if(is_array($exists)&&count($exists)>0)continue;
-                $act=$this->ReadSurfaceActualEnergyKWhForHour($archiveID,$surface,$startTs,$endTs);
-                if($act===null)continue;
-                $this->AddArchiveLoggedValues($archiveID,$actualID,[$endTs=>$act]);$added++;
+            $eRows=@AC_GetLoggedValues($archiveID,$expectedID,$from,$to,0); if(!is_array($eRows))$eRows=[];
+            $aRows=@AC_GetLoggedValues($archiveID,$actualID,$from,$to,0); if(!is_array($aRows))$aRows=[];
+            $expected=[]; $actual=[];
+            foreach($eRows as $r){$ts=(int)($r['TimeStamp']??0);if($ts>0)$expected[$ts]=(float)($r['Value']??0.0);}
+            foreach($aRows as $r){$ts=(int)($r['TimeStamp']??0);if($ts>0)$actual[$ts]=(float)($r['Value']??0.0);}
+            foreach($actual as $ts=>$v){
+                if(array_key_exists($ts,$expected))$paired++; else $actualOnly++;
+            }
+            foreach($expected as $ts=>$v){
+                if(!array_key_exists($ts,$actual))$forecastOnly++;
             }
         }
+
         $this->UpdatePVCalibrationState(true);
-        $msg='Kalibrierung nachtragen: '.$added.' fehlende Ist-Werte zu vorhandenen historischen Prognosen ergänzt.'
-            .($missingForecast>0?' Für '.$missingForecast.' Fläche(n) waren im Zeitraum keine historischen Prognosewerte vorhanden.':'')
-            .($blocked>0?' '.$blocked.' gesperrte Stunden wurden ausgelassen.':'');
+        // Oberfläche/Prognose mit dem neu berechneten Faktor vollständig neu aufbauen.
+        $this->SetTimerInterval('FullRefreshWorker', 1500);
+        $msg='PV-Kalibrierung aus Archiv neu eingelesen: '.$paired.' gültige Prognose/Ist-Stundenpaare. '
+            .$forecastOnly.' Prognosestunden ohne gültigen Ist-Wert ignoriert'
+            .($actualOnly>0?' | '.$actualOnly.' Ist-Stunden ohne passende Prognose ignoriert.':'.');
         $this->SetActionFeedback($msg); return $msg;
     }
 
     private function BuildPVCalibrationFromArchive(array $legacyCalibration = []): array
     {
         if ($this->ReadAttributeInteger('ArchiveStorageMigrationVersion') < 1) return $legacyCalibration;
-        $archiveID=$this->FindArchive(); if($archiveID<=0)return $legacyCalibration;
-        $surfaces=json_decode($this->ReadPropertyString('PVSurfaces'),true); if(!is_array($surfaces))return $legacyCalibration;
-        $result=[]; $days=max(1,$this->ReadPropertyInteger('PVCalibrationDays'));
-        $startWindow=strtotime(date('Y-m-d 00:00:00',time()-($days+2)*86400));
+        $archiveID = $this->FindArchive();
+        if ($archiveID <= 0) return $legacyCalibration;
+        $surfaces = json_decode($this->ReadPropertyString('PVSurfaces'), true);
+        if (!is_array($surfaces)) return $legacyCalibration;
 
-        foreach($surfaces as $idx=>$surface){
-            $name=trim((string)($surface['Name']??'PV')); if($name==='')$name='PV '.($idx+1);
-            $key=$this->SurfaceKey($name,$idx);
-            $expectedID=(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Expected', $idx));
-            $actualID=(int)@$this->GetIDForIdent($this->PVCalibrationIdent('Actual', $idx));
-            if($expectedID<=0 || $actualID<=0)continue;
-            $eRows=@AC_GetLoggedValues($archiveID,$expectedID,$startWindow,time(),0); if(!is_array($eRows))$eRows=[];
-            $aRows=@AC_GetLoggedValues($archiveID,$actualID,$startWindow,time(),0); if(!is_array($aRows))$aRows=[];
-            $expected=[];$actual=[];
-            foreach($eRows as $r){$ts=(int)($r['TimeStamp']??0);if($ts>0)$expected[$ts]=(float)($r['Value']??0.0);}
-            foreach($aRows as $r){$ts=(int)($r['TimeStamp']??0);if($ts>0)$actual[$ts]=(float)($r['Value']??0.0);}
+        $requiredDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
+        // Ein Lerntag zählt erst nach seinem vollständigen Abschluss. Damit verdrängt
+        // ein halber laufender Tag nicht vorzeitig den ältesten vollständigen Lerntag.
+        $completedEndTs = strtotime(date('Y-m-d 00:00:00')) - 1;
+        if ($completedEndTs <= 0) return $legacyCalibration;
 
-            $entry=['factor'=>1.0,'energySamples'=>[],'seasonalArchive'=>[],'storageMode'=>'paired forecast/actual archive'];
-            foreach($expected as $endTs=>$expKWh){
-                if(!array_key_exists($endTs,$actual))continue;
-                $startTs=$endTs-3600;
-                if($startTs<=0 || $this->IsPVCalibrationHourExcluded($startTs,$endTs))continue;
-                $actKWh=(float)$actual[$endTs];
-                if($expKWh<=0 || $actKWh<0)continue;
-                $entry['energySamples'][]=['ts'=>$startTs,'endTs'=>$endTs,'expectedKWh'=>(float)$expKWh,'actualKWh'=>$actKWh,'hour'=>(int)date('G',$startTs),'intervals'=>1];
+        $result = [];
+        foreach ($surfaces as $idx => $surface) {
+            $name = trim((string)($surface['Name'] ?? 'PV'));
+            if ($name === '') $name = 'PV ' . ($idx + 1);
+            $key = $this->SurfaceKey($name, $idx);
+            $expectedID = (int)@$this->GetIDForIdent($this->PVCalibrationIdent('Expected', $idx));
+            $actualID = (int)@$this->GetIDForIdent($this->PVCalibrationIdent('Actual', $idx));
+            if ($expectedID <= 0 || $actualID <= 0) continue;
+
+            // Rückwärts in handlichen Blöcken lesen, bis wirklich N gültige,
+            // abgeschlossene Lerntage gefunden wurden. N+2 Kalendertage reichen bei
+            // Abregelung, Datenlücken oder deaktivierten Stunden nicht zuverlässig aus.
+            $pairsByTs = [];
+            $validDays = [];
+            $cursorEnd = $completedEndTs;
+            $earliestExpected = $this->GetArchiveFirstTime($archiveID, $expectedID);
+            $earliestActual = $this->GetArchiveFirstTime($archiveID, $actualID);
+            $earliest = max(0, $earliestExpected, $earliestActual);
+            $hardFloor = max($earliest, strtotime('-730 days', $completedEndTs));
+            $chunkSeconds = 30 * 86400;
+            $chunks = 0;
+
+            while ($cursorEnd >= $hardFloor && count($validDays) < $requiredDays && $chunks < 30) {
+                $chunkStart = max($hardFloor, $cursorEnd - $chunkSeconds + 1);
+                $eRows = @AC_GetLoggedValues($archiveID, $expectedID, $chunkStart, $cursorEnd, 0);
+                $aRows = @AC_GetLoggedValues($archiveID, $actualID, $chunkStart, $cursorEnd, 0);
+                if (!is_array($eRows)) $eRows = [];
+                if (!is_array($aRows)) $aRows = [];
+                $expected = [];
+                $actual = [];
+                foreach ($eRows as $r) {
+                    $ts = (int)($r['TimeStamp'] ?? 0);
+                    if ($ts > 0) $expected[$ts] = (float)($r['Value'] ?? 0.0);
+                }
+                foreach ($aRows as $r) {
+                    $ts = (int)($r['TimeStamp'] ?? 0);
+                    if ($ts > 0) $actual[$ts] = (float)($r['Value'] ?? 0.0);
+                }
+                // Die Ist-Erzeugung ist die verbindliche Gültigkeitsliste. Nur eine
+                // tatsächlich archivierte Ist-Stunde darf lernen. Die Prognose wird
+                // ausschließlich für exakt denselben Endzeitstempel hinzugenommen.
+                foreach ($actual as $endTs => $actKWhRaw) {
+                    if (!array_key_exists($endTs, $expected)) continue;
+                    $expKWh = (float)$expected[$endTs];
+                    $startTs = $endTs - 3600;
+                    if ($startTs <= 0 || $endTs > $completedEndTs) continue;
+                    if ($this->IsPVCalibrationHourExcluded($startTs, $endTs)) continue;
+                    $actKWh = (float)$actKWhRaw;
+                    if ($expKWh <= 0.0 || $actKWh < 0.0) continue;
+                    $day = date('Y-m-d', $startTs);
+                    $pairsByTs[$startTs] = [
+                        'ts' => $startTs,
+                        'endTs' => $endTs,
+                        'expectedKWh' => (float)$expKWh,
+                        'actualKWh' => $actKWh,
+                        'hour' => (int)date('G', $startTs),
+                        'intervals' => 1
+                    ];
+                    $validDays[$day] = true;
+                }
+                $cursorEnd = $chunkStart - 1;
+                $chunks++;
             }
-            $tmp=$this->RecalculatePVCalibrationFactors([$key=>$entry],$key);$result[$key]=$tmp[$key]??$entry;
+
+            ksort($pairsByTs, SORT_NUMERIC);
+            $days = array_keys($validDays);
+            sort($days, SORT_STRING);
+            $selectedDays = count($days) > $requiredDays ? array_slice($days, -$requiredDays) : $days;
+            $selectedMap = array_fill_keys($selectedDays, true);
+
+            $entry = ['factor'=>1.0, 'energySamples'=>[], 'seasonalArchive'=>[], 'storageMode'=>'paired forecast/actual archive'];
+            foreach ($pairsByTs as $sample) {
+                $day = date('Y-m-d', (int)$sample['ts']);
+                if (!isset($selectedMap[$day])) continue;
+                $entry['energySamples'][] = $sample;
+            }
+            $tmp = $this->RecalculatePVCalibrationFactors([$key=>$entry], $key);
+            $result[$key] = $tmp[$key] ?? $entry;
+            $result[$key]['archiveScanValidDays'] = count($days);
+            $result[$key]['archiveScanChunks'] = $chunks;
         }
         return $result;
     }
