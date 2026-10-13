@@ -618,7 +618,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.71';
+        $currentModuleVersion = '1.10.72';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -4582,16 +4582,17 @@ class SmartBatteryOptimizer extends IPSModule
         $requiredDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
 
         // Rollierendes Fenster: die neuesten N gültigen Lerntage verwenden.
-        // Vor dem erstmaligen Erreichen von N Tagen bleibt der Faktor exakt 1,000.
+        // Jeder Kalendertag mit mindestens einer gültigen, vollständig abgeschlossenen
+        // Prognose/Ist-Stunde zählt sofort als Lerntag. Der laufende Tag muss nicht
+        // erst bis Mitternacht warten. Vor dem erstmaligen Erreichen von N Tagen
+        // bleibt der angewendete Faktor weiterhin exakt 1,000.
         $byDay = [];
-        $today = date('Y-m-d');
         foreach ($samples as $sample) {
             $ts = (int)($sample['ts'] ?? 0);
             $exp = (float)($sample['expectedKWh'] ?? 0.0);
             $act = (float)($sample['actualKWh'] ?? 0.0);
             if ($ts <= 0 || $exp <= 0.0 || $act < 0.0) continue;
             $day = date('Y-m-d', $ts);
-            if ($day === $today) continue; // nur vollständig abgeschlossene Lerntage
             if (!isset($byDay[$day])) $byDay[$day] = ['expected'=>0.0,'actual'=>0.0,'samples'=>0,'firstTs'=>$ts,'lastTs'=>(int)($sample['endTs'] ?? $ts)];
             $byDay[$day]['expected'] += $exp;
             $byDay[$day]['actual'] += $act;
@@ -8824,7 +8825,9 @@ class SmartBatteryOptimizer extends IPSModule
         $requiredDays=max(1,$this->ReadPropertyInteger('PVCalibrationDays'));
         $lookbackDays=max(60,$requiredDays*4+7);
         $from=strtotime(date('Y-m-d 00:00:00'))-$lookbackDays*86400;
-        $to=strtotime(date('Y-m-d 00:00:00'))-1;
+        // Bis zur letzten vollständig abgeschlossenen Stunde des laufenden Tages.
+        // Beispiel 13:47 -> Endzeitstempel 13:00 darf bereits lernen.
+        $to=strtotime(date('Y-m-d H:00:00'));
 
         foreach($surfaces as $idx=>$surface){
             if(empty($surface['Active']) || empty($surface['AutoCalibrate']))continue;
@@ -8862,9 +8865,10 @@ class SmartBatteryOptimizer extends IPSModule
         if (!is_array($surfaces)) return $legacyCalibration;
 
         $requiredDays = max(1, $this->ReadPropertyInteger('PVCalibrationDays'));
-        // Ein Lerntag zählt erst nach seinem vollständigen Abschluss. Damit verdrängt
-        // ein halber laufender Tag nicht vorzeitig den ältesten vollständigen Lerntag.
-        $completedEndTs = strtotime(date('Y-m-d 00:00:00')) - 1;
+        // Alle bereits vollständig abgeschlossenen Stunden dürfen sofort lernen,
+        // auch wenn sie zum laufenden Kalendertag gehören. Der Zeitstempel entspricht
+        // dem Ende der letzten abgeschlossenen Stunde (z. B. 13:00 um 13:47).
+        $completedEndTs = strtotime(date('Y-m-d H:00:00'));
         if ($completedEndTs <= 0) return $legacyCalibration;
 
         $result = [];
@@ -8876,8 +8880,9 @@ class SmartBatteryOptimizer extends IPSModule
             $actualID = (int)@$this->GetIDForIdent($this->PVCalibrationIdent('Actual', $idx));
             if ($expectedID <= 0 || $actualID <= 0) continue;
 
-            // Rückwärts in handlichen Blöcken lesen, bis wirklich N gültige,
-            // abgeschlossene Lerntage gefunden wurden. N+2 Kalendertage reichen bei
+            // Rückwärts in handlichen Blöcken lesen, bis wirklich N gültige
+            // Lerntage mit mindestens einer gültigen Stundenpaarung gefunden wurden.
+            // N+2 Kalendertage reichen bei
             // Abregelung, Datenlücken oder deaktivierten Stunden nicht zuverlässig aus.
             $pairsByTs = [];
             $validDays = [];

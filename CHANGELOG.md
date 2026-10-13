@@ -1,3 +1,11 @@
+# SmartBatteryOptimizer v1.10.72 / Build 243
+
+- PV-Auto-Korrektur: gültige, vollständig abgeschlossene Prognose/Ist-Stunden des laufenden Tages fließen sofort in die Faktorberechnung ein.
+- Der aktuelle Tag wird nicht mehr pauschal bis Mitternacht aus dem Lernfenster ausgeschlossen.
+- Diagnose zählt damit alle gültigen Archiv-Stundenpaare sofort als Intervalle und den Kalendertag ab dem ersten gültigen Stundenpaar als Lerntag.
+- Der angewendete Auto-Faktor bleibt bis zum Erreichen des konfigurierten Lernzeitraums weiterhin 1,000; der berechnete Kontrollfaktor wird bereits nach jeder gültigen Stunde aktualisiert.
+- Archiv-Neueinlesen berücksichtigt ebenfalls den laufenden Tag bis zur letzten vollständig abgeschlossenen Stunde.
+
 # SmartBatteryOptimizer v1.10.71 / Build 242
 
 - PV-Kalibriersperre greift jetzt vor dem Speichern abgeschlossener Stunden.
