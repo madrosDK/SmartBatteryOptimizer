@@ -166,6 +166,7 @@ class SmartBatteryOptimizer extends IPSModule
         $this->RegisterAttributeString('OpenMeteoSurfaceCacheJSON', '{}');
         $this->RegisterAttributeInteger('ForecastSolarRetryAfterTs', 0);
         $this->RegisterAttributeString('ProviderDebugLogJSON', '[]');
+        $this->RegisterAttributeString('ProviderRequestStatsJSON', '{}');
         $this->RegisterAttributeString('ActionHistoryJSON', '[]');
         $this->RegisterAttributeString('AppliedModuleVersion', '');
         $this->RegisterAttributeString('PVSourceWeightsJSON', '{}');
@@ -618,7 +619,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.72';
+        $currentModuleVersion = '1.10.73';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -1021,6 +1022,44 @@ class SmartBatteryOptimizer extends IPSModule
             case 'pvnode': return 'pvnode';
             default: return $source;
         }
+    }
+
+    private function RecordProviderRequest(string $source): void
+    {
+        $source = strtolower(trim($source));
+        if (!in_array($source, ['openmeteo', 'forecastsolar', 'pvnode'], true)) return;
+
+        $stats = json_decode($this->ReadAttributeString('ProviderRequestStatsJSON'), true);
+        if (!is_array($stats)) $stats = [];
+        $today = date('Y-m-d');
+        $row = is_array($stats[$source] ?? null) ? $stats[$source] : [];
+        $count = (($row['day'] ?? '') === $today) ? (int)($row['count'] ?? 0) : 0;
+        $stats[$source] = ['day' => $today, 'count' => $count + 1, 'lastTs' => time()];
+        $this->WriteAttributeString('ProviderRequestStatsJSON', json_encode($stats));
+    }
+
+    private function GetProviderRequestStatus(string $source): array
+    {
+        $stats = json_decode($this->ReadAttributeString('ProviderRequestStatsJSON'), true);
+        if (!is_array($stats)) $stats = [];
+        $row = is_array($stats[$source] ?? null) ? $stats[$source] : [];
+        return [
+            'countToday' => (($row['day'] ?? '') === date('Y-m-d')) ? max(0, (int)($row['count'] ?? 0)) : 0,
+            'lastTs' => max(0, (int)($row['lastTs'] ?? 0))
+        ];
+    }
+
+    private function FormatProviderRequestStatus(string $source): string
+    {
+        $info = $this->GetProviderRequestStatus($source);
+        $count = (int)$info['countToday'];
+        $countText = $count . ' ' . ($count === 1 ? 'Abfrage' : 'Abfragen');
+        $lastTs = (int)$info['lastTs'];
+        if ($lastTs <= 0) return 'noch keine Abfrage · heute ' . $countText;
+        if (date('Y-m-d', $lastTs) === date('Y-m-d')) {
+            return 'Abfrage ' . date('H:i', $lastTs) . ' · heute ' . $countText;
+        }
+        return 'Letzte Abfrage ' . date('d.m. H:i', $lastTs) . ' · heute ' . $countText;
     }
 
     private function IsAutomaticEnabled(): bool
@@ -3223,6 +3262,7 @@ class SmartBatteryOptimizer extends IPSModule
                         'forecast_days' => 3
                     ]);
                     $this->ForecastDiagnosticStep('Open-Meteo START | ' . $name);
+                    $this->RecordProviderRequest('openmeteo');
                     $data = $this->HttpGetJson($url, 'Open-Meteo', ['Fläche'=>$name,'kWp'=>$kwp,'Azimut'=>$azimuth,'Neigung'=>$tilt,'AutoFaktor'=>$autoFactor,'Zeitzone'=>'Europe/Vienna']);
                     $this->ForecastDiagnosticStep('Open-Meteo ENDE | ' . $name);
                     if (!isset($data['hourly']['time'], $data['hourly']['global_tilted_irradiance'])) {
@@ -3627,6 +3667,9 @@ class SmartBatteryOptimizer extends IPSModule
             rawurlencode((string)$tilt) . '/' . rawurlencode((string)$azimuth) . '/' . rawurlencode((string)$kwp);
         $meta = ['Fläche'=>$surfaceName,'kWp'=>$kwp,'Azimut'=>$azimuth,'Neigung'=>$tilt];
 
+        // Cache-Zugriffe erreichen diese Methode nicht; hier beginnt immer ein echter HTTP-Abruf.
+        $this->RecordProviderRequest('forecastsolar');
+
         // Forecast.Solar bevorzugt über cURL abrufen. Das liefert bei HTTPS-/DNS-/
         // Verbindungsproblemen eine wesentlich aussagekräftigere Diagnose als
         // file_get_contents(). Falls cURL nicht verfügbar ist, bleibt der Stream-Fallback.
@@ -3932,6 +3975,7 @@ class SmartBatteryOptimizer extends IPSModule
     {
         $url = 'https://api.pvnode.com/v2/forecast/' . rawurlencode($siteID) . '?forecast_days=1&timezone=utc&include=strings';
 
+        $this->RecordProviderRequest('pvnode');
         try {
             $data = $this->HttpGetJsonWithHeaders($url, [
                 'Authorization: Bearer ' . $apiKey
@@ -9015,12 +9059,11 @@ class SmartBatteryOptimizer extends IPSModule
                 $v = $surfaceData[$source][$name] ?? null;
                 $body .= '<td style="text-align:right;padding:5px 4px">' . ($v === null ? '–' : number_format((float)$v,2,',','.') . ' kWh') . '</td>';
             }
-            $status = 'Live';
+            $status = $this->FormatProviderRequestStatus($source);
             if ($source === 'pvnode') {
                 $cache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
-                $fetched = is_array($cache) ? (int)($cache['fetchedAt'] ?? 0) : 0;
                 $hasStrings = is_array($cache['stringHours'] ?? null) && count($cache['stringHours']) > 0;
-                $status = ($hasStrings ? 'Flächen getrennt' : 'Standort gesamt') . ' · ' . ($fetched > 0 ? 'Cache ' . date('d.m. H:i', $fetched) : 'Live/kein Cache');
+                $status = ($hasStrings ? 'Flächen getrennt' : 'Standort gesamt') . ' · ' . $status;
             }
             $body .= '<td style="text-align:right;padding:5px 4px"><b>' . number_format($total,2,',','.') . ' kWh</b></td><td style="padding:5px 4px">' . htmlspecialchars($status) . '</td></tr>';
         }

@@ -1,3 +1,12 @@
+# SmartBatteryOptimizer v1.10.73 / Build 244
+
+- PV-Prognose Anbieter: Status zeigt je Anbieter den Zeitpunkt der letzten echten API-Abfrage sowie die Anzahl der heute ausgeführten API-Abfragen.
+- Gezählt werden ausschließlich tatsächliche HTTP-Abfragen; Cache-Zugriffe erhöhen den Zähler nicht.
+- Open-Meteo und Forecast.Solar zählen jeden Flächen-Request einzeln, damit die Anzeige den realen API-Verbrauch widerspiegelt.
+- pvnode zeigt weiterhin „Flächen getrennt“ bzw. „Standort gesamt“ und ergänzt dahinter Abfragezeit und Tageszähler.
+- Erzwungene Live-Abrufe über „Alle Prognoseanbieter abfragen“ werden ebenfalls korrekt mitgezählt.
+- Neue Zähler starten nach dem Update bei 0; frühere Abfragen des laufenden Tages werden nicht rückwirkend geschätzt.
+
 # SmartBatteryOptimizer v1.10.72 / Build 243
 
 - PV-Auto-Korrektur: gültige, vollständig abgeschlossene Prognose/Ist-Stunden des laufenden Tages fließen sofort in die Faktorberechnung ein.
