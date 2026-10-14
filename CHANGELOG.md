@@ -1,3 +1,8 @@
+# SmartBatteryOptimizer v1.10.74 / Build 245
+
+- PV-Prognose Anbieter: pvnode verwendet in der Statusspalte jetzt exakt denselben Aufbau wie Open-Meteo und Forecast.Solar.
+- Die Zusätze „Flächen getrennt“ und „Standort gesamt“ wurden ausschließlich aus der Statusanzeige entfernt; die interne pvnode-Flächentrennung bleibt unverändert.
+
 # SmartBatteryOptimizer v1.10.73 / Build 244
 
 - PV-Prognose Anbieter: Status zeigt je Anbieter den Zeitpunkt der letzten echten API-Abfrage sowie die Anzahl der heute ausgeführten API-Abfragen.

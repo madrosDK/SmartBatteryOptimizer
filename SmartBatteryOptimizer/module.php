@@ -619,7 +619,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.73';
+        $currentModuleVersion = '1.10.74';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -9060,11 +9060,6 @@ class SmartBatteryOptimizer extends IPSModule
                 $body .= '<td style="text-align:right;padding:5px 4px">' . ($v === null ? '–' : number_format((float)$v,2,',','.') . ' kWh') . '</td>';
             }
             $status = $this->FormatProviderRequestStatus($source);
-            if ($source === 'pvnode') {
-                $cache = json_decode($this->ReadAttributeString('PVNodeForecastCacheJSON'), true);
-                $hasStrings = is_array($cache['stringHours'] ?? null) && count($cache['stringHours']) > 0;
-                $status = ($hasStrings ? 'Flächen getrennt' : 'Standort gesamt') . ' · ' . $status;
-            }
             $body .= '<td style="text-align:right;padding:5px 4px"><b>' . number_format($total,2,',','.') . ' kWh</b></td><td style="padding:5px 4px">' . htmlspecialchars($status) . '</td></tr>';
         }
         $body .= '</table>';
