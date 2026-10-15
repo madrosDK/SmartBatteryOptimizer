@@ -1,3 +1,13 @@
+# SmartBatteryOptimizer v1.10.76 / Build 247
+
+- Lastprofil lernt Verbrauchsänderungen deutlich schneller: Das Wochentags-/Saisonprofil bleibt die führende Struktur und wird mit 70 % gewichtet.
+- Zusätzlich fließt ein Kurzzeittrend aus den letzten sieben vollständig abgeschlossenen Tagen mit 30 % in jede Stundenprognose ein, unabhängig vom Wochentag.
+- Innerhalb des 7-Tage-Trends werden neuere Tage stärker gewichtet (gestern 1,0; der siebte Tag etwa 0,5).
+- Die Langzeitgewichtung der Vergleichstage reagiert mit 21 Tagen Halbwertszeit deutlich schneller als bisher; ältere Saisonwerte bleiben mit kleinem Mindestgewicht für den Archiv-Wiederaufbau erhalten.
+- Erkannte Autoladungen werden vor der Bildung sowohl des Wochentagsprofils als auch des 7-Tage-Kurzzeittrends vollständig abgezogen.
+- Das globale Stundenprofil dient nur noch als Fallback, wenn für einen Wochentag/Saison-Slot noch keine belastbaren Werte vorhanden sind.
+- Lastprofil-Modell auf Version 3 angehoben; nach dem Modulupdate wird ein vorhandenes v2-Modell beim nächsten Rechenlauf automatisch aus dem bestehenden Lernfenster aktualisiert, ohne Archive oder Konfigurationen zurückzusetzen.
+
 # SmartBatteryOptimizer v1.10.75 / Build 246
 
 - Nachtreserve wird während einer bereits laufenden Nacht dynamisch nur noch aus dem verbleibenden Lastprofil-Verbrauch von jetzt bis zum Ende des aktuellen Nachtfensters berechnet. Bereits vergangener Nachtverbrauch wird nicht erneut reserviert.

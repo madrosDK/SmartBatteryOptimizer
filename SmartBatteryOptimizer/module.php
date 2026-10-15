@@ -619,7 +619,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.75';
+        $currentModuleVersion = '1.10.76';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -5967,6 +5967,7 @@ class SmartBatteryOptimizer extends IPSModule
             && is_array($cached)
             && isset($cached['seasonalModel'])
             && is_array($cached['seasonalModel'])
+            && (int)($cached['seasonalModel']['version'] ?? 0) >= 3
             && $updated > time() - 6 * 3600
         ) {
             $result = $this->ComposeConsumptionProfileFromModel(
@@ -6096,6 +6097,13 @@ class SmartBatteryOptimizer extends IPSModule
             'slotWeight' => $slotWeight,
             'globalSum' => array_fill(0, 24, 0.0),
             'globalWeight' => array_fill(0, 24, 0.0),
+            // Kurzzeittrend: die letzten sieben vollständig abgeschlossenen Tage
+            // werden unabhängig vom Wochentag separat geführt. Dadurch kann das
+            // Tagesprofil auf aktuelle Verbrauchsänderungen reagieren, ohne seine
+            // Wochentagsstruktur zu verlieren.
+            'recent7Sum' => array_fill(0, 24, 0.0),
+            'recent7Weight' => array_fill(0, 24, 0.0),
+            'recent7ValidDays' => 0,
             'validDays' => 0,
             'evSessions' => 0,
             'evKWh' => 0.0,
@@ -6117,15 +6125,34 @@ class SmartBatteryOptimizer extends IPSModule
         $weekday = (string)max(1, min(7, (int)date('N', $dayStart)));
         $seasonWeights = $this->GetConsumptionSeasonWeights($dayStart + 12 * 3600);
 
-        // Neuere Vergleichstage erhalten mehr Gewicht; ältere Archivjahre wirken
-        // weiterhin mit, dominieren aber heutige Verbrauchsgewohnheiten nicht.
+        // Neuere Vergleichstage erhalten deutlich mehr Gewicht als bisher. Eine
+        // Halbwertszeit von 21 Tagen reagiert innerhalb des konfigurierten 30-Tage-
+        // Fensters spürbar auf veränderte Gewohnheiten. Der kleine Mindestanteil hält
+        // ältere Saison-Slots beim vollständigen Archiv-Wiederaufbau weiterhin nutzbar.
         $ageDays = max(0.0, (time() - ($dayStart + 12 * 3600)) / 86400.0);
-        $recencyWeight = max(0.15, pow(0.5, $ageDays / 365.0));
+        $recencyWeight = max(0.10, pow(0.5, $ageDays / 21.0));
+
+        // Kurzzeittrend: exakt die letzten sieben abgeschlossenen Kalendertage.
+        // Gestern hat Gewicht 1,0; der siebte Tag ungefähr 0,5. Autoladungen sind zu
+        // diesem Zeitpunkt bereits aus $hourly entfernt.
+        $todayStart = strtotime('today 00:00:00');
+        $calendarAge = (int)round(($todayStart - $dayStart) / 86400.0);
+        $recent7DayWeight = 0.0;
+        if ($calendarAge >= 1 && $calendarAge <= 7) {
+            $recent7DayWeight = pow(0.5, ($calendarAge - 1) / 6.0);
+        }
 
         for ($h = 0; $h < 24; $h++) {
             $v = max(0.0, (float)($hourly[$h] ?? 0.0));
             $acc['globalSum'][$h] = (float)($acc['globalSum'][$h] ?? 0.0) + $v * $recencyWeight;
             $acc['globalWeight'][$h] = (float)($acc['globalWeight'][$h] ?? 0.0) + $recencyWeight;
+            if ($recent7DayWeight > 0.0) {
+                $acc['recent7Sum'][$h] = (float)($acc['recent7Sum'][$h] ?? 0.0) + $v * $recent7DayWeight;
+                $acc['recent7Weight'][$h] = (float)($acc['recent7Weight'][$h] ?? 0.0) + $recent7DayWeight;
+            }
+        }
+        if ($recent7DayWeight > 0.0) {
+            $acc['recent7ValidDays'] = (int)($acc['recent7ValidDays'] ?? 0) + 1;
         }
 
         foreach ($seasonWeights as $season => $seasonWeight) {
@@ -6179,18 +6206,27 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         $global = [];
+        $recent7 = [];
         for ($h = 0; $h < 24; $h++) {
             $w = (float)($acc['globalWeight'][$h] ?? 0.0);
             $global[$h] = $w > 0.000001
                 ? max(0.0, (float)$acc['globalSum'][$h] / $w)
                 : 0.0;
+
+            $rw = (float)($acc['recent7Weight'][$h] ?? 0.0);
+            $recent7[$h] = $rw > 0.000001
+                ? max(0.0, (float)($acc['recent7Sum'][$h] ?? 0.0) / $rw)
+                : 0.0;
         }
 
         return [
-            'version' => 2,
+            'version' => 3,
             'profiles' => $profiles,
             'slotWeights' => $slotWeights,
             'globalHourlyKWh' => $global,
+            'recent7HourlyKWh' => $recent7,
+            'recent7ValidDays' => (int)($acc['recent7ValidDays'] ?? 0),
+            'shortTermWeight' => 0.30,
             'validDays' => (int)($acc['validDays'] ?? 0),
             'evSessions' => (int)($acc['evSessions'] ?? 0),
             'evKWh' => max(0.0, (float)($acc['evKWh'] ?? 0.0)),
@@ -6248,6 +6284,21 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $merged['globalHourlyKWh'] = $mergedGlobal;
 
+        // Der Kurzzeittrend muss immer aus dem aktuellen Lernfenster stammen. Er wird
+        // nicht mit einem alten Modell geglättet, damit reale Verbrauchsänderungen
+        // innerhalb weniger Tage sichtbar werden.
+        $recent7 = is_array($recent['recent7HourlyKWh'] ?? null)
+            ? array_values($recent['recent7HourlyKWh'])
+            : [];
+        if (count($recent7) === 24 && (int)($recent['recent7ValidDays'] ?? 0) > 0) {
+            $merged['recent7HourlyKWh'] = $recent7;
+            $merged['recent7ValidDays'] = (int)$recent['recent7ValidDays'];
+        } elseif (!isset($merged['recent7HourlyKWh'])) {
+            $merged['recent7HourlyKWh'] = array_fill(0, 24, 0.0);
+            $merged['recent7ValidDays'] = 0;
+        }
+        $merged['shortTermWeight'] = 0.30;
+
         // Die vollständige Archivbasis bleibt als Metadatum erhalten; der normale
         // Lernlauf ergänzt nur die Information über das aktuelle Lernfenster.
         $merged['recentValidDays'] = (int)($recent['validDays'] ?? 0);
@@ -6263,7 +6314,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $merged['archiveTo'] = max((int)($base['archiveTo'] ?? 0), (int)($recent['archiveTo'] ?? 0));
         $merged['modelUpdated'] = time();
-        $merged['version'] = 2;
+        $merged['version'] = 3;
         return $merged;
     }
 
@@ -6316,35 +6367,46 @@ class SmartBatteryOptimizer extends IPSModule
         $global = is_array($model['globalHourlyKWh'] ?? null)
             ? array_values($model['globalHourlyKWh'])
             : array_fill(0, 24, 0.0);
+        $recent7 = is_array($model['recent7HourlyKWh'] ?? null)
+            ? array_values($model['recent7HourlyKWh'])
+            : array_fill(0, 24, 0.0);
+        $recent7ValidDays = max(0, (int)($model['recent7ValidDays'] ?? 0));
+        $shortTermWeight = $recent7ValidDays > 0
+            ? max(0.0, min(0.50, (float)($model['shortTermWeight'] ?? 0.30)))
+            : 0.0;
+        $weekdayWeight = 1.0 - $shortTermWeight;
         $rawHourly = [];
 
         for ($h = 0; $h < 24; $h++) {
             $sum = 0.0;
             $weight = 0.0;
-            $support = 0.0;
             foreach ($seasonWeights as $season => $seasonWeight) {
                 $candidate = $model['profiles'][$season][$weekdayKey] ?? null;
                 if (!is_array($candidate) || count($candidate) !== 24) continue;
                 $w = max(0.0, (float)$seasonWeight);
                 $sum += max(0.0, (float)($candidate[$h] ?? 0.0)) * $w;
                 $weight += $w;
-                $support += max(0.0, (float)($model['slotWeights'][$season][$weekdayKey] ?? 0.0)) * $w;
             }
 
             $globalValue = max(0.0, (float)($global[$h] ?? 0.0));
+            $recentValue = max(0.0, (float)($recent7[$h] ?? 0.0));
             if ($weight > 0.000001) {
-                $weekdayValue = $sum / $weight;
-                // Ein eigenes Wochentags-/Saisonprofil soll nicht bereits nach nur
-                // wenigen Vergleichstagen einen einzelnen Ausreißertag vollständig
-                // übernehmen. Das Slot-Profil wird daher mit dem stabilen globalen
-                // Stundenprofil "eingeschwungen". Mit wachsender Datenbasis nähert
-                // sich die Gewichtung automatisch 100 % dem individuellen Wochentag.
-                $confidence = $support > 0.0 ? min(1.0, $support / ($support + 4.0)) : 0.0;
-                if ($globalValue > 0.0) {
-                    $rawHourly[$h] = $weekdayValue * $confidence + $globalValue * (1.0 - $confidence);
+                $weekdayValue = max(0.0, $sum / $weight);
+
+                // Das Tagesprofil bleibt die führende Struktur. Der kurzfristige
+                // Verbrauchstrend der letzten sieben abgeschlossenen Tage korrigiert
+                // jede Stunde mit 30 %, unabhängig vom Wochentag. So reagiert z. B.
+                // ein Donnerstag schnell auf das Ende der Klimaanlagen-Saison, ohne
+                // seine typische Donnerstag-Form zu verlieren.
+                if ($shortTermWeight > 0.0 && $recentValue > 0.0) {
+                    $rawHourly[$h] = $weekdayValue * $weekdayWeight + $recentValue * $shortTermWeight;
                 } else {
                     $rawHourly[$h] = $weekdayValue;
                 }
+            } elseif ($shortTermWeight > 0.0 && $recentValue > 0.0) {
+                // Noch kein belastbares Wochentags-/Saisonprofil: kurzfristiger Trend
+                // ist aussagekräftiger als ein sehr alter globaler Mittelwert.
+                $rawHourly[$h] = $recentValue;
             } else {
                 $rawHourly[$h] = $globalValue;
             }
@@ -6383,12 +6445,15 @@ class SmartBatteryOptimizer extends IPSModule
         $source = 'Archiv gelernt – ' . ($weekdayNames[$weekday] ?? ('Tag ' . $weekday))
             . ', saisonal ' . implode(' / ', $seasonParts)
             . ', ' . (int)($model['validDays'] ?? 0) . ' Tage';
+        if ($recent7ValidDays > 0) {
+            $source .= ', Kurzzeit ' . $recent7ValidDays . '/7 Tage ' . number_format($shortTermWeight * 100.0, 0, ',', '.') . ' %';
+        }
         if ((int)($model['evSessions'] ?? 0) > 0) {
             $source .= ', ' . (int)$model['evSessions'] . ' Autoladungen ausgeschlossen';
         }
 
         return [
-            'version' => 2,
+            'version' => 3,
             'hourlyKWh' => $forecastHourly,
             'rawHourlyKWh' => $rawHourly,
             'dailyKWh' => array_sum($forecastHourly),

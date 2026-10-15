@@ -47,7 +47,7 @@ Seit dieser Version gibt es für die Verbrauchsprognose nur noch eine Lernbasis:
 - Lastprofil-Diagramm zeigt das konfigurierte Lernfenster statt nur sechs vergangener Tage.
 - Autoladung wird als eigener orangefarbener Anteil des Ist-Verbrauchs dargestellt und nur aus dem Lernprofil abgezogen.
 - Reines gelerntes Grundprofil wird ohne Planungs-Sicherheitsaufschlag dargestellt; Planung selbst bleibt unverändert.
-- Wochentagsprofile mit wenigen Vergleichstagen werden gegen das globale Stundenprofil stabilisiert.
+- Wochentags-/Saisonprofil bleibt führend; ein 30-%-Kurzzeittrend aus den letzten sieben abgeschlossenen Tagen passt das Profil schneller an aktuelle Verbrauchsänderungen an.
 - Historische Diagrammdaten werden speicherschonend aus Archiv-Aggregaten gelesen.
 
 **1.10.47 / Build 218**
@@ -140,7 +140,7 @@ Die **PV-Autokalibrierung kann bei aktiver Einspeisebegrenzung pausiert werden**
 
 Das Modul lernt aus der archivierten Variable **Hausverbrauch Leistung (W)** ein stündliches Lastprofil. Dieses Lastprofil ist die einzige Verbrauchsbasis für Nachtreserve, PV-Zeit, übrigen Tag und Einspeiseplanung.
 
-Ab Version **1.10.43** gibt es für **jeden Wochentag ein eigenes 24-Stunden-Profil**. Zusätzlich werden vier saisonale Stützprofile (Winter, Frühling, Sommer, Herbst) geführt. Zwischen diesen Stützpunkten wird mit einem sanften Verlauf interpoliert, sodass es an Saisonwechseln keine sprunghaften Verbrauchsprognosen gibt. Neuere Vergleichstage werden stärker gewichtet als sehr alte Archivtage. Ab 1.10.48 werden Wochentags-/Saison-Slots mit noch wenigen Vergleichstagen zusätzlich mit dem globalen Stundenprofil stabilisiert; mit wachsender Zahl passender Lerntage steigt das Gewicht des individuellen Wochentags automatisch.
+Ab Version **1.10.43** gibt es für **jeden Wochentag ein eigenes 24-Stunden-Profil**. Zusätzlich werden vier saisonale Stützprofile (Winter, Frühling, Sommer, Herbst) geführt. Zwischen diesen Stützpunkten wird mit einem sanften Verlauf interpoliert, sodass es an Saisonwechseln keine sprunghaften Verbrauchsprognosen gibt. Ab **1.10.76** bleibt dieses Wochentags-/Saisonprofil mit **70 %** die führende Struktur; zusätzlich fließt ein **30-%-Kurzzeittrend aus den letzten sieben vollständig abgeschlossenen Tagen** ein. Innerhalb dieses Kurzzeittrends werden neuere Tage stärker gewichtet. Auch die Vergleichstage des Wochentagsprofils werden mit einer 21-Tage-Halbwertszeit deutlich aktueller gewichtet. Das globale Stundenprofil wird nur noch als Fallback verwendet, wenn für einen Slot noch keine verwertbaren Daten vorliegen.
 
 Autoladung wird am Leistungsanstieg gegenüber der unmittelbar vorherigen Grundlast erkannt. Die eingestellte **Autoladung Ladeleistung** ist zugleich Referenz für die Startflanke und der feste Leistungsanteil, der während der Ladephase aus dem Lastprofil herausgerechnet wird. Die Toleranz bestimmt, wie stark die Startflanke davon abweichen darf. Eine Ladephase wird nur übernommen, wenn sie mindestens die konfigurierbare **Autoladung Mindestdauer** erreicht; Standard sind **20 Minuten**. Die erkannte Ladephase endet beim deutlichen Leistungsabfall Richtung Grundlast oder spätestens bei der eingestellten maximalen Energie pro Ladevorgang. Das originale Verbrauchsarchiv bleibt unverändert und der Ladeanteil erscheint im Diagramm separat **orange**.
 
