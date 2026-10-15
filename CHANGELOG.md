@@ -1,3 +1,11 @@
+# SmartBatteryOptimizer v1.10.77 / Build 248
+
+- Lastprofil-Diagramm kann jetzt über den rechten Pfeil auch den morgigen Tag anzeigen.
+- Für morgen wird das bereits intern verwendete Wochentags-/Saisonprofil inklusive 7-Tage-Kurzzeittrend dargestellt.
+- Beim Öffnen bleibt weiterhin Heute ausgewählt; der Button „Heute“ springt aus der Morgenansicht zurück.
+- Für morgen werden keine Ist-Verbrauchs- oder Autoladungswerte erzeugt; die Zusammenfassung zeigt ausschließlich die Verbrauchsprognose für morgen.
+- Batterie-, Einspeise- und Lastprofil-Lernlogik bleiben unverändert und verwenden weiterhin dieselbe stündliche Lastprofilbasis.
+
 # SmartBatteryOptimizer v1.10.76 / Build 247
 
 - Lastprofil lernt Verbrauchsänderungen deutlich schneller: Das Wochentags-/Saisonprofil bleibt die führende Struktur und wird mit 70 % gewichtet.
