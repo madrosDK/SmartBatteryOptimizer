@@ -1,3 +1,11 @@
+# SmartBatteryOptimizer v1.10.75 / Build 246
+
+- Nachtreserve wird während einer bereits laufenden Nacht dynamisch nur noch aus dem verbleibenden Lastprofil-Verbrauch von jetzt bis zum Ende des aktuellen Nachtfensters berechnet. Bereits vergangener Nachtverbrauch wird nicht erneut reserviert.
+- Früh morgens bleibt das aktuell laufende Nachtfenster bis zum PV-Morgen für neue bzw. angepasste Einspeiseslots planbar; die Planung springt nicht vorzeitig auf die kommende Nacht.
+- Für Morgenreserve, PV-Überschuss und Netzlimitbetrachtung wird immer der PV-Tag verwendet, der direkt auf das aktuell relevante Nachtfenster folgt: früh morgens heute, abends bzw. tagsüber morgen.
+- Das Ziel, den konfigurierten Batterie-Ziel-SoC am Ende des folgenden PV-Tages wieder erreichen zu können, bleibt unverändert bestehen.
+- Die Übersicht verwendet für „Überschuss nach Eigenverbrauch“ und „PV ausreichend ab“ den aktuell relevanten Nacht-/PV-Zyklus.
+
 # SmartBatteryOptimizer v1.10.74 / Build 245
 
 - PV-Prognose Anbieter: pvnode verwendet in der Statusspalte jetzt exakt denselben Aufbau wie Open-Meteo und Forecast.Solar.

@@ -619,7 +619,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.74';
+        $currentModuleVersion = '1.10.75';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -4980,7 +4980,7 @@ class SmartBatteryOptimizer extends IPSModule
         return $this->ExpandPricesToQuarterHour($prices);
     }
 
-    private function AnalyzeGridLimitRisk(array $forecast, array $consumptionProfile): array
+    private function AnalyzeGridLimitRisk(array $forecast, array $consumptionProfile, ?int $pvDayStart = null): array
     {
         $gridLimitW = max(0, $this->ReadPropertyInteger('GridFeedInLimitW'));
         $safetyW = max(0, min($gridLimitW, $this->ReadPropertyInteger('GridLimitSafetyW')));
@@ -4991,8 +4991,10 @@ class SmartBatteryOptimizer extends IPSModule
             ? $consumptionProfile['hourlyKWh']
             : array_fill(0, 24, 0.0);
 
-        $tomorrowStart = strtotime('tomorrow 00:00:00');
-        $tomorrowEnd = $tomorrowStart + 86400;
+        $tomorrowStart = $pvDayStart !== null
+            ? strtotime(date('Y-m-d 00:00:00', $pvDayStart))
+            : strtotime('tomorrow 00:00:00');
+        $tomorrowEnd = strtotime('+1 day', $tomorrowStart);
 
         $peakPVW = 0.0;
         $peakRawExportW = 0.0;
@@ -5096,17 +5098,76 @@ class SmartBatteryOptimizer extends IPSModule
         $stored = $capacity * $soc / 100.0;
         $minimumSOC = $this->GetRuntimeMinimumSOC();
         $minEnergy = $capacity * $minimumSOC / 100.0;
-        $nightReserve = max(0.0, $nightKWh); // Sicherheitsaufschlag steckt bereits im stündlichen Lastprofil.
 
-        $tomorrowPV = (float)$forecast['tomorrowKWh'];
-        $tomorrowConsumption = (float)($forecast['consumptionTomorrowKWh'] ?? 0.0);
-        $pvOverlapConsumption = (float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0);
-        $pvSurplusTomorrow = max(0.0, (float)($forecast['pvSurplusTomorrowKWh'] ?? ($tomorrowPV - $pvOverlapConsumption)));
-        $gridRisk = $this->AnalyzeGridLimitRisk($forecast, $consumptionProfile);
+        $now = time();
+        $todayStart = strtotime('today 00:00:00');
+        $tomorrowStart = strtotime('tomorrow 00:00:00');
+        $dayNightNow = $this->GetCurrentDayNightStatus();
+        $isNightNow = !empty($dayNightNow['isNight']);
 
-        // Ziel: Der Speicher soll trotz geplanter Einspeisung am nächsten PV-Tag
-        // wieder bis zum konfigurierten Ziel-SoC geladen werden können. Dafür wird
-        // zuerst der gelernte Eigenverbrauch während der PV-Stunden abgezogen.
+        // Die Reserve muss immer zum aktuell relevanten Nachtzyklus gehören.
+        // Läuft die Nacht bereits, zählt nur noch der Verbrauch ab JETZT bis zum
+        // Ende dieses Nachtfensters. Bereits verbrauchte Nachtenergie darf nicht
+        // weiter reserviert werden. Tagsüber wird weiterhin die komplette kommende
+        // Nacht berücksichtigt.
+        if ($isNightNow) {
+            $nightWindowStart = (int)$dayNightNow['start'];
+            $nightWindowEnd = (int)$dayNightNow['end'];
+            $nightReserve = $this->GetConsumptionProfileEnergyForRange(
+                $consumptionProfile,
+                max($now, $nightWindowStart),
+                $nightWindowEnd,
+                true
+            );
+            // Der Nachtbeginn liegt bereits in der Vergangenheit. Für alle noch
+            // möglichen Einspeiseslots ist deshalb der aktuelle Speicherstand die
+            // Ausgangsbasis; es gibt keine erneute Projektion auf den Abend.
+            $nightStartToday = $now;
+        } else {
+            $nightWindowStart = $this->DetermineNightStart(0, $todayStart);
+            $nightWindowEnd = $this->DetermineMorningEnd(0, $tomorrowStart);
+            $nightReserve = max(0.0, $nightKWh); // Sicherheitsaufschlag steckt bereits im stündlichen Lastprofil.
+            $nightStartToday = $nightWindowStart;
+        }
+
+        // Der PV-Tag, der diesen Nachtzyklus beendet, ist maßgeblich für die
+        // Morgenreserve und das Ziel "am nächsten Abend wieder Ziel-SoC".
+        // Früh morgens ist das HEUTE, am Abend bzw. tagsüber ist es MORGEN.
+        $planningPVDayStart = strtotime(date('Y-m-d 00:00:00', $nightWindowEnd));
+        $planningPVDayEnd = strtotime('+1 day', $planningPVDayStart);
+        $planningPVWindowStart = max($planningPVDayStart, $nightWindowEnd);
+        $planningPVWindowEnd = min($planningPVDayEnd, $this->DetermineNightStart(0, $planningPVDayStart));
+        if ($planningPVWindowEnd <= $planningPVWindowStart) {
+            $planningPVWindowEnd = $planningPVDayEnd;
+        }
+
+        $planningPVStats = $this->CalculatePVPlanningWindow(
+            $forecast,
+            $consumptionProfile,
+            $planningPVWindowStart,
+            $planningPVWindowEnd
+        );
+
+        $planningPVDate = date('Y-m-d', $planningPVDayStart);
+        if ($planningPVDate === date('Y-m-d', $todayStart)) {
+            $tomorrowPV = (float)($forecast['todayKWh'] ?? 0.0);
+        } elseif ($planningPVDate === date('Y-m-d', $tomorrowStart)) {
+            $tomorrowPV = (float)($forecast['tomorrowKWh'] ?? 0.0);
+        } else {
+            $tomorrowPV = 0.0;
+            foreach (($forecast['hours'] ?? []) as $ts => $hourData) {
+                if ((int)$ts < $planningPVDayStart || (int)$ts >= $planningPVDayEnd) continue;
+                $tomorrowPV += max(0.0, (float)($hourData['totalKW'] ?? 0.0));
+            }
+        }
+
+        $tomorrowConsumption = (float)($planningPVStats['totalConsumptionKWh'] ?? 0.0);
+        $pvOverlapConsumption = (float)($planningPVStats['consumptionDuringPVKWh'] ?? 0.0);
+        $pvSurplusTomorrow = max(0.0, (float)($planningPVStats['pvSurplusKWh'] ?? 0.0));
+        $gridRisk = $this->AnalyzeGridLimitRisk($forecast, $consumptionProfile, $planningPVDayStart);
+
+        // Ziel: Der Speicher soll trotz geplanter Einspeisung am direkt folgenden
+        // PV-Tag wieder bis zum konfigurierten Ziel-SoC geladen werden können.
         $targetSOC = max($minimumSOC, min(100.0, $this->ReadPropertyFloat('BatteryTargetSOC')));
         $targetEnergy = $capacity * $targetSOC / 100.0;
         $requiredMorningStored = max($minEnergy, $targetEnergy - $pvSurplusTomorrow);
@@ -5116,23 +5177,17 @@ class SmartBatteryOptimizer extends IPSModule
             $reserve = $requiredMorningStored + ($nightReserve * (1.0 + $this->ReadPropertyFloat('PoorForecastExtraReservePct') / 100.0));
         }
 
-        // Für spätere Einspeisefenster am heutigen Abend darf nicht nur der
-        // aktuelle Speicherstand betrachtet werden. Bis zum Nachtbeginn kann
-        // die heutige PV-Produktion den Speicher noch deutlich nachladen.
-        $now = time();
-        $todayStart = strtotime('today 00:00:00');
-        $nightStartToday = $this->DetermineNightStart(0, $todayStart);
-        if ($nightStartToday <= $now) {
-            $nightStartToday = $now;
-        }
-
+        // Vor Beginn der kommenden Nacht darf nicht nur der aktuelle Speicherstand
+        // betrachtet werden. Bis zum Nachtbeginn kann die heutige PV-Produktion den
+        // Speicher noch nachladen. Während einer bereits laufenden Nacht entfällt
+        // diese Projektion vollständig.
         $remainingPVToday = 0.0;
         $remainingLoadToday = 0.0;
         $hourlyLoad = isset($consumptionProfile['hourlyKWh']) && is_array($consumptionProfile['hourlyKWh'])
             ? $consumptionProfile['hourlyKWh']
             : array_fill(0, 24, 0.0);
 
-        if ($nightStartToday > $now) {
+        if (!$isNightNow && $nightStartToday > $now) {
             for ($h = 0; $h < 24; $h++) {
                 $hourStart = $todayStart + $h * 3600;
                 $hourEnd = $hourStart + 3600;
@@ -5148,10 +5203,12 @@ class SmartBatteryOptimizer extends IPSModule
             }
         }
 
-        $projectedStoredAtNightStart = min(
-            $capacity,
-            max($minEnergy, $stored + max(0.0, $remainingPVToday - $remainingLoadToday))
-        );
+        $projectedStoredAtNightStart = $isNightNow
+            ? $stored
+            : min(
+                $capacity,
+                max($minEnergy, $stored + max(0.0, $remainingPVToday - $remainingLoadToday))
+            );
 
         $status = 'Optimierung aktiv';
         if ($this->ReadPropertyBoolean('DisableFeedInOnVeryPoorForecast') && $tomorrowPV < $this->ReadPropertyFloat('VeryPoorForecastKWh')) {
@@ -5220,15 +5277,10 @@ class SmartBatteryOptimizer extends IPSModule
             ? time() + 3600
             : ($criticalDeadline > time()
                 ? max(time() + 3600, $criticalDeadline)
-                : max(time() + 3600, (int)$forecast['morningTs']));
-        // Einspeiseslots ausschließlich innerhalb der kommenden/aktuellen Nacht.
-        // Der Speicher wird tagsüber nicht für PV-Headroom entladen.
-        $nightWindowStart = $this->DetermineNightStart(0, $todayStart);
-        $nightWindowEnd = $this->DetermineMorningEnd(1, $todayStart + 86400);
-        if ($now >= $nightWindowEnd) {
-            $nightWindowStart = $this->DetermineNightStart(1, $todayStart + 86400);
-            $nightWindowEnd = $this->DetermineMorningEnd(2, $todayStart + 2 * 86400);
-        }
+                : max(time() + 3600, $nightWindowEnd));
+        // Einspeiseslots ausschließlich innerhalb des aktuell relevanten Nachtfensters.
+        // Früh morgens bleibt damit die laufende Nacht bis zu ihrem Ende planbar;
+        // tagsüber wird weiterhin ausschließlich die kommende Nacht verwendet.
         $allSlots = [];
         foreach ($prices as $p) {
             if ($p['end'] <= max(time(), $nightWindowStart) || $p['start'] >= $nightWindowEnd) continue;
@@ -5517,7 +5569,7 @@ class SmartBatteryOptimizer extends IPSModule
             . ' | Gesamtreserve=' . round($reserve,3) . ' kWh'
             . ' | verfügbar jetzt=' . round($availableNow,3) . ' kWh'
             . ' | verfügbar ab Nachtbeginn=' . round($availableAtNightStart,3) . ' kWh'
-            . ' | PV morgen=' . round($tomorrowPV,3) . ' kWh'
+            . ' | PV-Zieltag=' . date('d.m.', $planningPVDayStart) . ' ' . round($tomorrowPV,3) . ' kWh'
             . ' | Überschuss=' . round($pvSurplusTomorrow,3) . ' kWh'
             . ' | PV Spitze=' . round((float)($gridRisk['peakPVW'] ?? 0)) . ' W'
             . ' | Roh-Netzeinspeisung max=' . round((float)($gridRisk['peakRawExportW'] ?? 0)) . ' W'
@@ -5562,6 +5614,12 @@ class SmartBatteryOptimizer extends IPSModule
             'tomorrowConsumptionKWh' => $tomorrowConsumption,
             'pvOverlapConsumptionKWh' => $pvOverlapConsumption,
             'pvSurplusTomorrowKWh' => $pvSurplusTomorrow,
+            'planningPVDayStartTs' => $planningPVDayStart,
+            'planningPVKWh' => $tomorrowPV,
+            'planningPVSurplusKWh' => $pvSurplusTomorrow,
+            'planningNightWindowStartTs' => $nightWindowStart,
+            'planningNightWindowEndTs' => $nightWindowEnd,
+            'planningIsCurrentNight' => $isNightNow,
             'remainingUnscheduledKWh' => $remaining,
             'highestPriceCt' => $highest,
             'expectedRevenueEUR' => $revenue,
@@ -7887,6 +7945,59 @@ class SmartBatteryOptimizer extends IPSModule
         return max(0.0, $sum);
     }
 
+    private function CalculatePVPlanningWindow(array $forecast, array $profile, int $rangeStart, int $rangeEnd): array
+    {
+        if ($rangeEnd <= $rangeStart) {
+            return [
+                'consumptionDuringPVKWh' => 0.0,
+                'otherConsumptionKWh' => 0.0,
+                'totalConsumptionKWh' => 0.0,
+                'pvSurplusKWh' => 0.0
+            ];
+        }
+
+        $thresholdKW = max(0.0, $this->ReadPropertyInteger('MorningPVThresholdW') / 1000.0);
+        $consumptionDuringPV = 0.0;
+        $otherConsumption = 0.0;
+        $pvSurplus = 0.0;
+
+        $dayStart = strtotime(date('Y-m-d 00:00:00', $rangeStart));
+        while ($dayStart < $rangeEnd) {
+            $nextDay = strtotime('+1 day', $dayStart);
+            $hourly = $this->GetConsumptionForecastHourlyForTimestamp($profile, $dayStart + 12 * 3600, true);
+
+            for ($h = 0; $h < 24; $h++) {
+                $hourStart = $dayStart + $h * 3600;
+                $hourEnd = min($nextDay, $hourStart + 3600);
+                $overlap = $this->OverlapSeconds($hourStart, $hourEnd, $rangeStart, $rangeEnd);
+                if ($overlap <= 0) continue;
+
+                $fraction = $overlap / 3600.0;
+                $loadKWh = max(0.0, (float)($hourly[$h] ?? 0.0)) * $fraction;
+                $pvKW = isset($forecast['hours'][$hourStart])
+                    ? max(0.0, (float)($forecast['hours'][$hourStart]['totalKW'] ?? 0.0))
+                    : 0.0;
+                $pvKWh = $pvKW * $fraction;
+
+                if ($pvKW >= $thresholdKW) {
+                    $consumptionDuringPV += $loadKWh;
+                    $pvSurplus += max(0.0, $pvKWh - $loadKWh);
+                } else {
+                    $otherConsumption += $loadKWh;
+                }
+            }
+
+            $dayStart = $nextDay;
+        }
+
+        return [
+            'consumptionDuringPVKWh' => $consumptionDuringPV,
+            'otherConsumptionKWh' => $otherConsumption,
+            'totalConsumptionKWh' => $consumptionDuringPV + $otherConsumption,
+            'pvSurplusKWh' => $pvSurplus
+        ];
+    }
+
     private function OverlapSeconds(int $startA, int $endA, int $startB, int $endB): int
     {
         if ($endA <= $startA || $endB <= $startB) {
@@ -9216,9 +9327,10 @@ class SmartBatteryOptimizer extends IPSModule
         $pvPart = (float)($forecast['consumptionDuringPVTomorrowKWh'] ?? 0.0);
         $otherPart = (float)($forecast['otherDayConsumptionTomorrowKWh'] ?? 0.0);
 
-        // Konkretes Zeitfenster der nächsten Nacht anzeigen.
-        $nightStartTs = (int)($forecast['nightWindowStartTs'] ?? $this->DetermineNightStart(0, strtotime('today 00:00:00')));
-        $nightEndTs = (int)($forecast['nightWindowEndTs'] ?? $this->DetermineMorningEnd(0, strtotime('tomorrow 00:00:00')));
+        // Konkretes, für die aktuelle Planung relevantes Nachtfenster anzeigen.
+        // Früh morgens ist dies noch die laufende Nacht, tagsüber die kommende.
+        $nightStartTs = (int)($plan['planningNightWindowStartTs'] ?? ($forecast['nightWindowStartTs'] ?? $this->DetermineNightStart(0, strtotime('today 00:00:00'))));
+        $nightEndTs = (int)($plan['planningNightWindowEndTs'] ?? ($forecast['nightWindowEndTs'] ?? $this->DetermineMorningEnd(0, strtotime('tomorrow 00:00:00'))));
         $nightWindowClock = date('H:i', $nightStartTs) . ' – ' . date('H:i', $nightEndTs) . ' Uhr';
 
         $cellLabel = 'padding:4px 8px 4px 0;color:#b9c0c8;white-space:nowrap;vertical-align:top';
@@ -9268,8 +9380,9 @@ class SmartBatteryOptimizer extends IPSModule
         $html .= '<td style="' . $cellLabel . '">Morgen</td><td style="' . $cellValue . '">' . number_format((float)($forecast['tomorrowKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
         $html .= '</tr>';
         $html .= '<tr>';
-        $html .= '<td style="' . $cellLabel . '">Überschuss nach Eigenverbrauch</td><td style="' . $cellValue . '">' . number_format((float)($forecast['pvSurplusTomorrowKWh'] ?? 0), 2, ',', '.') . ' kWh</td>';
-        $html .= '<td style="' . $cellLabel . '">PV ausreichend ab</td><td style="' . $cellValue . '">' . (!empty($forecast['morningTs']) ? date('H:i', (int)$forecast['morningTs']) : '-') . '</td>';
+        $html .= '<td style="' . $cellLabel . '">Überschuss nach Eigenverbrauch</td><td style="' . $cellValue . '">' . number_format((float)($plan['planningPVSurplusKWh'] ?? ($forecast['pvSurplusTomorrowKWh'] ?? 0)), 2, ',', '.') . ' kWh</td>';
+        $planningMorningTs = (int)($plan['planningNightWindowEndTs'] ?? ($forecast['morningTs'] ?? 0));
+        $html .= '<td style="' . $cellLabel . '">PV ausreichend ab</td><td style="' . $cellValue . '">' . ($planningMorningTs > 0 ? date('H:i', $planningMorningTs) : '-') . '</td>';
         $html .= '</tr>';
         $html .= '<tr>';
         $html .= '<td style="' . $cellLabel . '">Max. prognostizierte PV-Leistung</td><td style="' . $cellValue . '">' . number_format((float)($plan['pvPeakPowerTomorrowW'] ?? 0) / 1000.0, 2, ',', '.') . ' kW</td>';
