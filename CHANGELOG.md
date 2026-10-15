@@ -1,3 +1,12 @@
+# SmartBatteryOptimizer v1.10.78 / Build 249
+
+- Die +/-10-%-Hysterese des verbindlichen Einspeiseplans wurde entfernt.
+- Die geplante Einspeisemenge wird bei jeder relevanten Änderung direkt auf die aktuell freigegebene Energiemenge nachgeführt.
+- Das bereits verbindlich gewählte Preisfenster bleibt erhalten; seine Laufzeit wird auf die aktuelle Zielenergie verlängert oder verkürzt.
+- Reicht das bestehende Preisfenster nicht aus, werden nur die vom aktuellen Optimierer ausgewählten zusätzlichen Preisfenster ergänzt.
+- Status- und Debugtexte zeigen keine +/-10-%-Toleranz mehr.
+- Mindest-SoC-, Preis-, PV-Kalibrier- und Autolade-Toleranzen bleiben unverändert.
+
 # SmartBatteryOptimizer v1.10.77 / Build 248
 
 - Lastprofil-Diagramm kann jetzt über den rechten Pfeil auch den morgigen Tag anzeigen.

@@ -619,7 +619,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.77';
+        $currentModuleVersion = '1.10.78';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -5650,16 +5650,13 @@ class SmartBatteryOptimizer extends IPSModule
         usort($committed, fn($a, $b) => ((int)$a['start']) <=> ((int)$b['start']));
 
         // Ein bereits gewähltes Preisfenster bleibt verbindlich. Die darin geplante
-        // Energiemenge darf jedoch nicht dauerhaft von der aktuell freigegebenen
-        // Einspeisemenge abweichen. Kleine Prognoseänderungen bis +/-10 % werden bewusst
-        // toleriert, damit der Plan nicht bei jedem Rechenlauf geringfügig verändert wird.
+        // Energiemenge wird jedoch bei jeder relevanten Änderung direkt auf die aktuell
+        // freigegebene Einspeisemenge nachgeführt. Eine +/-10-%-Hysterese gibt es nicht mehr.
         $plannedEnergyKWh = array_sum(array_map(static fn($x) => max(0.0, (float)($x['energyKWh'] ?? 0.0)), $committed));
         $releasedEnergyKWh = max(0.0, (float)($newPlan['availableKWh'] ?? 0.0));
-        $lowerToleranceKWh = $releasedEnergyKWh * 0.90;
-        $upperToleranceKWh = $releasedEnergyKWh * 1.10;
         $energyAdjusted = false;
 
-        if ($plannedEnergyKWh < $lowerToleranceKWh - 0.001 || $plannedEnergyKWh > $upperToleranceKWh + 0.001) {
+        if (abs($plannedEnergyKWh - $releasedEnergyKWh) > 0.001) {
             $targetEnergyKWh = $releasedEnergyKWh;
             $remainingTargetKWh = $targetEnergyKWh;
             $adjusted = [];
@@ -5717,7 +5714,6 @@ class SmartBatteryOptimizer extends IPSModule
                 'Einspeiseplan',
                 'Verbindliche Planmenge angepasst | alt=' . round($plannedEnergyKWh, 3) . ' kWh'
                 . ' | aktuell freigegeben=' . round($releasedEnergyKWh, 3) . ' kWh'
-                . ' | Toleranz=' . round($lowerToleranceKWh, 3) . '-' . round($upperToleranceKWh, 3) . ' kWh'
                 . ' | neu=' . round($adjustedTotalKWh, 3) . ' kWh'
             );
 
@@ -5725,9 +5721,8 @@ class SmartBatteryOptimizer extends IPSModule
             // nicht aus, werden ausschließlich die vom FRISCHEN Optimierer bereits
             // ausgewählten zusätzlichen Preisfenster ergänzt. Bestehende Fenster
             // bleiben dabei erhalten; es wird nichts auf beliebige schlechte Preise
-            // verschoben. Damit bleibt die Gesamtplanmenge zur aktuellen Freigabe
-            // innerhalb der geforderten +/-10-%-Toleranz, sofern dies im aktuellen
-            // Planungshorizont physikalisch möglich ist.
+            // verschoben. Ziel ist immer die aktuell freigegebene Gesamtenergiemenge,
+            // sofern dies im aktuellen Planungshorizont physikalisch möglich ist.
             if ($remainingTargetKWh > 0.001) {
                 $freshSlots = isset($newPlan['slots']) && is_array($newPlan['slots']) ? $newPlan['slots'] : [];
                 usort($freshSlots, static fn($a, $b) => ((int)($a['start'] ?? 0)) <=> ((int)($b['start'] ?? 0)));
@@ -5785,11 +5780,6 @@ class SmartBatteryOptimizer extends IPSModule
                     );
                 }
             }
-        } else {
-            // Innerhalb der +/-10-%-Toleranz bleibt der komplette bereits gewählte
-            // Einspeiseplan unverändert: Preisfenster, Laufzeit und Energiemenge.
-            // Die Toleranz dient bewusst dazu, kleine Prognoseänderungen nicht
-            // ständig in einen neuen Zielwert umzusetzen.
         }
 
         if (empty($committed)) {
@@ -5806,14 +5796,13 @@ class SmartBatteryOptimizer extends IPSModule
         $newPlan['highestPriceCt'] = max(array_map(static fn($x) => (float)($x['priceCt'] ?? 0.0), $committed));
         $newPlan['expectedRevenueEUR'] = array_sum(array_map(static fn($x) => (float)($x['energyKWh'] ?? 0.0) * (float)($x['priceCt'] ?? 0.0) / 100.0, $committed));
         $newPlan['status'] = $energyAdjusted
-            ? 'Verbindlicher Einspeiseplan aktiv – Energiemenge wegen >10 % Abweichung an aktuelle Freigabe angepasst'
-            : 'Verbindlicher Einspeiseplan aktiv – geplante Menge innerhalb +/-10 % Toleranz';
+            ? 'Verbindlicher Einspeiseplan aktiv – geplante Menge an aktuelle Freigabe angepasst'
+            : 'Verbindlicher Einspeiseplan aktiv – geplante Menge entspricht aktueller Freigabe';
         if (!$energyAdjusted) {
             $this->DebugLog(
                 'Einspeiseplan',
-                'Verbindlichen bestehenden Plan beibehalten | geplant=' . round($plannedEnergyKWh, 3) . ' kWh'
+                'Verbindlicher Plan bereits passend | geplant=' . round($plannedEnergyKWh, 3) . ' kWh'
                 . ' | aktuell freigegeben=' . round($releasedEnergyKWh, 3) . ' kWh'
-                . ' | Toleranz=' . round($lowerToleranceKWh, 3) . '-' . round($upperToleranceKWh, 3) . ' kWh'
             );
         }
         return $newPlan;

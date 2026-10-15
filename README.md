@@ -1,4 +1,4 @@
-> Version 1.10.62 / Build 233: Einspeiseplan-Mengenabgleich korrigiert; geplante Gesamtmenge bleibt zur aktuellen Freigabe innerhalb +/-10 %, sofern physikalisch planbar.
+> Version 1.10.78 / Build 249: Die +/-10-%-Hysterese des verbindlichen Einspeiseplans ist entfernt; die geplante Energiemenge wird direkt auf die aktuelle Freigabe nachgeführt.
 
 > Version 1.10.61 / Build 232: Sämtliche Verbrauchsprognosen und Reserven werden aus einem gemeinsamen gelernten Stunden-Lastprofil berechnet; der separate Nachtverbrauch-Lernpfad entfällt.
 
