@@ -1,4 +1,4 @@
-> Version 1.10.78 / Build 249: Die +/-10-%-Hysterese des verbindlichen Einspeiseplans ist entfernt; die geplante Energiemenge wird direkt auf die aktuelle Freigabe nachgeführt.
+> Version 1.10.79 / Build 250: Preisgesteuerte Entladung ist hart auf das aktuelle Nachtfenster begrenzt; der Mindest-SoC wird zusätzlich während des laufenden Vorgangs dynamisch abgesichert.
 
 > Version 1.10.61 / Build 232: Sämtliche Verbrauchsprognosen und Reserven werden aus einem gemeinsamen gelernten Stunden-Lastprofil berechnet; der separate Nachtverbrauch-Lernpfad entfällt.
 

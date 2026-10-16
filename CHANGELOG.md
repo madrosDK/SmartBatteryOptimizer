@@ -1,3 +1,14 @@
+# SmartBatteryOptimizer v1.10.79 / Build 250
+
+- Preisgesteuerte Batterieentladung wird jetzt auf allen Ebenen hart auf das aktuell gültige Nachtfenster begrenzt.
+- Preisintervalle, die das Nachtende schneiden (z. B. 08:00–09:00 bei Nachtende 08:19), werden bereits vor der Slot-Auswahl exakt am Nachtende abgeschnitten.
+- Beim Packen von Teilstunden können die Grenzen des Nachtfensters nicht mehr wieder auf die volle Preisstunde erweitert werden.
+- Bereits verbindliche Alt-Slots außerhalb des neu berechneten Nachtfensters werden verworfen und nicht weitergeführt.
+- Control() prüft vor Start und Weiterlauf erneut das aktuelle Nachtfenster; außerhalb davon wird eine laufende Preis-Einspeisung sofort beendet.
+- Das harte Laufzeitende eines aktiven Einspeisevorgangs ist immer das Ende des aktuellen Nachtfensters und kann morgens nicht mehr versehentlich auf den Folgetag springen.
+- Mindest-SoC zusätzlich abgesichert: Die noch zulässige Einspeiseenergie wird während eines laufenden Vorgangs aus aktuellem SoC minus Mindest-SoC minus prognostiziertem Restverbrauch bis Nachtende begrenzt.
+- Die AlphaESS-SOC-Grenze bleibt unverändert zusätzlich auf den eingestellten Mindest-SoC programmiert.
+
 # SmartBatteryOptimizer v1.10.78 / Build 249
 
 - Die +/-10-%-Hysterese des verbindlichen Einspeiseplans wurde entfernt.

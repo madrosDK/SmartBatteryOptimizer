@@ -619,7 +619,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.78';
+        $currentModuleVersion = '1.10.79';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -2452,6 +2452,14 @@ class SmartBatteryOptimizer extends IPSModule
             $dayNightControl = $this->GetCurrentDayNightStatus();
             $raw = json_decode($this->ReadAttributeString('PlanJSON'), true);
 
+            // Harte Sicherheitsgrenze: Preisgesteuerte Batterieentladung darf nur
+            // innerhalb des aktuell gültigen Nachtfensters laufen. Ein alter oder
+            // fehlerhaft übernommener Plan darf diese Grenze niemals überstimmen.
+            if (!$dayNightControl['isNight'] && $this->ReadAttributeString('ActiveFeedInPlanKey') !== '') {
+                $this->UpdateMeasuredFeedInEnergy();
+                $this->FinishMeasuredFeedInRun(false, 'Nachtfenster beendet');
+            }
+
             // Einen vom Optimierer geplanten Preisslot zuerst prüfen. Der Plan selbst
             // wurde bereits mit DetermineNightStart/DetermineMorningEnd begrenzt. Damit
             // kann eine zweite Tag/Nacht-Prüfung den Dispatch am Slotbeginn nicht mehr
@@ -2465,7 +2473,12 @@ class SmartBatteryOptimizer extends IPSModule
                 foreach ($raw['slots'] as $slot) {
                     $key = (string)($slot['planKey'] ?? ((int)$slot['start'] . ':' . (int)($slot['priceIntervalEnd'] ?? $slot['end'])));
                     $intervalEnd = (int)($slot['priceIntervalEnd'] ?? $slot['end']);
-                    if ($now >= (int)$slot['start'] && $now < $intervalEnd && (float)$slot['powerW'] > 0 && !isset($completed[$key])) {
+                    $slotStart = (int)($slot['start'] ?? 0);
+                    $slotEnd = (int)($slot['end'] ?? $intervalEnd);
+                    $insideCurrentNight = !empty($dayNightControl['isNight'])
+                        && $slotStart >= (int)$dayNightControl['start']
+                        && $slotEnd <= (int)$dayNightControl['end'];
+                    if ($insideCurrentNight && $now >= $slotStart && $now < $intervalEnd && (float)$slot['powerW'] > 0 && !isset($completed[$key])) {
                         $slot['planKey'] = $key;
                         $plannedSlot = $slot;
                         break;
@@ -2479,7 +2492,7 @@ class SmartBatteryOptimizer extends IPSModule
             $activeKey = $this->ReadAttributeString('ActiveFeedInPlanKey');
             $continuingMeasuredRun = $activeKey !== '' && $this->ReadAttributeFloat('ActiveFeedInTargetKWh') > $this->ReadAttributeFloat('ActiveFeedInDeliveredKWh') + 0.001;
 
-            if ($automaticEnabled && ($plannedSlot !== null || $continuingMeasuredRun)) {
+            if ($automaticEnabled && !empty($dayNightControl['isNight']) && ($plannedSlot !== null || $continuingMeasuredRun)) {
                 if ($plannedSlot !== null) {
                     $key = (string)$plannedSlot['planKey'];
                     if ($activeKey !== $key) {
@@ -2505,10 +2518,9 @@ class SmartBatteryOptimizer extends IPSModule
                     return;
                 }
 
-                $today = strtotime('today 00:00:00');
-                $hardEnd = $now < $this->DetermineMorningEnd(0, $today)
-                    ? $this->DetermineMorningEnd(0, $today)
-                    : $this->DetermineMorningEnd(0, strtotime('tomorrow 00:00:00'));
+                // Für einen laufenden Preis-Einspeisevorgang ist ausschließlich
+                // das Ende des AKTUELLEN Nachtfensters die harte Zeitgrenze.
+                $hardEnd = (int)$dayNightControl['end'];
                 if ($now >= $hardEnd) {
                     $this->FinishMeasuredFeedInRun(false, 'Nachtende erreicht');
                     return;
@@ -2516,6 +2528,25 @@ class SmartBatteryOptimizer extends IPSModule
 
                 $consumptionProfile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
                 if (!is_array($consumptionProfile)) $consumptionProfile = ['hourlyKWh'=>array_fill(0,24,0.0)];
+
+                // Zweite harte Sicherheitsstufe für den Mindest-SoC: Die noch
+                // ausstehende Netzeinspeisung darf höchstens aus der aktuell real
+                // verfügbaren Energie oberhalb Mindest-SoC UND dem bis Nachtende
+                // noch erwarteten Hausverbrauch bestehen. Damit kann auch ein alter
+                // Zielwert den Akku nicht rechnerisch unter Mindest-SoC ziehen.
+                $hardAvailableNowKWh = $this->GetHardFeedInAvailableNowKWh($consumptionProfile, $now, $hardEnd);
+                $remainingTargetKWh = max(0.0, $targetKWh - $deliveredKWh);
+                if ($remainingTargetKWh > $hardAvailableNowKWh + 0.001) {
+                    $targetKWh = max($deliveredKWh, $deliveredKWh + $hardAvailableNowKWh);
+                    $this->WriteAttributeFloat('ActiveFeedInTargetKWh', $targetKWh);
+                    SetValue($this->GetIDForIdent('FeedInTargetEnergy'), round($targetKWh, 3));
+                    $this->DebugLog('Einspeiseplan', 'Laufende Zielmenge durch Mindest-SoC-Schutz reduziert | verfügbar=' . round($hardAvailableNowKWh,3) . ' kWh | neues Ziel=' . round($targetKWh,3) . ' kWh');
+                    if ($hardAvailableNowKWh <= 0.001) {
+                        $this->FinishMeasuredFeedInRun(false, 'Mindest-SoC-Reserve erreicht');
+                        return;
+                    }
+                }
+
                 $powerW = $this->GetPlannedBatteryPowerW($consumptionProfile, $now);
                 $expectedExportW = $this->GetExpectedGridExportPowerW($consumptionProfile, $now);
                 $remainingKWh = max(0.0, $targetKWh - $deliveredKWh);
@@ -5279,12 +5310,18 @@ class SmartBatteryOptimizer extends IPSModule
                 ? max(time() + 3600, $criticalDeadline)
                 : max(time() + 3600, $nightWindowEnd));
         // Einspeiseslots ausschließlich innerhalb des aktuell relevanten Nachtfensters.
-        // Früh morgens bleibt damit die laufende Nacht bis zu ihrem Ende planbar;
-        // tagsüber wird weiterhin ausschließlich die kommende Nacht verwendet.
+        // Nicht nur filtern, sondern Preisintervalle an den Nachtgrenzen hart abschneiden.
+        // Sonst kann z. B. eine Preisstunde 08:00-09:00 bei Nachtende 08:19 noch
+        // ausgewählt und später fälschlich bis nach 08:19 verlängert werden.
         $allSlots = [];
         foreach ($prices as $p) {
-            if ($p['end'] <= max(time(), $nightWindowStart) || $p['start'] >= $nightWindowEnd) continue;
-            $allSlots[] = $p;
+            $slotStartBound = max((int)$p['start'], $nightWindowStart);
+            $slotEndBound = min((int)$p['end'], $nightWindowEnd);
+            if ($slotEndBound <= max(time(), $slotStartBound)) continue;
+            $clipped = $p;
+            $clipped['start'] = $slotStartBound;
+            $clipped['end'] = $slotEndBound;
+            $allSlots[] = $clipped;
         }
 
         $minimumFeedInPrice = $this->GetMinimumFeedInPriceCt();
@@ -5434,20 +5471,25 @@ class SmartBatteryOptimizer extends IPSModule
             if ($duration <= 0) continue;
 
             $nextHourSelected = isset($selectedByHour[$hourEnd]);
-            $isPartialHour = $duration < 3599;
-            $packedStart = min((int)$hourSlots[0]['start'], $hourStart);
-            $packedEnd = $packedStart + $duration;
+            $allowedStart = max($nightWindowStart, min(array_map(static fn($x) => (int)($x['priceIntervalStart'] ?? $x['start']), $hourSlots)));
+            $allowedEnd = min($nightWindowEnd, max(array_map(static fn($x) => (int)($x['priceIntervalEnd'] ?? $x['end']), $hourSlots)));
+            $allowedDuration = max(0, $allowedEnd - $allowedStart);
+            $duration = min($duration, $allowedDuration);
+            if ($duration <= 0) continue;
+            $isPartialHour = $duration < $allowedDuration;
+            $packedStart = max($allowedStart, (int)$hourSlots[0]['start']);
+            $packedEnd = min($allowedEnd, $packedStart + $duration);
             if ($isPartialHour && $nextHourSelected) {
-                $packedEnd = $hourEnd;
-                $packedStart = max(time(), $hourEnd - $duration);
+                $packedEnd = $allowedEnd;
+                $packedStart = max($allowedStart, $packedEnd - $duration);
             }
 
             $first = $hourSlots[0];
             $first['start'] = $packedStart;
             $first['end'] = $packedEnd;
-            $first['priceIntervalStart'] = $hourStart;
-            $first['priceIntervalEnd'] = $hourEnd;
-            $first['planKey'] = $hourStart . ':' . $hourEnd;
+            $first['priceIntervalStart'] = $allowedStart;
+            $first['priceIntervalEnd'] = $allowedEnd;
+            $first['planKey'] = $allowedStart . ':' . $allowedEnd;
             $first['energyKWh'] = $energy;
             if ($energy > 0.0) $first['priceCt'] = $revenueEnergy / $energy;
             $first['powerW'] = max(array_map(static fn($x) => (float)($x['powerW'] ?? 0.0), $hourSlots));
@@ -5635,13 +5677,26 @@ class SmartBatteryOptimizer extends IPSModule
         $oldSlots = isset($previousPlan['slots']) && is_array($previousPlan['slots']) ? $previousPlan['slots'] : [];
         if (empty($oldSlots)) return $newPlan;
 
+        $validNightStart = (int)($newPlan['planningNightWindowStartTs'] ?? 0);
+        $validNightEnd = (int)($newPlan['planningNightWindowEndTs'] ?? 0);
+
         $completed = json_decode($this->ReadAttributeString('CompletedFeedInPlanKeysJSON'), true);
         if (!is_array($completed)) $completed = [];
         $committed = [];
         foreach ($oldSlots as $slot) {
             $key = (string)($slot['planKey'] ?? ((int)($slot['start'] ?? 0) . ':' . (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0))));
+            $intervalStart = (int)($slot['priceIntervalStart'] ?? ($slot['start'] ?? 0));
             $intervalEnd = (int)($slot['priceIntervalEnd'] ?? ($slot['end'] ?? 0));
+            $slotStart = (int)($slot['start'] ?? $intervalStart);
+            $slotEnd = (int)($slot['end'] ?? $intervalEnd);
             if ($intervalEnd <= $now || isset($completed[$key])) continue;
+            // Ein alter/verbindlicher Slot darf niemals außerhalb des aktuell
+            // berechneten Nachtfensters weiterleben. Ungültige Randstunden werden
+            // verworfen und bei Bedarf aus dem frischen, korrekt beschnittenen Plan ersetzt.
+            if ($validNightEnd > $validNightStart && ($slotStart < $validNightStart || $slotEnd > $validNightEnd || $intervalStart < $validNightStart || $intervalEnd > $validNightEnd)) {
+                $this->DebugLog('Einspeiseplan', 'Verbindlichen Alt-Slot verworfen: außerhalb Nachtfenster ' . date('H:i', $validNightStart) . '-' . date('H:i', $validNightEnd) . ' | Slot ' . date('H:i', $slotStart) . '-' . date('H:i', $slotEnd));
+                continue;
+            }
             $slot['planKey'] = $key;
             $committed[] = $slot;
         }
@@ -7997,6 +8052,22 @@ class SmartBatteryOptimizer extends IPSModule
             $dayStart = $nextDay;
         }
         return max(0.0, $sum);
+    }
+
+    private function GetHardFeedInAvailableNowKWh(array $profile, int $now, int $nightEnd): float
+    {
+        $socID = $this->ReadPropertyInteger('SOCVariable');
+        if ($socID <= 0 || !@IPS_VariableExists($socID)) return 0.0;
+
+        $capacity = max(0.1, $this->ReadPropertyFloat('BatteryCapacityKWh'));
+        $soc = max(0.0, min(100.0, (float)GetValue($socID)));
+        $stored = $capacity * $soc / 100.0;
+        $minEnergy = $capacity * $this->GetRuntimeMinimumSOC() / 100.0;
+        $remainingNightConsumption = $nightEnd > $now
+            ? $this->GetConsumptionProfileEnergyForRange($profile, $now, $nightEnd, true)
+            : 0.0;
+
+        return max(0.0, $stored - $minEnergy - $remainingNightConsumption);
     }
 
     private function CalculatePVPlanningWindow(array $forecast, array $profile, int $rangeStart, int $rangeEnd): array
