@@ -1,3 +1,11 @@
+# Changelog
+
+## 1.10.81 / Build 252
+- `Verbrauchsprognose morgen` zeigt jetzt den echten Kalendertag morgen statt des abweichenden Planungszyklus. Der konfigurierte Sicherheitsaufschlag wird dabei ausschließlich über `ConsumptionForecastSafetyPct` angewendet; bei 0 % gibt es keinen zusätzlichen allgemeinen Verbrauchsaufschlag.
+- Die Anzeige `Autoladungen ausgeschlossen` zählt nur noch eindeutige Ladeereignisse innerhalb des aktuell konfigurierten Lastprofil-Lernzeitraums. Historische Saisonmodelle dürfen weiter zurückreichen, ihre alten EV-Zähler werden aber nicht mehr in die aktuelle Anzeige übernommen.
+- Ein über Mitternacht laufender Ladevorgang wird nur am Starttag als ein Vorgang gezählt, seine Energie wird weiterhin korrekt auf die betroffenen Stunden verteilt.
+- Lastprofil-Modellversion auf v4 angehoben, damit vorhandene v3-Metadaten nach dem Update einmalig aus dem aktuellen Lernfenster neu aufgebaut werden.
+
 # SmartBatteryOptimizer v1.10.80 / Build 251
 
 - Änderungen am Laufzeitwert `Mindest-SoC` starten keinen vollständigen synchronen Rechenlauf mehr.

@@ -1423,7 +1423,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteAttributeString('PlanJSON', json_encode($plan));
 
             SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($nightForPlan, 3));
-            SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)($forecast['consumptionTomorrowKWh'] ?? 0.0), 3));
+            SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)($forecast['calendarConsumptionTomorrowKWh'] ?? ($forecast['consumptionTomorrowKWh'] ?? 0.0)), 3));
             SetValue($this->GetIDForIdent('ExpectedPVSurplusTomorrow'), round((float)($forecast['pvSurplusTomorrowKWh'] ?? 0.0), 3));
             SetValue($this->GetIDForIdent('GridLimitHeadroomRequired'), round((float)($plan['gridLimitSpaceRequiredKWh'] ?? 0.0), 3));
             SetValue($this->GetIDForIdent('AvailableFeedInEnergy'), round((float)($plan['availableKWh'] ?? 0.0), 3));
@@ -1572,7 +1572,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->WriteAttributeInteger('NightSampleCount', $profileDays);
             $this->WriteAttributeFloat('LearnedNightKWh', $nightForPlan);
             SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($nightForPlan, 3));
-            SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)$forecast['consumptionTomorrowKWh'], 3));
+            SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)($forecast['calendarConsumptionTomorrowKWh'] ?? $forecast['consumptionTomorrowKWh']), 3));
             SetValue($this->GetIDForIdent('ExpectedPVSurplusTomorrow'), round((float)$forecast['pvSurplusTomorrowKWh'], 3));
             SetValue($this->GetIDForIdent('GridLimitHeadroomRequired'), round((float)($plan['gridLimitSpaceRequiredKWh'] ?? 0.0), 3));
             SetValue($this->GetIDForIdent('ConsumptionLearningStatus'), $this->ReadAttributeString('ConsumptionLearningSource'));
@@ -2121,7 +2121,7 @@ class SmartBatteryOptimizer extends IPSModule
                 $pct = min(99, (int)round(($doneDays / $totalDays) * 100));
                 $text = 'Lastprofil Archiv-Neuberechnung: ' . $pct . ' % · '
                     . (int)($acc['validDays'] ?? 0) . ' gültige Tage · '
-                    . (int)($acc['evSessions'] ?? 0) . ' Autoladungen erkannt.';
+                    . (int)($acc['currentWindowEVSessions'] ?? 0) . ' Autoladungen im Lernzeitraum erkannt.';
                 $this->SetActionFeedback($text);
                 $this->SetTimerInterval('ManualRecalculateWorker', 5000);
                 return;
@@ -2157,8 +2157,8 @@ class SmartBatteryOptimizer extends IPSModule
 
             $text = 'Lastprofil aus Archiv neu berechnet: '
                 . (int)($model['validDays'] ?? 0) . ' Tage ausgewertet, '
-                . (int)($model['evSessions'] ?? 0) . ' Autoladungen ('
-                . number_format((float)($model['evKWh'] ?? 0.0), 2, ',', '.') . ' kWh) aus dem Grundprofil ausgeschlossen.';
+                . (int)($model['currentWindowEVSessions'] ?? 0) . ' Autoladungen im Lernzeitraum ('
+                . number_format((float)($model['currentWindowEVKWh'] ?? 0.0), 2, ',', '.') . ' kWh) aus dem Grundprofil ausgeschlossen.';
             SetValue($this->GetIDForIdent('StatusText'), $text);
             $this->SetActionFeedback($text);
 
@@ -6085,7 +6085,7 @@ class SmartBatteryOptimizer extends IPSModule
             && is_array($cached)
             && isset($cached['seasonalModel'])
             && is_array($cached['seasonalModel'])
-            && (int)($cached['seasonalModel']['version'] ?? 0) >= 3
+            && (int)($cached['seasonalModel']['version'] ?? 0) >= 4
             && $updated > time() - 6 * 3600
         ) {
             $result = $this->ComposeConsumptionProfileFromModel(
@@ -6223,6 +6223,12 @@ class SmartBatteryOptimizer extends IPSModule
             'recent7Weight' => array_fill(0, 24, 0.0),
             'recent7ValidDays' => 0,
             'validDays' => 0,
+            // Anzeige-/Plan-Metadaten fuer den aktuell konfigurierten Lernzeitraum.
+            // Das saisonale Archivmodell darf weiter zurueckreichen, aber diese Zaehler
+            // duerfen dadurch nicht alte Autoladungen dauerhaft mitschleppen.
+            'currentWindowValidDays' => 0,
+            'currentWindowEVSessions' => 0,
+            'currentWindowEVKWh' => 0.0,
             'evSessions' => 0,
             'evKWh' => 0.0,
             'archiveFrom' => 0,
@@ -6291,6 +6297,19 @@ class SmartBatteryOptimizer extends IPSModule
         $acc['validDays'] = (int)($acc['validDays'] ?? 0) + 1;
         $acc['evSessions'] = (int)($acc['evSessions'] ?? 0) + (int)($day['evSessions'] ?? 0);
         $acc['evKWh'] = (float)($acc['evKWh'] ?? 0.0) + (float)($day['evKWh'] ?? 0.0);
+
+        // Fuer die sichtbare Zahl "Autoladungen ausgeschlossen" zaehlt nur der
+        // aktuell konfigurierte Lernzeitraum. Ein vollstaendiger saisonaler Archiv-
+        // Wiederaufbau darf alte Ladeereignisse ausserhalb dieses Fensters nicht in
+        // die aktuelle Anzeige uebernehmen.
+        $learningDays = max(3, min(90, $this->ReadPropertyInteger('LearningDays')));
+        $currentWindowStart = strtotime('-' . $learningDays . ' days 00:00:00');
+        $todayStartForWindow = strtotime('today 00:00:00');
+        if ($dayStart >= $currentWindowStart && $dayStart < $todayStartForWindow) {
+            $acc['currentWindowValidDays'] = (int)($acc['currentWindowValidDays'] ?? 0) + 1;
+            $acc['currentWindowEVSessions'] = (int)($acc['currentWindowEVSessions'] ?? 0) + (int)($day['evSessions'] ?? 0);
+            $acc['currentWindowEVKWh'] = (float)($acc['currentWindowEVKWh'] ?? 0.0) + (float)($day['evKWh'] ?? 0.0);
+        }
         $acc['archiveFrom'] = ((int)($acc['archiveFrom'] ?? 0) <= 0)
             ? $dayStart
             : min((int)$acc['archiveFrom'], $dayStart);
@@ -6338,7 +6357,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
 
         return [
-            'version' => 3,
+            'version' => 4,
             'profiles' => $profiles,
             'slotWeights' => $slotWeights,
             'globalHourlyKWh' => $global,
@@ -6346,6 +6365,9 @@ class SmartBatteryOptimizer extends IPSModule
             'recent7ValidDays' => (int)($acc['recent7ValidDays'] ?? 0),
             'shortTermWeight' => 0.30,
             'validDays' => (int)($acc['validDays'] ?? 0),
+            'currentWindowValidDays' => (int)($acc['currentWindowValidDays'] ?? 0),
+            'currentWindowEVSessions' => (int)($acc['currentWindowEVSessions'] ?? 0),
+            'currentWindowEVKWh' => max(0.0, (float)($acc['currentWindowEVKWh'] ?? 0.0)),
             'evSessions' => (int)($acc['evSessions'] ?? 0),
             'evKWh' => max(0.0, (float)($acc['evKWh'] ?? 0.0)),
             'archiveFrom' => (int)($acc['archiveFrom'] ?? 0),
@@ -6420,11 +6442,16 @@ class SmartBatteryOptimizer extends IPSModule
         // Die vollständige Archivbasis bleibt als Metadatum erhalten; der normale
         // Lernlauf ergänzt nur die Information über das aktuelle Lernfenster.
         $merged['recentValidDays'] = (int)($recent['validDays'] ?? 0);
-        $merged['recentEvSessions'] = (int)($recent['evSessions'] ?? 0);
-        $merged['recentEvKWh'] = (float)($recent['evKWh'] ?? 0.0);
+        $merged['recentEvSessions'] = (int)($recent['currentWindowEVSessions'] ?? ($recent['evSessions'] ?? 0));
+        $merged['recentEvKWh'] = (float)($recent['currentWindowEVKWh'] ?? ($recent['evKWh'] ?? 0.0));
+        $merged['currentWindowValidDays'] = (int)($recent['currentWindowValidDays'] ?? ($recent['validDays'] ?? 0));
+        $merged['currentWindowEVSessions'] = (int)($recent['currentWindowEVSessions'] ?? ($recent['evSessions'] ?? 0));
+        $merged['currentWindowEVKWh'] = (float)($recent['currentWindowEVKWh'] ?? ($recent['evKWh'] ?? 0.0));
+        // Die Saisonprofile duerfen historische Daten behalten. Fuer die sichtbaren
+        // Lernfenster-Metadaten ist jedoch ausschliesslich der aktuelle Lauf massgeblich.
         $merged['validDays'] = max((int)($base['validDays'] ?? 0), (int)($recent['validDays'] ?? 0));
-        $merged['evSessions'] = max((int)($base['evSessions'] ?? 0), (int)($recent['evSessions'] ?? 0));
-        $merged['evKWh'] = max((float)($base['evKWh'] ?? 0.0), (float)($recent['evKWh'] ?? 0.0));
+        $merged['evSessions'] = (int)($recent['evSessions'] ?? 0);
+        $merged['evKWh'] = (float)($recent['evKWh'] ?? 0.0);
         if ((int)($base['archiveFrom'] ?? 0) > 0) {
             $merged['archiveFrom'] = (int)$base['archiveFrom'];
         } else {
@@ -6432,7 +6459,7 @@ class SmartBatteryOptimizer extends IPSModule
         }
         $merged['archiveTo'] = max((int)($base['archiveTo'] ?? 0), (int)($recent['archiveTo'] ?? 0));
         $merged['modelUpdated'] = time();
-        $merged['version'] = 3;
+        $merged['version'] = 4;
         return $merged;
     }
 
@@ -6560,29 +6587,33 @@ class SmartBatteryOptimizer extends IPSModule
                 . ' ' . number_format((float)$weight * 100.0, 0, ',', '.') . ' %';
         }
 
+        $displayValidDays = (int)($model['currentWindowValidDays'] ?? ($model['recentValidDays'] ?? ($model['validDays'] ?? 0)));
+        $displayEVSessions = (int)($model['currentWindowEVSessions'] ?? ($model['recentEvSessions'] ?? ($model['evSessions'] ?? 0)));
+        $displayEVKWh = max(0.0, (float)($model['currentWindowEVKWh'] ?? ($model['recentEvKWh'] ?? ($model['evKWh'] ?? 0.0))));
+
         $source = 'Archiv gelernt – ' . ($weekdayNames[$weekday] ?? ('Tag ' . $weekday))
             . ', saisonal ' . implode(' / ', $seasonParts)
-            . ', ' . (int)($model['validDays'] ?? 0) . ' Tage';
+            . ', ' . $displayValidDays . ' Tage';
         if ($recent7ValidDays > 0) {
             $source .= ', Kurzzeit ' . $recent7ValidDays . '/7 Tage ' . number_format($shortTermWeight * 100.0, 0, ',', '.') . ' %';
         }
-        if ((int)($model['evSessions'] ?? 0) > 0) {
-            $source .= ', ' . (int)$model['evSessions'] . ' Autoladungen ausgeschlossen';
+        if ($displayEVSessions > 0) {
+            $source .= ', ' . $displayEVSessions . ' Autoladungen ausgeschlossen';
         }
 
         return [
-            'version' => 3,
+            'version' => 4,
             'hourlyKWh' => $forecastHourly,
             'rawHourlyKWh' => $rawHourly,
             'dailyKWh' => array_sum($forecastHourly),
-            'validDays' => (int)($model['validDays'] ?? 0),
+            'validDays' => $displayValidDays,
             'source' => $source,
             'updated' => time(),
             'targetDate' => date('Y-m-d', $targetTimestamp),
             'weekday' => $weekday,
             'seasonWeights' => $seasonWeights,
-            'excludedEVSessions' => (int)($model['evSessions'] ?? 0),
-            'excludedEVKWh' => (float)($model['evKWh'] ?? 0.0),
+            'excludedEVSessions' => $displayEVSessions,
+            'excludedEVKWh' => $displayEVKWh,
             'seasonalModel' => $model
         ];
     }

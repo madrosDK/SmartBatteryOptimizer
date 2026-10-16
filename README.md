@@ -574,3 +574,6 @@ Die normale Instanzansicht zeigt nur noch fachlich relevante Prognose-, Speicher
 
 
 > **PV-Auto-Korrektur:** Für die Faktorberechnung zählen ausschließlich Stunden, für die eine gültige Ist-Erzeugung archiviert wurde und eine Prognose mit demselben Stunden-Zeitstempel vorhanden ist. Prognosestunden ohne Ist-Wert werden ignoriert; fehlende Ist-Werte werden nicht nachträglich erzeugt.
+
+### Lastprofil-Metadaten ab 1.10.81
+Die sichtbare Zahl `Autoladungen ausgeschlossen` bezieht sich ausschließlich auf den aktuell konfigurierten Lastprofil-Lernzeitraum. Historische Saisonprofile können weiterhin weiter zurückreichen, beeinflussen den angezeigten EV-Zähler aber nicht. `Verbrauchsprognose morgen` entspricht dem Kalendertag morgen; ein konfigurierter Verbrauchs-Sicherheitsaufschlag wird nur einmal über `ConsumptionForecastSafetyPct` angewendet. Bei 0 % erfolgt kein zusätzlicher allgemeiner Verbrauchsaufschlag.
