@@ -619,7 +619,7 @@ class SmartBatteryOptimizer extends IPSModule
             $this->SetTimerInterval('DeferredDebugRebuildTimer', 250);
         }
 
-        $currentModuleVersion = '1.10.79';
+        $currentModuleVersion = '1.10.80';
         if ($this->ReadAttributeString('AppliedModuleVersion') !== $currentModuleVersion) {
             $this->WriteAttributeString('AppliedModuleVersion', $currentModuleVersion);
             // Ein PHP-Fatalfehler kann den flüchtigen Rechen-Lock zurücklassen, weil
@@ -788,7 +788,16 @@ class SmartBatteryOptimizer extends IPSModule
                 break;
             case 'RuntimeMinimumSOC':
                 SetValue($this->GetIDForIdent($Ident), max(0.0, min(100.0, (float)$Value)));
-                $this->RecalculateInternal(false);
+                // Der Mindest-SoC wirkt ausschließlich auf Batterie-/Reserve-/Planlogik.
+                // Dafür keinen kompletten synchronen Rechenlauf mit Preisabruf,
+                // Lastprofilprüfung und allen Diagrammen starten: Das blockiert die
+                // WebFront-Aktion unnötig lange. Stattdessen den Plan sofort aus den
+                // bereits vorhandenen Forecast-/Preis-/Lastprofildaten neu aufbauen.
+                if (!$this->RecalculatePlanFromCachedData('Mindest-SoC geändert')) {
+                    // Nur wenn nach Installation/Neustart noch keine belastbare
+                    // Cachebasis vorhanden ist, auf den vollständigen Lauf zurückfallen.
+                    $this->RecalculateInternal(false);
+                }
                 break;
             case 'AutomaticEnabled':
                 $enabled = (bool)$Value;
@@ -1380,6 +1389,71 @@ class SmartBatteryOptimizer extends IPSModule
             // Der normale Rechenlauf darf durch einen separaten frühen Preis-Refresh
             // nicht abgebrochen werden; die bestehende Preisstufe versucht es später erneut.
             $this->DebugLog('Preise', 'Früher Preis-Refresh fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
+    }
+
+    private function RecalculatePlanFromCachedData(string $reason = ''): bool
+    {
+        try {
+            $forecast = json_decode($this->ReadAttributeString('ForecastJSON'), true);
+            $prices = json_decode($this->ReadAttributeString('PricesJSON'), true);
+            $consumptionProfile = json_decode($this->ReadAttributeString('ConsumptionProfileJSON'), true);
+
+            if (!is_array($forecast) || empty($forecast)
+                || !is_array($prices) || empty($prices)
+                || !is_array($consumptionProfile) || empty($consumptionProfile)) {
+                $this->DebugLog('Schnellplanung', 'Nicht möglich: Forecast/Preise/Lastprofil noch nicht vollständig im Cache');
+                return false;
+            }
+
+            // Verbrauchsbezogene Forecast-Felder lokal aus dem bereits gelernten
+            // Stundenprofil aktualisieren. Es werden dabei keine Provider abgefragt
+            // und kein Lastprofil neu gelernt.
+            $forecast = $this->ApplyConsumptionForecastToPV($forecast, $consumptionProfile);
+            $nightForPlan = (float)($forecast['upcomingNightConsumptionKWh'] ?? ($forecast['nightConsumptionTomorrowKWh'] ?? 0.0));
+
+            $this->CleanupStaleActiveFeedInState();
+            $previousPlan = json_decode($this->ReadAttributeString('PlanJSON'), true);
+            if (!is_array($previousPlan)) $previousPlan = [];
+
+            $plan = $this->BuildPlan($forecast, $prices, $nightForPlan, $consumptionProfile);
+            $plan = $this->PreserveCommittedFeedInPlan($plan, $previousPlan);
+
+            $this->WriteAttributeString('ForecastJSON', json_encode($forecast));
+            $this->WriteAttributeString('PlanJSON', json_encode($plan));
+
+            SetValue($this->GetIDForIdent('NightConsumptionForecast'), round($nightForPlan, 3));
+            SetValue($this->GetIDForIdent('ConsumptionForecastTomorrow'), round((float)($forecast['consumptionTomorrowKWh'] ?? 0.0), 3));
+            SetValue($this->GetIDForIdent('ExpectedPVSurplusTomorrow'), round((float)($forecast['pvSurplusTomorrowKWh'] ?? 0.0), 3));
+            SetValue($this->GetIDForIdent('GridLimitHeadroomRequired'), round((float)($plan['gridLimitSpaceRequiredKWh'] ?? 0.0), 3));
+            SetValue($this->GetIDForIdent('AvailableFeedInEnergy'), round((float)($plan['availableKWh'] ?? 0.0), 3));
+            SetValue($this->GetIDForIdent('PVSpaceRequiredEnergy'), round((float)($plan['pvSpaceRequiredKWh'] ?? 0.0), 3));
+            SetValue($this->GetIDForIdent('ExpectedRevenue'), round((float)($plan['expectedRevenueEUR'] ?? 0.0), 3));
+            SetValue($this->GetIDForIdent('NextFeedInWindow'), (string)($plan['nextWindow'] ?? '-'));
+
+            if ($this->ReadAttributeString('ActiveFeedInPlanKey') === '') {
+                SetValue($this->GetIDForIdent('FeedInTargetEnergy'), round($this->GetFuturePlannedFeedInEnergyKWh($plan, time()), 3));
+                SetValue($this->GetIDForIdent('FeedInDeliveredEnergy'), 0.0);
+            }
+
+            SetValue($this->GetIDForIdent('StatusText'), (string)($plan['status'] ?? 'Optimierung aktiv'));
+            SetValue($this->GetIDForIdent('LastUpdate'), date('d.m.Y H:i:s'));
+            SetValue($this->GetIDForIdent('OverviewHTML'), $this->RenderOverviewHTML($forecast, $plan, $nightForPlan));
+            SetValue($this->GetIDForIdent('PriceChartHTML'), $this->RenderPriceChartHTML($forecast, $prices, $plan));
+
+            $this->DebugLog(
+                'Schnellplanung',
+                ($reason !== '' ? $reason . ' | ' : '')
+                . 'Plan sofort aus Cache neu berechnet | Mindest-SoC=' . round($this->GetRuntimeMinimumSOC(), 1) . ' %'
+                . ' | verfügbar=' . round((float)($plan['availableKWh'] ?? 0.0), 3) . ' kWh'
+            );
+
+            // Sicherheits-/Dispatch-Prüfung unmittelbar mit dem neuen Plan ausführen.
+            $this->Control();
+            return true;
+        } catch (Throwable $e) {
+            $this->DebugLog('Schnellplanung', 'Fehler: ' . $e->getMessage(), 0);
+            return false;
         }
     }
 

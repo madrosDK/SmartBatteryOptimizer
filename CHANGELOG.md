@@ -1,3 +1,12 @@
+# SmartBatteryOptimizer v1.10.80 / Build 251
+
+- Änderungen am Laufzeitwert `Mindest-SoC` starten keinen vollständigen synchronen Rechenlauf mehr.
+- Der Einspeiseplan wird unmittelbar aus dem vorhandenen PV-Forecast, Preisraster und Lastprofil neu berechnet.
+- Dadurch entfallen bei einer reinen SoC-Änderung unnötige Preisabrufe, Lastprofil-Prüfungen und vollständige Diagramm-Neuaufbauten.
+- Übersicht, Preisdiagramm, verfügbare Einspeiseenergie, Zielmenge und Status werden direkt mit dem neuen Mindest-SoC aktualisiert.
+- `Control()` wird unmittelbar nach der Schnellplanung ausgeführt, damit eine laufende Entladung bei einer neuen Sicherheitsgrenze sofort angepasst oder beendet wird.
+- Nur wenn nach Installation/Neustart noch keine vollständige Cachebasis vorhanden ist, fällt die Aktion auf den bisherigen vollständigen Rechenlauf zurück.
+
 # SmartBatteryOptimizer v1.10.79 / Build 250
 
 - Preisgesteuerte Batterieentladung wird jetzt auf allen Ebenen hart auf das aktuell gültige Nachtfenster begrenzt.
