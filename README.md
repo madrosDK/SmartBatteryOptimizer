@@ -577,3 +577,7 @@ Die normale Instanzansicht zeigt nur noch fachlich relevante Prognose-, Speicher
 
 ### Lastprofil-Metadaten ab 1.10.81
 Die sichtbare Zahl `Autoladungen ausgeschlossen` bezieht sich ausschließlich auf den aktuell konfigurierten Lastprofil-Lernzeitraum. Historische Saisonprofile können weiterhin weiter zurückreichen, beeinflussen den angezeigten EV-Zähler aber nicht. `Verbrauchsprognose morgen` entspricht dem Kalendertag morgen; ein konfigurierter Verbrauchs-Sicherheitsaufschlag wird nur einmal über `ConsumptionForecastSafetyPct` angewendet. Bei 0 % erfolgt kein zusätzlicher allgemeiner Verbrauchsaufschlag.
+
+
+### 1.10.82 – Jahresansicht Einspeise-Statistik
+Die Einspeise-Statistik kann jetzt zusätzlich auf **Jahr** umgeschaltet werden. Dargestellt werden Januar bis Dezember mit Monatswerten für Einspeisung außerhalb/während der Automatik und den jeweiligen Erlösen; Navigation und Summenzeile folgen dem gewählten Jahr.

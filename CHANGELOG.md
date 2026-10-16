@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.82 / Build 253
+- Einspeise-Statistik um eine Jahresansicht ergänzt.
+- Die Jahresansicht zeigt Januar bis Dezember als Monatsbalken, jeweils getrennt nach Einspeisung außerhalb und während der Automatik sowie mit den zugehörigen Erlös-Overlays.
+- Pfeilnavigation wechselt in der Jahresansicht jahresweise; `Heute` springt in das aktuelle Jahr.
+- Die Jahressumme verwendet exakt dieselben Monats-/Tagesdaten wie die bestehenden Statistikansichten; es wird kein separater Statistikdatenbestand aufgebaut.
+- Tag-, Woche- und Monatsansicht bleiben unverändert erhalten.
+
 ## 1.10.81 / Build 252
 - `Verbrauchsprognose morgen` zeigt jetzt den echten Kalendertag morgen statt des abweichenden Planungszyklus. Der konfigurierte Sicherheitsaufschlag wird dabei ausschließlich über `ConsumptionForecastSafetyPct` angewendet; bei 0 % gibt es keinen zusätzlichen allgemeinen Verbrauchsaufschlag.
 - Die Anzeige `Autoladungen ausgeschlossen` zählt nur noch eindeutige Ladeereignisse innerhalb des aktuell konfigurierten Lastprofil-Lernzeitraums. Historische Saisonmodelle dürfen weiter zurückreichen, ihre alten EV-Zähler werden aber nicht mehr in die aktuelle Anzeige übernommen.
